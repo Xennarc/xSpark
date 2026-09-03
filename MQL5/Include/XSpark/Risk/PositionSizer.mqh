@@ -166,8 +166,10 @@ public:
                                                     loss_per_lot,
                                                     reason);
 
+      // Diagnostics stay identical to the pre-refactor behaviour: they are only
+      // populated once the sizing got as far as computing a loss per lot.
       m_last_loss_per_lot = loss_per_lot;
-      m_last_risk_cash = risk_cash;
+      m_last_risk_cash = loss_per_lot > 0.0 ? risk_cash : 0.0;
       m_last_reason = reason;
 
       if(!sized)

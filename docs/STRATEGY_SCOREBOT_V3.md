@@ -297,7 +297,21 @@ The theoretical ATR stop is never moved to preserve the originally planned lot s
 
 After a confirmed entry, ExecutionEngine reads `CTrade::ResultDeal()`, selects that deal from MT5 history, and takes `DEAL_POSITION_ID`, `DEAL_PRICE`, `DEAL_VOLUME`, and `DEAL_TIME`. The position id binds the trade state to the exact broker position.
 
-A same-direction/newest-position match is only a documented fail-safe fallback. It is used solely when the broker deal exposes no position id, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or has a volume that does not match the submission.
+A same-direction match is only a documented fail-safe fallback. It is used solely when the broker deal exposes no position id, it does not use newest-open-time, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or whose executed volume does not match. A broker position that already existed before the send is refused outright.
+
+### Broker Protection Verification
+
+A confirmed retcode means the order was accepted, not that the broker applied the stop that was sent with it. After a confirmed entry the EA reads the live `POSITION_SL`. If it is missing, the submitted stop is applied immediately, the condition is logged CRITICAL, and registration is reported as failed until a stop exists. Every management pass re-attempts protection repair for any XSpark position found without a broker stop, and new entries stay blocked while any XSpark exposure is unprotected.
+
+Exit operations use a wider deviation (100 canonical points) than entries. Closing at a slightly worse price is always preferable to failing to close.
+
+### Weekend Close Entry Block
+
+When `InpUseWeekendClose` is enabled, new entries are refused inside the weekend-close window. Previously the EA could open a position that PositionManager would flatten on the same tick.
+
+### Residual Execution Slippage
+
+The configured deviation is accepted execution tolerance, so a market order can still fill up to 30 canonical points away from the price the volume was sized from. With a fixed absolute stop this makes the realised entry-to-stop distance, and therefore the realised monetary risk, slightly larger than the sized figure. The EA does not pre-shrink the volume for this, because that would change tested position sizing; instead it computes the realised distance from the actual fill and logs a WARNING whenever realised risk exceeds the sized risk. Reduce `XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS` if this residual is unacceptable for a given account.
 
 ### State Recovery
 
@@ -309,7 +323,7 @@ While the state stays inconsistent:
 - Protective management of live broker positions continues.
 - Dashboard status reads `STATE RECOVERY` rather than `MANAGING`.
 
-The latch clears only after reconciliation proves managed state covers live broker exposure again.
+The latch clears only after reconciliation proves that every live XSpark position has managed state, with a matching direction, a broker stop in place, and — for the position this entry created — ownership by this entry's signal bar rather than by a different XSpark trade.
 
 ## Execution Boundary
 

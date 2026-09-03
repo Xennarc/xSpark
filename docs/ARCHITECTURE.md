@@ -77,9 +77,13 @@ After a confirmed entry it resolves the exact broker position from `CTrade::Resu
 
 Reconciles XSpark-managed broker positions using chart symbol plus configured Magic Number. Existing broker-side positions are the source of truth after restart or crash. It owns partial close, breakeven stop movement, trailing stop movement, weekend close, and killswitch flattening for XSpark-owned exposure only.
 
-New trade state is bound to the exact broker position id supplied by the execution result. A same-direction/newest-position match exists only as a documented fail-safe fallback for the case where the broker deal exposes no position id, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or whose volume does not match the submission. Anything other than an exact bind is reported as a registration failure so the EA can recover deliberately.
+New trade state is bound to the exact broker position id supplied by the execution result. A same-direction match exists only as a documented fail-safe fallback for the case where the broker deal exposes no position id; it does not use newest-open-time, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or whose executed volume does not match. A position that already existed before the send is refused outright, so a netting-mode merge can never overwrite the state of a trade that is already being managed. Anything other than an exact bind is reported as a registration failure so the EA can recover deliberately.
 
-Flattening keeps retrying until no XSpark exposure remains and never touches another symbol or Magic Number. Broker retries and log output are paced so a latched killswitch surfaces remaining exposure without emitting identical CRITICAL lines on every tick.
+A confirmed retcode proves the order was accepted, not that the broker applied the protection sent with it. Registration reads the live `POSITION_SL`, applies the submitted stop immediately when the broker left the position unprotected, and reports a registration failure while any stop is still missing. Every management pass re-attempts protection repair for XSpark positions found without a broker stop.
+
+Exit operations use a wider deviation than entries: closing a position at a slightly worse price is always better than failing to close it.
+
+Flattening keeps retrying until no XSpark exposure remains and never touches another symbol or Magic Number. The campaign is keyed on the exposure rather than on the caller, so an overlapping killswitch and weekend close cannot restart each other. Broker retries and log output are paced so a latched killswitch surfaces remaining exposure without emitting identical CRITICAL lines on every tick.
 
 ### ExecutionMath
 
@@ -102,7 +106,9 @@ CRITICAL + SafetyManager state-recovery latch
        |
 PositionManager.Reconcile
        |
-Managed state covers live positions?
+Managed state covers live positions,
+with matching direction, a broker stop,
+and ownership of this entry's signal bar?
        |
    yes --> latch cleared, entries allowed again
    no  --> STATE RECOVERY: new entries blocked, protection continues

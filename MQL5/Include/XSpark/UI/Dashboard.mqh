@@ -102,7 +102,8 @@ public:
       const color status_color = status == "KILLSWITCH" || status == "DD HALT" || status == "STATE RECOVERY" ? clrTomato :
                                  status == "ANALYSIS ONLY" || status == "TRADING DISABLED" ? clrGold :
                                  status == "SPREAD BLOCKED" || status == "ATR BLOCKED" ||
-                                 status == "SESSION BLOCKED" || status == "STALE QUOTE" ? clrOrange :
+                                 status == "SESSION BLOCKED" || status == "STALE QUOTE" ||
+                                 status == "WEEKEND CLOSE" ? clrOrange :
                                  clrLimeGreen;
 
       SetLine(0, "XSpark ScoreBot_v3", clrAqua);

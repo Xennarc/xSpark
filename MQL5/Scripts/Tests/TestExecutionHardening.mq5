@@ -43,7 +43,7 @@ void TestDuplicateSignalProtection()
    Check("repeat submission of the same signal bar is blocked",
          !XSparkSignalBarIsSubmittable(bar, bar, reason));
    Check("duplicate block states its reason", reason == "Duplicate signal-bar submission blocked.");
-   Check("a later signal bar is allowed after an earlier submission",
+   Check("a different signal bar is allowed after an earlier submission",
          XSparkSignalBarIsSubmittable(bar, (datetime)(bar + 900), reason));
    Check("invalid signal bar time is rejected",
          !XSparkSignalBarIsSubmittable(0, 0, reason));
@@ -55,14 +55,14 @@ void TestEntryDriftTolerance()
    double drift = 0.0;
 
    Check("max drift equals 30 canonical points", NearlyEqual(max_drift, 0.30));
-   Check("small favourable drift is inside tolerance",
+   Check("small adverse drift is inside tolerance",
          XSparkEntryDriftIsWithinTolerance(2000.00, 2000.20, max_drift, drift));
    Check("drift value is reported", NearlyEqual(drift, 0.20));
    Check("drift exactly at tolerance is accepted",
          XSparkEntryDriftIsWithinTolerance(2000.00, 2000.30, max_drift, drift));
    Check("drift beyond tolerance aborts the entry",
          !XSparkEntryDriftIsWithinTolerance(2000.00, 2000.35, max_drift, drift));
-   Check("adverse drift beyond tolerance aborts the entry",
+   Check("favourable drift beyond tolerance also aborts the entry",
          !XSparkEntryDriftIsWithinTolerance(2000.00, 1999.60, max_drift, drift));
    Check("invalid reference price is rejected",
          !XSparkEntryDriftIsWithinTolerance(0.0, 2000.00, max_drift, drift));
@@ -161,6 +161,26 @@ void TestVolumeRecalculation()
                                     capped_volume, loss_per_lot, reason));
    Check("capped volume equals the broker maximum", NearlyEqual(capped_volume, volume_max));
 
+   double reason_volume = 0.0;
+   XSparkVolumeFromRiskInputs(1.0, 3.00, tick_size, tick_value,
+                              volume_min, volume_max, volume_step,
+                              reason_volume, loss_per_lot, reason);
+   Check("below-minimum abort keeps its reason wording",
+         StringFind(reason, "below broker minimum") >= 0 &&
+         StringFind(reason, "trade aborted") >= 0);
+
+   XSparkVolumeFromRiskInputs(10000000.0, 3.00, tick_size, tick_value,
+                              volume_min, volume_max, volume_step,
+                              reason_volume, loss_per_lot, reason);
+   Check("broker-maximum cap keeps its reason wording",
+         StringFind(reason, "capped at broker maximum") >= 0);
+
+   XSparkVolumeFromRiskInputs(risk_cash, 3.00, tick_size, tick_value,
+                              volume_min, volume_max, volume_step,
+                              reason_volume, loss_per_lot, reason);
+   Check("successful sizing keeps its reason wording",
+         StringFind(reason, "Position size calculated") >= 0);
+
    double invalid_volume = 0.0;
    Check("zero risk cash is rejected",
          !XSparkVolumeFromRiskInputs(0.0, 3.00, tick_size, tick_value,
@@ -197,18 +217,20 @@ void TestPriceMovementRiskRevalidation()
 
    double planned_volume = 0.0;
    const double planned_distance = XSparkRiskDistance(XSPARK_SIGNAL_BUY, planned_entry, locked_atr_stop);
-   XSparkVolumeFromRiskInputs(risk_cash, planned_distance, tick_size, tick_value,
-                              volume_min, volume_max, volume_step,
-                              planned_volume, loss_per_lot, reason);
+   Check("planning-time sizing succeeds",
+         XSparkVolumeFromRiskInputs(risk_cash, planned_distance, tick_size, tick_value,
+                                    volume_min, volume_max, volume_step,
+                                    planned_volume, loss_per_lot, reason));
+   Check("planning-time volume is non-zero", planned_volume > 0.0);
 
    // Price ran away from us but is still inside the permitted deviation.
    const double moved_up_entry = 2000.25;
-   Check("favourable move within deviation is still executable",
+   Check("adverse move within deviation is still executable",
          XSparkEntryDriftIsWithinTolerance(planned_entry, moved_up_entry, max_drift, drift));
 
    const double moved_up_distance = XSparkRiskDistance(XSPARK_SIGNAL_BUY, moved_up_entry, locked_atr_stop);
-   Check("locked ATR stop is not moved to preserve lot size",
-         NearlyEqual(moved_up_distance, 3.25));
+   Check("stop distance grows by exactly the entry move, proving the stop did not move",
+         NearlyEqual(moved_up_distance - planned_distance, moved_up_entry - planned_entry));
 
    double moved_up_volume = 0.0;
    Check("volume is recomputed from the actual distance",
@@ -233,8 +255,10 @@ void TestPriceMovementRiskRevalidation()
    const double moved_down_entry = 1999.80;
    const double moved_down_distance = XSparkRiskDistance(XSPARK_SIGNAL_BUY, moved_down_entry, locked_atr_stop);
    double moved_down_volume = 0.0;
-   Check("adverse move within deviation is still executable",
+   Check("favourable move within deviation is still executable",
          XSparkEntryDriftIsWithinTolerance(planned_entry, moved_down_entry, max_drift, drift));
+   Check("stop distance shrinks by exactly the entry move, proving the stop did not move",
+         NearlyEqual(planned_distance - moved_down_distance, planned_entry - moved_down_entry));
    Check("volume is recomputed for the tighter distance",
          XSparkVolumeFromRiskInputs(risk_cash, moved_down_distance, tick_size, tick_value,
                                     volume_min, volume_max, volume_step,
@@ -277,6 +301,14 @@ void TestPositionIdentityMatching()
    Check("fallback rejects a volume that does not match the submission",
          !XSparkFallbackPositionIsAcceptable(XSPARK_SIGNAL_BUY, XSPARK_SIGNAL_BUY, false,
                                              submit_time, submit_time, 0.20, 0.10, 0.005));
+   Check("fallback accepts an open time exactly at the clock tolerance",
+         XSparkFallbackPositionIsAcceptable(XSPARK_SIGNAL_BUY, XSPARK_SIGNAL_BUY, false,
+                                            (datetime)(submit_time - XSPARK_FALLBACK_OPEN_TIME_TOLERANCE_SECONDS),
+                                            submit_time, 0.10, 0.10, 0.005));
+   Check("fallback rejects an open time one second beyond the clock tolerance",
+         !XSparkFallbackPositionIsAcceptable(XSPARK_SIGNAL_BUY, XSPARK_SIGNAL_BUY, false,
+                                             (datetime)(submit_time - XSPARK_FALLBACK_OPEN_TIME_TOLERANCE_SECONDS - 1),
+                                             submit_time, 0.10, 0.10, 0.005));
    Check("fallback rejects a missing open time",
          !XSparkFallbackPositionIsAcceptable(XSPARK_SIGNAL_BUY, XSPARK_SIGNAL_BUY, false,
                                              0, submit_time, 0.10, 0.10, 0.005));
@@ -309,6 +341,14 @@ void TestStaleQuoteCalculations()
          !XSparkQuoteAgeIsAcceptable(quote_time, (datetime)(quote_time + 5), 0, age, reason));
    Check("small clock skew ahead of server time is tolerated",
          XSparkQuoteAgeIsAcceptable(quote_time, (datetime)(quote_time - 3), 15, age, reason));
+   Check("clock skew exactly at the future-skew limit is tolerated",
+         XSparkQuoteAgeIsAcceptable(quote_time,
+                                    (datetime)(quote_time - XSPARK_MAX_FUTURE_QUOTE_SKEW_SECONDS),
+                                    15, age, reason));
+   Check("clock skew one second beyond the future-skew limit is rejected",
+         !XSparkQuoteAgeIsAcceptable(quote_time,
+                                     (datetime)(quote_time - XSPARK_MAX_FUTURE_QUOTE_SKEW_SECONDS - 1),
+                                     15, age, reason));
    Check("large future-dated quote timestamp is rejected",
          !XSparkQuoteAgeIsAcceptable(quote_time, (datetime)(quote_time - 30), 15, age, reason));
 }

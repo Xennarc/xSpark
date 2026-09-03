@@ -119,4 +119,7 @@ The following cannot be proven outside MT5 and must be checked in the Strategy T
 - Execution-time revalidation against real quote movement, requotes, and broker stop levels.
 - Margin rejection at send time with the recomputed volume.
 - Killswitch flattening retries, pacing, remaining-exposure reporting, and the single completion log line.
+- Broker protection verification: a broker that accepts a market order but does not apply the stop, and the protection-repair retry loop.
+- Exit deviation: that XSpark-owned closes and modifications fill at the wider tolerance.
+- The weekend-close entry block.
 - Stale-quote rejection against a real feed, including weekend and rollover behaviour.

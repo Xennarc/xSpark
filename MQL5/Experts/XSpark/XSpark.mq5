@@ -84,6 +84,7 @@ double   g_latest_closed_atr14 = 0.0;
 string   g_status = "SCANNING";
 string   g_last_block_reason = "Waiting for the next closed M15 bar.";
 long     g_state_recovery_position_id = 0;
+datetime g_state_recovery_signal_bar_time = 0;
 datetime g_state_recovery_last_log_time = 0;
 XSparkScoreBotReport g_last_report;
 
@@ -440,6 +441,26 @@ void XSparkLogEntry(XSparkTradePlan &plan,
                               result.order_ticket,
                               result.deal_ticket));
 
+   // The configured deviation is accepted execution tolerance, so a fill inside
+   // it can still make the realised entry-to-stop distance wider than the one
+   // the volume was sized from. Surface it rather than hide it.
+   const double realised_entry = result.fill_price > 0.0 ? result.fill_price : result.price;
+   const double realised_distance = plan.final_sl > 0.0 && realised_entry > 0.0 ?
+                                    MathAbs(realised_entry - plan.final_sl) :
+                                    0.0;
+
+   if(realised_distance > 0.0 && result.actual_risk_distance > 0.0 &&
+      realised_distance > result.actual_risk_distance)
+   {
+      const double overshoot_pct = ((realised_distance / result.actual_risk_distance) - 1.0) * 100.0;
+      g_logger.Warn("EA",
+                    StringFormat("Fill slipped inside the permitted deviation: sized stop distance %.2f canonical points, realised %.2f, so realised risk is %.2f%% above the %.2f%% budget.",
+                                 XSparkPriceToCanonicalPoints(result.actual_risk_distance),
+                                 XSparkPriceToCanonicalPoints(realised_distance),
+                                 overshoot_pct,
+                                 plan.risk_pct));
+   }
+
    g_logger.Info("EA",
                  StringFormat("Execution facts position_id=%I64d position_ticket=%I64u exact_id=%s state_registered_exactly=%s fill_price=%s fill_volume=%s submitted_entry=%s submitted_lots=%s risk_distance=%.2f canonical points actual_RR=%.4f retcode=%I64d %s",
                               result.position_id,
@@ -471,9 +492,15 @@ bool XSparkAttemptStateRecovery()
 
    string coverage_reason = "";
    const bool covered = g_position_manager.ManagedStateCoversLivePositions(coverage_reason);
-   const bool recovered_position_tracked = g_state_recovery_position_id == 0 ||
-                                           !g_position_manager.PositionIsLive(g_state_recovery_position_id) ||
-                                           g_position_manager.HasStateForIdentifier(g_state_recovery_position_id);
+
+   // The new position counts as represented only when the state that claims it
+   // belongs to this entry, or was rebuilt from broker values. A state owned by
+   // a different signal bar means the entry merged into another XSpark trade.
+   const bool recovered_position_tracked =
+      g_state_recovery_position_id == 0 ||
+      !g_position_manager.PositionIsLive(g_state_recovery_position_id) ||
+      g_position_manager.StateForIdentifierOwnsSignalBar(g_state_recovery_position_id,
+                                                         g_state_recovery_signal_bar_time);
 
    if(covered && recovered_position_tracked)
    {
@@ -482,6 +509,7 @@ bool XSparkAttemptStateRecovery()
                                  coverage_reason));
       g_safety_manager.ClearStateRecovery(g_logger);
       g_state_recovery_position_id = 0;
+      g_state_recovery_signal_bar_time = 0;
       g_state_recovery_last_log_time = 0;
       g_last_block_reason = "State recovery resolved; managed state matches broker state.";
       return true;
@@ -509,7 +537,7 @@ bool XSparkAttemptStateRecovery()
 // Broker execution succeeded but XSpark could not bind the resulting position
 // exactly. Broker state stays authoritative: latch, reconcile, verify, and keep
 // protecting whatever exposure actually exists.
-void XSparkEnterStateRecovery(XSparkExecutionResult &result)
+void XSparkEnterStateRecovery(XSparkTradePlan &plan, XSparkExecutionResult &result)
 {
    const string registration_reason = g_position_manager.LastReason();
 
@@ -521,6 +549,7 @@ void XSparkEnterStateRecovery(XSparkExecutionResult &result)
                                   registration_reason));
 
    g_state_recovery_position_id = result.position_id;
+   g_state_recovery_signal_bar_time = plan.signal_bar_time;
    g_state_recovery_last_log_time = 0;
    g_safety_manager.LatchStateRecovery(registration_reason, g_logger);
 
@@ -533,8 +562,8 @@ void XSparkEnterStateRecovery(XSparkExecutionResult &result)
       return;
 
    g_last_block_reason = g_position_manager.LastRegistrationBoundState() ?
-                         "Entry confirmed; state bound by fail-safe fallback and verified by reconciliation." :
-                         "Entry confirmed; state rebuilt from broker values by reconciliation.";
+                         "Entry confirmed; state bound without exact broker identification, then verified by reconciliation." :
+                         "Entry confirmed; state for the new position was rebuilt from broker values by reconciliation.";
 }
 
 void XSparkEvaluateNewBar()
@@ -586,6 +615,19 @@ void XSparkEvaluateNewBar()
          g_logger.Error("ScoreBotV3", g_last_block_reason);
       else
          XSparkVerboseBlock("ScoreBotV3", g_last_block_reason);
+      return;
+   }
+
+   // Opening inside the weekend-close window would be flattened immediately by
+   // PositionManager, so the entry is refused rather than paid for.
+   if(InpUseWeekendClose &&
+      g_position_manager.ShouldWeekendClose(g_market_state.ServerTime(),
+                                            InpWeekendCloseHour,
+                                            InpWeekendCloseMinute))
+   {
+      g_status = "WEEKEND CLOSE";
+      g_last_block_reason = "Weekend close window is active; new entries are blocked.";
+      XSparkVerboseBlock("PositionManager", g_last_block_reason);
       return;
    }
 
@@ -670,7 +712,7 @@ void XSparkEvaluateNewBar()
       return;
    }
 
-   XSparkEnterStateRecovery(execution_result);
+   XSparkEnterStateRecovery(plan, execution_result);
 }
 
 int OnInit()
@@ -826,17 +868,17 @@ void OnTimer()
 
 void OnTick()
 {
-   if(!g_market_state.Refresh())
-   {
-      g_status = "SCANNING";
-      g_last_block_reason = "Unable to refresh market state on tick.";
-      g_logger.Warn("MarketState", g_last_block_reason);
-      XSparkUpdateDashboard();
-      return;
-   }
+   const bool market_state_valid = g_market_state.Refresh();
 
+   datetime server_time = TimeTradeServer();
+   if(server_time == 0)
+      server_time = TimeCurrent();
+
+   // Drawdown tracking and killswitch flattening depend on account state and
+   // broker positions, not on a usable quote, so they run even when the feed
+   // is unusable. A dropout must never suspend the killswitch.
    g_safety_manager.RefreshDrawdownState(AccountInfoDouble(ACCOUNT_EQUITY),
-                                         g_market_state.ServerTime(),
+                                         server_time,
                                          g_logger);
 
    if(g_safety_manager.TotalDDKillSwitchLatched())
@@ -844,6 +886,23 @@ void OnTick()
       g_status = "KILLSWITCH";
       g_last_block_reason = g_safety_manager.LastReason();
       g_position_manager.FlattenManagedExposure("Total DD killswitch", g_logger);
+   }
+
+   if(!market_state_valid)
+   {
+      if(!g_safety_manager.TotalDDKillSwitchLatched())
+      {
+         g_status = "SCANNING";
+         g_last_block_reason = "Unable to refresh market state on tick.";
+      }
+
+      g_logger.Warn("MarketState", "Unable to refresh market state on tick; protective management is paused until quotes return.");
+
+      if(g_safety_manager.StateRecoveryLatched())
+         XSparkAttemptStateRecovery();
+
+      XSparkUpdateDashboard();
+      return;
    }
 
    g_position_manager.ManagePositions(g_market_state.Bid(),
