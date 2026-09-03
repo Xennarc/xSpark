@@ -19,3 +19,11 @@ Reason: A single-trader retail system should remain cheap, simple, and operation
 ## ADR-005 - Broker State Is Authoritative
 
 Reason: EA RAM state can disappear after restart, crash, recompilation, chart changes, or VPS interruption.
+
+## ADR-006 - Canonical XAU Point Model
+
+Reason: ScoreBot_v3 thresholds were specified in 0.01 XAUUSD price units, while brokers may quote gold with different native point sizes. Strategy thresholds use canonical points and convert to broker-native values only at MT5 boundaries.
+
+## ADR-007 - Analysis Mode Remains Active When Trading Is Disabled
+
+Reason: `InpEnableTrading=false` should allow safe observation of signals, scores, dashboard state, and block reasons without letting orders reach the broker.

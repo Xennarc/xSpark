@@ -95,6 +95,11 @@ public:
 
       return (m_ask - m_bid) / m_point;
    }
+
+   double SpreadPrice()
+   {
+      return m_ask - m_bid;
+   }
 };
 
 #endif

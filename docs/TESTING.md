@@ -49,3 +49,49 @@ When strategies exist, testing should use realistic spread, commission, swap, ex
 ## Phase 0 Testing
 
 Phase 0 has no strategy and no order execution. Validation is limited to repository review, static inspection, include path review, order-submission search, and MetaEditor compile if the compiler is available.
+
+## ScoreBot_v3 Testing
+
+ScoreBot_v3 adds deterministic logic and broker-facing behavior that must be validated separately.
+
+### Deterministic Logic Script
+
+Compile and run:
+
+```text
+MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5
+```
+
+The script checks pattern detection, pattern priority, zero-range safety, zero-body engulfing denominator safety, session weights, dynamic RR, risk-tier boundaries, final score bounds, and canonical XAU point conversion.
+
+The script must print explicit `PASS` and `FAIL` lines plus a final count.
+
+### Compile Targets
+
+Compile both:
+
+```text
+MQL5/Experts/XSpark/XSpark.mq5
+MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5
+```
+
+Target result before merge:
+
+```text
+0 errors
+0 warnings
+```
+
+### Strategy Tester Smoke
+
+When MetaTrader Strategy Tester is available, run a smoke test without tuning:
+
+```text
+Symbol: XAUUSD
+Timeframe: M15
+Model: Every tick based on real ticks
+Period: last 6 months
+Preset: MAX_SHARPE defaults
+```
+
+The historical Python harness suggested approximately 1 to 1.5 trades/day, but this is only a smoke-test prior. It is not a target to optimize toward.
