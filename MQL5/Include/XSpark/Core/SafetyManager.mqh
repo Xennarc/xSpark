@@ -83,6 +83,27 @@ private:
       return true;
    }
 
+   // Telemetry only. Refreshed every tick so the dashboard reports the real
+   // quote age even when an earlier safety gate short-circuits the freshness
+   // check. The gate itself always re-reads the tick at decision time.
+   void UpdateQuoteAge()
+   {
+      MqlTick tick;
+      if(!SymbolInfoTick(m_symbol, tick))
+      {
+         m_last_quote_age_seconds = 0;
+         return;
+      }
+
+      const datetime server_time = TimeTradeServer() == 0 ? TimeCurrent() : TimeTradeServer();
+      string ignored_reason = "";
+      XSparkQuoteAgeIsAcceptable(tick.time,
+                                 server_time,
+                                 m_max_quote_age_seconds,
+                                 m_last_quote_age_seconds,
+                                 ignored_reason);
+   }
+
    // Production safety addition: a frozen or invalid feed must never be used to
    // open new exposure. It never blocks management of existing positions.
    bool QuoteIsFresh()
@@ -215,6 +236,8 @@ public:
          m_last_reason = "Safety state is unknown; failing closed.";
          return false;
       }
+
+      UpdateQuoteAge();
 
       if(current_equity <= 0.0)
       {
@@ -487,7 +510,9 @@ public:
       - daily loss halt
       - total drawdown killswitch latch
       - XSpark-managed position count limit
-      - stale/invalid quote rejection for new exposure
+      - stale/invalid quote rejection for new exposure (quote age is derived from
+        TimeTradeServer(), which MT5 computes from the host clock, so a badly
+        skewed VPS clock will block new entries rather than allow them)
       - state-recovery latch after a confirmed entry that could not be registered
 
       Future checks:

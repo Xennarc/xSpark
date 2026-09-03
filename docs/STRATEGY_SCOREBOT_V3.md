@@ -276,6 +276,8 @@ Before any new exposure is approved, SafetyManager reads the current tick and co
 
 The gate applies to new exposure only. Score, pattern detection, dashboard analysis, and protective management of existing positions are unaffected.
 
+Quote age is measured against `TimeTradeServer()`, which MT5 derives from the host clock and the server offset. A badly skewed VPS clock therefore blocks new entries rather than allowing stale ones, and the block is logged as a WARNING so the cause is visible. Keep the VPS clock synchronised.
+
 ### Execution-Time Risk Revalidation
 
 Trade planning happens on the closed-bar evaluation price. The price the broker actually trades at can differ, so ExecutionEngine recomputes the entire risk chain immediately before every order send:
@@ -284,7 +286,7 @@ Trade planning happens on the closed-bar evaluation price. The price the broker 
 2. Take the current entry reference: Ask for BUY, Bid for SELL.
 3. Abort when the entry reference has drifted from the planned reference by more than the configured deviation (30 canonical points). The market is never chased.
 4. Keep the locked ATR stop where the strategy placed it. Abort when price has already moved through it.
-5. Re-run broker stop-level validation against the current entry reference.
+5. Re-run broker stop-level validation against the close-side price (Bid for a long, Ask for a short), which is the side MT5 measures protective levels against.
 6. Recompute the actual stop distance from the current entry reference and the broker-valid stop.
 7. Recompute the volume from that actual distance so the monetary risk stays at the selected risk percentage.
 8. Recompute TP from the actual distance and the locked dynamic RR.

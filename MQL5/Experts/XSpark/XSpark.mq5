@@ -519,8 +519,11 @@ bool XSparkAttemptStateRecovery()
    if(now == 0)
       now = TimeCurrent();
 
+   const long since_last_recovery_log = (long)now - (long)g_state_recovery_last_log_time;
+
    if(g_state_recovery_last_log_time == 0 ||
-      (long)now - (long)g_state_recovery_last_log_time >= XSPARK_STATE_RECOVERY_LOG_INTERVAL_SECONDS)
+      since_last_recovery_log < 0 ||
+      since_last_recovery_log >= XSPARK_STATE_RECOVERY_LOG_INTERVAL_SECONDS)
    {
       g_logger.Critical("EA",
                         StringFormat("XSpark state is still inconsistent with broker state; new entries remain blocked. coverage=%s recovered_position_id=%I64d tracked=%s",
@@ -637,7 +640,16 @@ void XSparkEvaluateNewBar()
    {
       g_status = XSparkStatusFromSafety();
       g_last_block_reason = g_safety_manager.LastReason();
-      XSparkVerboseBlock("SafetyManager", g_last_block_reason);
+
+      // A blocked entry is normal; a blocked entry because the feed looks
+      // frozen is worth seeing in the journal without verbose logging, and a
+      // skewed host clock shows up here first. Evaluations are once per M15
+      // bar, so this cannot flood.
+      if(g_status == "STALE QUOTE")
+         g_logger.Warn("SafetyManager", g_last_block_reason);
+      else
+         XSparkVerboseBlock("SafetyManager", g_last_block_reason);
+
       return;
    }
 
@@ -709,6 +721,16 @@ void XSparkEvaluateNewBar()
    {
       g_status = "MANAGING";
       g_last_block_reason = "Entry confirmed and registered against the exact broker position id.";
+      return;
+   }
+
+   // The broker confirmed and then closed the position before XSpark could
+   // register it. Nothing is left to manage and nothing is inconsistent.
+   if(g_position_manager.LastRegistrationPositionAlreadyClosed())
+   {
+      g_logger.Warn("EA", g_position_manager.LastReason());
+      g_status = "SCANNING";
+      g_last_block_reason = "Entry confirmed but the broker position closed before state registration.";
       return;
    }
 

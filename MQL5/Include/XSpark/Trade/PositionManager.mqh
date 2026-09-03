@@ -31,6 +31,7 @@ private:
    int    m_managed_position_count;
    string m_last_reason;
    bool   m_last_registration_bound_state;
+   bool   m_last_registration_position_closed;
    string m_flatten_campaign_reason;
    datetime m_flatten_last_attempt_time;
    datetime m_flatten_last_log_time;
@@ -51,6 +52,14 @@ private:
    int SymbolDigits()
    {
       return (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+   }
+
+   // A throttle must never be able to stall a safety retry. A server clock that
+   // moves backwards releases the throttle instead of holding it.
+   bool ThrottleHolds(const datetime last_time, const datetime now, const int interval_seconds)
+   {
+      const long elapsed = (long)now - (long)last_time;
+      return elapsed >= 0 && elapsed < (long)interval_seconds;
    }
 
    // CTrade defaults to a 10-point deviation, which is far too tight for gold
@@ -526,7 +535,7 @@ private:
    void RepairMissingProtection(const datetime server_time, CXSparkLogger &logger)
    {
       if(m_last_protection_repair_time > 0 &&
-         (long)server_time - (long)m_last_protection_repair_time < XSPARK_PROTECTION_REPAIR_INTERVAL_SECONDS)
+         ThrottleHolds(m_last_protection_repair_time, server_time, XSPARK_PROTECTION_REPAIR_INTERVAL_SECONDS))
       {
          return;
       }
@@ -568,6 +577,37 @@ private:
 
       if(attempted)
          m_last_protection_repair_time = server_time;
+   }
+
+   // Proof from broker history that a position id is gone because it closed,
+   // not because XSpark failed to find it.
+   bool PositionClosedInHistory(const long identifier, double &profit, double &exit_price)
+   {
+      profit = 0.0;
+      exit_price = 0.0;
+
+      if(identifier == 0 || !HistorySelectByPosition(identifier))
+         return false;
+
+      bool found = false;
+      const int deals = HistoryDealsTotal();
+
+      for(int index = 0; index < deals; index++)
+      {
+         const ulong deal = HistoryDealGetTicket(index);
+         if(deal == 0)
+            continue;
+
+         const long entry_type = HistoryDealGetInteger(deal, DEAL_ENTRY);
+         if(entry_type != DEAL_ENTRY_OUT && entry_type != DEAL_ENTRY_OUT_BY)
+            continue;
+
+         profit += HistoryDealGetDouble(deal, DEAL_PROFIT);
+         exit_price = HistoryDealGetDouble(deal, DEAL_PRICE);
+         found = true;
+      }
+
+      return found;
    }
 
    void ResetFlattenCampaign()
@@ -761,6 +801,7 @@ public:
       m_managed_position_count = 0;
       m_last_reason = "Position manager is not initialized.";
       m_last_registration_bound_state = false;
+      m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
       ResetFlattenCampaign();
    }
@@ -781,6 +822,7 @@ public:
       m_use_stop_level_validation = use_stop_level_validation;
       m_managed_position_count = 0;
       m_last_registration_bound_state = false;
+      m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
       ResetFlattenCampaign();
       ArrayResize(m_states, 0);
@@ -874,6 +916,21 @@ public:
       }
 
       m_managed_position_count = CountMatchingLivePositions();
+
+      // Exposure can also disappear through a broker-side TP or SL while a
+      // flatten campaign is open. Close the campaign here so it cannot absorb
+      // the next one.
+      if(m_flatten_campaign_reason != "" &&
+         m_managed_position_count == 0 &&
+         CountMatchingPendingOrders() == 0)
+      {
+         logger.Info("PositionManager",
+                     StringFormat("%s ended: no XSpark exposure remains after %d attempt(s).",
+                                  m_flatten_campaign_reason,
+                                  m_flatten_attempts));
+         ResetFlattenCampaign();
+      }
+
       m_last_reason = "Position reconciliation completed against MT5 broker state.";
       return true;
    }
@@ -886,6 +943,7 @@ public:
                          CXSparkLogger &logger)
    {
       m_last_registration_bound_state = false;
+      m_last_registration_position_closed = false;
 
       if(!m_initialized || !result.confirmed)
       {
@@ -912,6 +970,24 @@ public:
             if(matches != 1)
             {
                ticket = 0;
+
+               double closed_profit = 0.0;
+               double closed_exit_price = 0.0;
+
+               if(matches == 0 &&
+                  PositionClosedInHistory(result.position_id, closed_profit, closed_exit_price))
+               {
+                  m_last_registration_position_closed = true;
+                  m_last_reason = StringFormat("Broker position id %I64d from deal %I64u closed at %s for P/L %s before state registration; there is nothing left to manage.",
+                                               result.position_id,
+                                               result.deal_ticket,
+                                               DoubleToString(closed_exit_price, SymbolDigits()),
+                                               DoubleToString(closed_profit, 2));
+                  logger.Warn("PositionManager", m_last_reason);
+                  m_managed_position_count = CountMatchingLivePositions();
+                  return false;
+               }
+
                m_last_reason = StringFormat("Broker position id %I64d from deal %I64u matched %d live XSpark positions; exact state binding failed.",
                                             result.position_id,
                                             result.deal_ticket,
@@ -959,6 +1035,14 @@ public:
    bool LastRegistrationBoundState()
    {
       return m_last_registration_bound_state;
+   }
+
+   // True when the exact broker position was identified but had already closed
+   // before state could be registered. That is a completed trade, not a state
+   // divergence.
+   bool LastRegistrationPositionAlreadyClosed()
+   {
+      return m_last_registration_position_closed;
    }
 
    bool HasStateForIdentifier(const long identifier)
@@ -1296,7 +1380,7 @@ public:
                                        remaining_orders));
       }
       else if(m_flatten_last_attempt_time > 0 &&
-              (long)now - (long)m_flatten_last_attempt_time < XSPARK_FLATTEN_RETRY_INTERVAL_SECONDS)
+              ThrottleHolds(m_flatten_last_attempt_time, now, XSPARK_FLATTEN_RETRY_INTERVAL_SECONDS))
       {
          return;
       }
@@ -1369,7 +1453,7 @@ public:
       const string signature = StringFormat("%s|%d|%d", outcome, after_positions, after_orders);
       const bool outcome_changed = signature != m_flatten_last_signature;
       const bool log_interval_elapsed = m_flatten_last_log_time == 0 ||
-                                        (long)now - (long)m_flatten_last_log_time >= XSPARK_FLATTEN_LOG_INTERVAL_SECONDS;
+                                        !ThrottleHolds(m_flatten_last_log_time, now, XSPARK_FLATTEN_LOG_INTERVAL_SECONDS);
 
       if(outcome_changed || log_interval_elapsed)
       {

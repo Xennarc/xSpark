@@ -85,6 +85,7 @@ private:
    bool RevalidateBeforeSend(XSparkTradePlan &plan,
                              CXSparkPositionSizer &sizer,
                              const double current_entry_reference,
+                             const double close_side_reference,
                              double &send_sl,
                              double &send_tp,
                              double &send_volume,
@@ -99,7 +100,7 @@ private:
       send_rr = 0.0;
       reason = "";
 
-      if(current_entry_reference <= 0.0)
+      if(current_entry_reference <= 0.0 || close_side_reference <= 0.0)
       {
          reason = "Refreshed broker quote is invalid.";
          return false;
@@ -119,7 +120,9 @@ private:
          return false;
       }
 
-      if(!XSparkStopIsOnProtectiveSide(plan.direction, current_entry_reference, plan.theoretical_sl))
+      // Measured on the close side: a long whose stop sits above the Bid would
+      // be stopped out the moment it opens.
+      if(!XSparkStopIsOnProtectiveSide(plan.direction, close_side_reference, plan.theoretical_sl))
       {
          reason = "Price moved through the locked ATR stop before execution.";
          return false;
@@ -132,6 +135,12 @@ private:
       double final_tp = 0.0;
       bool   stable = false;
 
+      // MT5 validates protective levels against the close-side price: the Bid
+      // for a long, the Ask for a short. Anchoring the check on the entry side
+      // would let a stop sit inside the broker stop level by up to one spread.
+      // The risk distance and the target stay anchored on the entry reference,
+      // because that is the price the position is actually opened at.
+      //
       // Broker stop-level validation can move the stop once, which changes the
       // real stop distance, the volume and the target. Two bounded passes only.
       for(int pass = 1; pass <= 2 && !stable; pass++)
@@ -142,7 +151,7 @@ private:
 
          if(!XSparkAdjustProtectionLevels(plan.symbol,
                                           plan.direction,
-                                          current_entry_reference,
+                                          close_side_reference,
                                           candidate_sl,
                                           0.0,
                                           m_use_stop_level_validation,
@@ -184,7 +193,7 @@ private:
          string pair_reason = "";
          if(!XSparkAdjustProtectionLevels(plan.symbol,
                                           plan.direction,
-                                          current_entry_reference,
+                                          close_side_reference,
                                           adjusted_sl,
                                           target,
                                           m_use_stop_level_validation,
@@ -568,6 +577,12 @@ public:
             XSparkNormalizePrice(plan.symbol,
                                  plan.direction == XSPARK_SIGNAL_BUY ? tick.ask : tick.bid);
 
+         // The side the position would be closed on, which is what MT5 measures
+         // protective levels against.
+         const double close_side_reference =
+            XSparkNormalizePrice(plan.symbol,
+                                 plan.direction == XSPARK_SIGNAL_BUY ? tick.bid : tick.ask);
+
          double send_sl = 0.0;
          double send_tp = 0.0;
          double send_volume = 0.0;
@@ -578,6 +593,7 @@ public:
          if(!RevalidateBeforeSend(plan,
                                   sizer,
                                   current_entry_reference,
+                                  close_side_reference,
                                   send_sl,
                                   send_tp,
                                   send_volume,
