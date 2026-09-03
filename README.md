@@ -6,9 +6,9 @@ This project is under development and is not yet intended for live trading.
 
 ## Current Phase
 
-XSpark is in Phase 0: foundation. This repository currently contains architecture rules, documentation, logging, and minimal MQL5 module skeletons.
+XSpark has implemented its first strategy, ScoreBot_v3 MAX_SHARPE, behind safety-first architecture boundaries.
 
-Phase 0 contains no trading strategy and no live order execution.
+The EA is still under development and not production-approved. Trading is disabled by default with `InpEnableTrading = false`.
 
 ## Purpose
 
@@ -21,11 +21,13 @@ XSpark separates responsibilities so future strategy logic cannot bypass safety 
 ```text
 MT5 Market Data
        |
-MarketState
+MarketState / IndicatorCache
        |
-Strategy
+StrategyInterface
        |
-Signal
+ScoreBotV3
+       |
+TradeSignal
        |
 SafetyManager
        |
@@ -40,9 +42,11 @@ MT5 / Exness
 Existing positions
        |
 PositionManager
+       |
+Partial / BE / trailing management
 ```
 
-Strategies produce signals only. SafetyManager and RiskManager can veto execution. ExecutionEngine is the only future broker execution boundary. MT5 broker state is authoritative for live exposure.
+Strategies produce signals only. SafetyManager and RiskManager can veto execution. ExecutionEngine is the new-entry broker boundary, while PositionManager owns XSpark-only exits and protection changes. MT5 broker state is authoritative for live exposure.
 
 ## Repository Structure
 
@@ -55,23 +59,37 @@ xspark-mt5/
 |   |-- Experts/
 |   |   `-- XSpark/
 |   |       `-- XSpark.mq5
-|   `-- Include/
-|       `-- XSpark/
-|           |-- Core/
-|           |   |-- MarketState.mqh
-|           |   |-- SafetyManager.mqh
-|           |   `-- Logger.mqh
-|           |-- Strategy/
-|           |   `-- StrategyInterface.mqh
-|           |-- Risk/
-|           |   |-- RiskManager.mqh
-|           |   `-- PositionSizer.mqh
-|           |-- Execution/
-|           |   `-- ExecutionEngine.mqh
-|           `-- Trade/
-|               `-- PositionManager.mqh
+|   |-- Include/
+|   |   `-- XSpark/
+|   |       |-- Core/
+|   |       |   |-- IndicatorCache.mqh
+|   |       |   |-- MarketState.mqh
+|   |       |   |-- SafetyManager.mqh
+|   |       |   |-- StateStore.mqh
+|   |       |   |-- SymbolMath.mqh
+|   |       |   `-- Logger.mqh
+|   |       |-- Strategy/
+|   |       |   |-- StrategyInterface.mqh
+|   |       |   |-- ScoreBotV3.mqh
+|   |       |   |-- PatternDetector.mqh
+|   |       |   |-- ScoringEngine.mqh
+|   |       |   `-- ScoreBotTypes.mqh
+|   |       |-- Risk/
+|   |       |   |-- RiskManager.mqh
+|   |       |   `-- PositionSizer.mqh
+|   |       |-- Execution/
+|   |       |   `-- ExecutionEngine.mqh
+|   |       |-- Trade/
+|   |       |   |-- PositionManager.mqh
+|   |       |   `-- TradeState.mqh
+|   |       `-- UI/
+|   |           `-- Dashboard.mqh
+|   `-- Scripts/
+|       `-- Tests/
+|           `-- TestScoreBotV3Logic.mq5
 |-- docs/
 |   |-- ARCHITECTURE.md
+|   |-- STRATEGY_SCOREBOT_V3.md
 |   |-- ROADMAP.md
 |   |-- TESTING.md
 |   |-- DEPLOYMENT.md
@@ -91,6 +109,8 @@ xspark-mt5/
 ## Testing Philosophy
 
 Compile success proves only that code builds. Functional validation, execution validation, strategy validation, and profitability testing are separate concerns. A profitable backtest does not prove that a strategy is safe or production-ready.
+
+The included MQL5 script `MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5` is intended for deterministic logic validation inside MetaTrader.
 
 ## Deployment Target
 
