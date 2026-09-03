@@ -562,7 +562,11 @@ public:
             return false;
          }
 
-         const double current_entry_reference = plan.direction == XSPARK_SIGNAL_BUY ? tick.ask : tick.bid;
+         // Normalized once so the drift check, the sizing distance, the value
+         // sent to the broker and the recorded result all use the same price.
+         const double current_entry_reference =
+            XSparkNormalizePrice(plan.symbol,
+                                 plan.direction == XSPARK_SIGNAL_BUY ? tick.ask : tick.bid);
 
          double send_sl = 0.0;
          double send_tp = 0.0;
@@ -642,7 +646,7 @@ public:
 
             // The plan now carries what was actually submitted so logging,
             // annotation and state registration never use stale planning values.
-            plan.entry_reference = XSparkNormalizePrice(plan.symbol, current_entry_reference);
+            plan.entry_reference = current_entry_reference;
             plan.final_sl = send_sl;
             plan.final_tp = send_tp;
             plan.volume = send_volume;

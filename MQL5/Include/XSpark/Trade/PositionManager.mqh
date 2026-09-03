@@ -1127,9 +1127,11 @@ public:
          return;
       }
 
-      if(m_flatten_campaign_reason != reason)
+      // The campaign is keyed on the exposure, not on the caller. A killswitch
+      // and a weekend close that overlap must not restart each other's campaign
+      // on every tick.
+      if(m_flatten_campaign_reason == "")
       {
-         ResetFlattenCampaign();
          m_flatten_campaign_reason = reason;
          m_flatten_last_log_time = now;
          LogFlattenResult(logger,
@@ -1144,6 +1146,10 @@ public:
       {
          return;
       }
+
+      const string label = reason == m_flatten_campaign_reason ?
+                           m_flatten_campaign_reason :
+                           m_flatten_campaign_reason + " / " + reason;
 
       m_flatten_last_attempt_time = now;
       m_flatten_attempts++;
@@ -1200,7 +1206,7 @@ public:
          LogFlattenResult(logger,
                           critical,
                           StringFormat("%s complete after %d attempt(s): %s",
-                                       reason,
+                                       label,
                                        m_flatten_attempts,
                                        outcome));
          ResetFlattenCampaign();
@@ -1217,7 +1223,7 @@ public:
          LogFlattenResult(logger,
                           critical,
                           StringFormat("%s attempt %d still leaves %d XSpark position(s) and %d pending order(s); retrying. Last results: %s",
-                                       reason,
+                                       label,
                                        m_flatten_attempts,
                                        after_positions,
                                        after_orders,
