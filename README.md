@@ -1,0 +1,2 @@
+# xSpark
+Optimized trading bot
