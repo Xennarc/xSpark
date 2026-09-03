@@ -55,7 +55,7 @@ Strategies convert market state into signal data. `ScoreBotV3.mqh` implements th
 
 ### SafetyManager
 
-Determines whether new trading is allowed at all. Safety rules override strategy rules. Unknown or ambiguous safety state prevents new entries. ScoreBot_v3 safety gates include disabled-trading mode, terminal/account/EA trade permission checks, spread filtering, max XSpark position count, persisted daily drawdown halt, and runtime total drawdown killswitch state.
+Determines whether new trading is allowed at all. Safety rules override strategy rules. Unknown or ambiguous safety state prevents new entries. ScoreBot_v3 safety gates include disabled-trading mode, terminal/account/EA trade permission checks, spread filtering, stale/invalid quote rejection, max XSpark position count, persisted daily drawdown halt, runtime total drawdown killswitch state, and a state-recovery latch raised when a confirmed entry could not be registered in managed state.
 
 ### RiskManager
 
@@ -63,15 +63,50 @@ Evaluates approved signals against account-level risk rules. ScoreBot_v3 risk ti
 
 ### PositionSizer
 
-Converts accepted risk, actual stop distance, account balance, and symbol specifications into valid broker volume. It uses symbol-specific MT5 data for volume step, minimum volume, maximum volume, tick size, and tick value. It aborts rather than increasing a below-minimum size to broker minimum.
+Converts accepted risk, actual stop distance, account balance, and symbol specifications into valid broker volume. It uses symbol-specific MT5 data for volume step, minimum volume, maximum volume, tick size, and tick value. It aborts rather than increasing a below-minimum size to broker minimum. The sizing arithmetic lives in the pure helper `XSparkVolumeFromRiskInputs`, so execution-time re-sizing can be tested deterministically.
 
 ### ExecutionEngine
 
 The only component that submits new broker entry orders. It validates margin, applies duplicate signal-bar protection, uses broker-aware filling, and inspects/logs trade-server return codes and results.
 
+Immediately before every order send it revalidates the whole risk chain against the current broker quote: entry-drift tolerance, the locked ATR stop, broker stop-level rules, actual stop distance, volume, target from the locked dynamic RR, RR bounds, and margin. The theoretical ATR stop is never moved to keep the planned lot size; the volume adapts so monetary risk stays at the selected risk percentage. An entry that cannot be executed inside the configured deviation, or whose configured RR cannot be preserved, is aborted rather than chased.
+
+After a confirmed entry it resolves the exact broker position from `CTrade::ResultDeal()` and `DEAL_POSITION_ID`, and records order ticket, deal ticket, position id, live position ticket, fill price, fill volume, fill time, submitted values, actual risk distance, actual RR, retcode, and retcode description in `XSparkExecutionResult`.
+
 ### PositionManager
 
 Reconciles XSpark-managed broker positions using chart symbol plus configured Magic Number. Existing broker-side positions are the source of truth after restart or crash. It owns partial close, breakeven stop movement, trailing stop movement, weekend close, and killswitch flattening for XSpark-owned exposure only.
+
+New trade state is bound to the exact broker position id supplied by the execution result. A same-direction/newest-position match exists only as a documented fail-safe fallback for the case where the broker deal exposes no position id, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or whose volume does not match the submission. Anything other than an exact bind is reported as a registration failure so the EA can recover deliberately.
+
+Flattening keeps retrying until no XSpark exposure remains and never touches another symbol or Magic Number. Broker retries and log output are paced so a latched killswitch surfaces remaining exposure without emitting identical CRITICAL lines on every tick.
+
+### ExecutionMath
+
+`Core/ExecutionMath.mqh` holds the pure, broker-independent predicates shared by the execution boundary, the position-identity boundary, and the stale-quote gate: duplicate signal-bar protection, entry-drift tolerance, protective-stop side checks, risk distance, target from risk distance, realized RR, RR bounds, position identity matching, fail-safe fallback acceptance, and quote-age evaluation. Keeping them pure is what makes them testable without a trade server.
+
+## State Recovery
+
+Broker execution is authoritative. When an entry is confirmed but XSpark cannot bind the resulting position exactly, the EA logs CRITICAL, latches SafetyManager, reconciles against MT5, and verifies that managed state represents every live XSpark position.
+
+```text
+Confirmed execution
+       |
+RegisterNewTrade (exact broker position id)
+       |
+   bound? -- yes --> MANAGING
+       |
+       no
+       |
+CRITICAL + SafetyManager state-recovery latch
+       |
+PositionManager.Reconcile
+       |
+Managed state covers live positions?
+       |
+   yes --> latch cleared, entries allowed again
+   no  --> STATE RECOVERY: new entries blocked, protection continues
+```
 
 ## Current Behavior
 

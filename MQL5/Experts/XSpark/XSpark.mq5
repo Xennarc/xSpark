@@ -62,6 +62,7 @@ input double InpMaxTotalDDPct = 8.0;
 input bool   InpUseStopLevelValidation = true;
 input bool   InpUseMarginCheck = true;
 input double InpMarginBufferPct = 20.0;
+input int    InpMaxQuoteAgeSeconds = 15;
 input bool   InpUseWeekendClose = false;
 input int    InpWeekendCloseHour = 20;
 input int    InpWeekendCloseMinute = 0;
@@ -82,7 +83,11 @@ datetime g_last_evaluated_signal_bar_time = 0;
 double   g_latest_closed_atr14 = 0.0;
 string   g_status = "SCANNING";
 string   g_last_block_reason = "Waiting for the next closed M15 bar.";
+long     g_state_recovery_position_id = 0;
+datetime g_state_recovery_last_log_time = 0;
 XSparkScoreBotReport g_last_report;
+
+#define XSPARK_STATE_RECOVERY_LOG_INTERVAL_SECONDS 30
 
 string XSparkBoolToString(const bool value)
 {
@@ -182,6 +187,12 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   if(InpMaxQuoteAgeSeconds <= 0)
+   {
+      g_logger.Critical("EA", "InpMaxQuoteAgeSeconds must be at least 1 second.");
+      return false;
+   }
+
    if(InpWeekendCloseHour < 0 || InpWeekendCloseHour > 23 ||
       InpWeekendCloseMinute < 0 || InpWeekendCloseMinute > 59)
    {
@@ -197,6 +208,9 @@ string XSparkStatusFromSafety()
    if(g_safety_manager.TotalDDKillSwitchLatched())
       return "KILLSWITCH";
 
+   if(g_safety_manager.StateRecoveryLatched())
+      return "STATE RECOVERY";
+
    if(g_safety_manager.DailyHaltLatched())
       return "DD HALT";
 
@@ -207,6 +221,9 @@ string XSparkStatusFromSafety()
 
    if(StringFind(reason, "Spread") >= 0)
       return "SPREAD BLOCKED";
+
+   if(StringFind(reason, "Stale quote") >= 0)
+      return "STALE QUOTE";
 
    return "SCANNING";
 }
@@ -396,7 +413,9 @@ bool XSparkPrepareTradePlan(XSparkSignal &signal,
    return true;
 }
 
-void XSparkLogEntry(XSparkTradePlan &plan, XSparkExecutionResult &result)
+void XSparkLogEntry(XSparkTradePlan &plan,
+                    XSparkExecutionResult &result,
+                    const bool registered_exactly)
 {
    g_logger.Info("EA",
                  StringFormat("Entry confirmed direction=%s entry=%s SL=%s TP=%s lots=%s risk=%.2f%% score=%.2f threshold=%.2f pattern=%s session=%.2f RR=%.2f components(pattern=%.2f atr=%.2f trend=%.2f rsi=%.2f sr=%.2f volume=%.2f mtf=%.2f) order=%I64u deal=%I64u",
@@ -420,6 +439,102 @@ void XSparkLogEntry(XSparkTradePlan &plan, XSparkExecutionResult &result)
                               plan.mtf_score,
                               result.order_ticket,
                               result.deal_ticket));
+
+   g_logger.Info("EA",
+                 StringFormat("Execution facts position_id=%I64d position_ticket=%I64u exact_id=%s state_registered_exactly=%s fill_price=%s fill_volume=%s submitted_entry=%s submitted_lots=%s risk_distance=%.2f canonical points actual_RR=%.4f retcode=%I64d %s",
+                              result.position_id,
+                              result.position_ticket,
+                              XSparkBoolToString(result.position_id_exact),
+                              XSparkBoolToString(registered_exactly),
+                              DoubleToString(result.fill_price, g_market_state.Digits()),
+                              DoubleToString(result.fill_volume, 2),
+                              DoubleToString(result.submitted_entry_reference, g_market_state.Digits()),
+                              DoubleToString(result.submitted_volume, 2),
+                              XSparkPriceToCanonicalPoints(result.actual_risk_distance),
+                              result.actual_rr,
+                              result.retcode,
+                              result.retcode_description));
+}
+
+// Reconciles against the broker and clears the state-recovery latch only when
+// managed state provably represents every live XSpark position again.
+bool XSparkAttemptStateRecovery()
+{
+   if(!g_safety_manager.StateRecoveryLatched())
+      return true;
+
+   if(!g_position_manager.Reconcile(g_logger))
+   {
+      g_logger.Critical("EA", "Reconciliation failed while XSpark state recovery is active; new entries stay blocked.");
+      return false;
+   }
+
+   string coverage_reason = "";
+   const bool covered = g_position_manager.ManagedStateCoversLivePositions(coverage_reason);
+   const bool recovered_position_tracked = g_state_recovery_position_id == 0 ||
+                                           !g_position_manager.PositionIsLive(g_state_recovery_position_id) ||
+                                           g_position_manager.HasStateForIdentifier(g_state_recovery_position_id);
+
+   if(covered && recovered_position_tracked)
+   {
+      g_logger.Warn("EA",
+                    StringFormat("XSpark state recovery resolved by reconciliation. %s Strategy metadata of a recovered position may have been rebuilt from broker values.",
+                                 coverage_reason));
+      g_safety_manager.ClearStateRecovery(g_logger);
+      g_state_recovery_position_id = 0;
+      g_state_recovery_last_log_time = 0;
+      g_last_block_reason = "State recovery resolved; managed state matches broker state.";
+      return true;
+   }
+
+   datetime now = TimeTradeServer();
+   if(now == 0)
+      now = TimeCurrent();
+
+   if(g_state_recovery_last_log_time == 0 ||
+      (long)now - (long)g_state_recovery_last_log_time >= XSPARK_STATE_RECOVERY_LOG_INTERVAL_SECONDS)
+   {
+      g_logger.Critical("EA",
+                        StringFormat("XSpark state is still inconsistent with broker state; new entries remain blocked. coverage=%s recovered_position_id=%I64d tracked=%s",
+                                     coverage_reason,
+                                     g_state_recovery_position_id,
+                                     XSparkBoolToString(recovered_position_tracked)));
+      g_state_recovery_last_log_time = now;
+   }
+
+   g_last_block_reason = "XSpark state is inconsistent with broker state; new entries are blocked.";
+   return false;
+}
+
+// Broker execution succeeded but XSpark could not bind the resulting position
+// exactly. Broker state stays authoritative: latch, reconcile, verify, and keep
+// protecting whatever exposure actually exists.
+void XSparkEnterStateRecovery(XSparkExecutionResult &result)
+{
+   const string registration_reason = g_position_manager.LastReason();
+
+   g_logger.Critical("EA",
+                     StringFormat("Broker execution confirmed (order=%I64u deal=%I64u position_id=%I64d) but XSpark state registration did not bind exactly: %s",
+                                  result.order_ticket,
+                                  result.deal_ticket,
+                                  result.position_id,
+                                  registration_reason));
+
+   g_state_recovery_position_id = result.position_id;
+   g_state_recovery_last_log_time = 0;
+   g_safety_manager.LatchStateRecovery(registration_reason, g_logger);
+
+   g_status = "STATE RECOVERY";
+   g_last_block_reason = "Broker execution confirmed but XSpark state registration failed; reconciling before any further entry.";
+
+   XSparkAttemptStateRecovery();
+
+   if(g_safety_manager.StateRecoveryLatched())
+      return;
+
+   g_last_block_reason = g_position_manager.LastRegistrationBoundState() ?
+                         "Entry confirmed; state bound by fail-safe fallback and verified by reconciliation." :
+                         "Entry confirmed; state rebuilt from broker values by reconciliation.";
 }
 
 void XSparkEvaluateNewBar()
@@ -534,18 +649,28 @@ void XSparkEvaluateNewBar()
    }
 
    XSparkExecutionResult execution_result;
-   if(!g_execution_engine.ExecuteApprovedPlan(plan, execution_result, g_logger))
+   if(!g_execution_engine.ExecuteApprovedPlan(plan, g_position_sizer, execution_result, g_logger))
    {
       g_status = "SCANNING";
       g_last_block_reason = g_execution_engine.LastReason();
       return;
    }
 
-   g_position_manager.RegisterNewTrade(plan, execution_result, g_logger);
+   // Broker execution is confirmed from here on. State registration failure is
+   // a critical condition, never a silent one.
+   const bool registered_exactly = g_position_manager.RegisterNewTrade(plan, execution_result, g_logger);
+
    g_dashboard.AnnotateEntry(plan, execution_result);
-   XSparkLogEntry(plan, execution_result);
-   g_status = "MANAGING";
-   g_last_block_reason = "Entry confirmed.";
+   XSparkLogEntry(plan, execution_result, registered_exactly);
+
+   if(registered_exactly)
+   {
+      g_status = "MANAGING";
+      g_last_block_reason = "Entry confirmed and registered against the exact broker position id.";
+      return;
+   }
+
+   XSparkEnterStateRecovery(execution_result);
 }
 
 int OnInit()
@@ -600,6 +725,7 @@ int OnInit()
                                    InpUseTotalDDKillSwitch,
                                    InpMaxTotalDDPct,
                                    InpMaxDailyDDPct,
+                                   InpMaxQuoteAgeSeconds,
                                    g_logger))
    {
       g_logger.Critical("SafetyManager", g_safety_manager.LastReason());
@@ -623,7 +749,13 @@ int OnInit()
 
    if(!g_execution_engine.Initialize(InpMagicNumber,
                                      InpOrderComment,
-                                     XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS))
+                                     XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS,
+                                     InpUseStopLevelValidation,
+                                     InpUseMarginCheck,
+                                     InpMarginBufferPct,
+                                     InpMinRR,
+                                     InpMaxRR,
+                                     InpMaxQuoteAgeSeconds))
    {
       g_logger.Critical("ExecutionEngine", g_execution_engine.LastReason());
       return INIT_FAILED;
@@ -725,6 +857,11 @@ void OnTick()
                                       InpWeekendCloseMinute,
                                       g_logger);
 
+   // Protective management above always runs; only new exposure is withheld
+   // while managed state and broker state disagree.
+   if(g_safety_manager.StateRecoveryLatched())
+      XSparkAttemptStateRecovery();
+
    const datetime current_bar_time = iTime(_Symbol, PERIOD_M15, 0);
    if(current_bar_time == 0)
    {
@@ -748,10 +885,18 @@ void OnTick()
       g_current_m15_bar_time = current_bar_time;
       XSparkEvaluateNewBar();
    }
-   else if(g_position_manager.ManagedPositionCount() > 0 && !g_safety_manager.TotalDDKillSwitchLatched())
+   else if(g_position_manager.ManagedPositionCount() > 0 &&
+           !g_safety_manager.TotalDDKillSwitchLatched() &&
+           !g_safety_manager.StateRecoveryLatched())
    {
       g_status = "MANAGING";
       g_last_block_reason = "Managing existing XSpark positions.";
+   }
+
+   if(g_safety_manager.StateRecoveryLatched() && !g_safety_manager.TotalDDKillSwitchLatched())
+   {
+      g_status = "STATE RECOVERY";
+      g_last_block_reason = "XSpark state recovery is active: " + g_safety_manager.StateRecoveryReason();
    }
 
    XSparkUpdateDashboard();

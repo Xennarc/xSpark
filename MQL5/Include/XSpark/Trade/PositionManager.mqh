@@ -2,11 +2,18 @@
 #define XSPARK_TRADE_POSITION_MANAGER_MQH
 
 #include <Trade/Trade.mqh>
+#include <XSpark/Core/ExecutionMath.mqh>
 #include <XSpark/Core/Logger.mqh>
 #include <XSpark/Core/StateStore.mqh>
 #include <XSpark/Core/SymbolMath.mqh>
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
 #include <XSpark/Trade/TradeState.mqh>
+
+// Flattening keeps retrying until no XSpark exposure remains, but broker
+// retries and CRITICAL logging are paced so a latched killswitch cannot flood
+// the journal on every tick.
+#define XSPARK_FLATTEN_RETRY_INTERVAL_SECONDS 2
+#define XSPARK_FLATTEN_LOG_INTERVAL_SECONDS 30
 
 class CXSparkPositionManager
 {
@@ -17,9 +24,27 @@ private:
    bool   m_use_stop_level_validation;
    int    m_managed_position_count;
    string m_last_reason;
+   bool   m_last_registration_bound_state;
+   string m_flatten_campaign_reason;
+   datetime m_flatten_last_attempt_time;
+   datetime m_flatten_last_log_time;
+   int    m_flatten_attempts;
+   int    m_flatten_remaining_exposure;
+   string m_flatten_last_signature;
    CTrade m_trade;
    CXSparkStateStore m_store;
    XSparkTradeState m_states[];
+
+   datetime ServerTimeNow()
+   {
+      const datetime server_time = TimeTradeServer();
+      return server_time == 0 ? TimeCurrent() : server_time;
+   }
+
+   int SymbolDigits()
+   {
+      return (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+   }
 
    int FindStateByTicket(const ulong ticket)
    {
@@ -215,6 +240,229 @@ private:
       return count;
    }
 
+   int CountMatchingPendingOrders()
+   {
+      int count = 0;
+
+      for(int index = OrdersTotal() - 1; index >= 0; index--)
+      {
+         const ulong order_ticket = OrderGetTicket(index);
+         if(order_ticket == 0 || !OrderSelect(order_ticket))
+            continue;
+
+         if(OrderGetString(ORDER_SYMBOL) != m_symbol)
+            continue;
+
+         const long order_magic = OrderGetInteger(ORDER_MAGIC);
+         if(order_magic < 0 || (ulong)order_magic != m_magic_number)
+            continue;
+
+         count++;
+      }
+
+      return count;
+   }
+
+   // Returns how many live XSpark positions carry the broker position id and
+   // reports the first one. Anything other than exactly one match is ambiguous.
+   int FindLiveTicketByIdentifier(const long identifier, ulong &ticket)
+   {
+      ticket = 0;
+
+      if(identifier == 0)
+         return 0;
+
+      int matches = 0;
+      const int total_positions = PositionsTotal();
+
+      for(int index = 0; index < total_positions; index++)
+      {
+         const ulong candidate = PositionGetTicket(index);
+         if(candidate == 0 || !PositionSelectByTicket(candidate) || !PositionMatchesInstance())
+            continue;
+
+         if(!XSparkPositionIdentityMatches(PositionGetInteger(POSITION_IDENTIFIER), identifier))
+            continue;
+
+         matches++;
+         if(ticket == 0)
+            ticket = candidate;
+      }
+
+      return matches;
+   }
+
+   // Documented fail-safe fallback used only when the broker deal did not yield
+   // a position id. It refuses any position that is already tracked, that opened
+   // before the send, that has the wrong direction, or whose volume does not
+   // match what was submitted, so an existing XSpark position can never be
+   // mistaken for the new one.
+   int FindFallbackTicket(XSparkTradePlan &plan,
+                          XSparkExecutionResult &result,
+                          ulong &ticket)
+   {
+      ticket = 0;
+
+      const double volume_step = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
+      const double volume_tolerance = volume_step > 0.0 ? volume_step / 2.0 : 0.0;
+      const double submitted_volume = result.submitted_volume > 0.0 ? result.submitted_volume : result.volume;
+
+      int matches = 0;
+      const int total_positions = PositionsTotal();
+
+      for(int index = 0; index < total_positions; index++)
+      {
+         const ulong candidate = PositionGetTicket(index);
+         if(candidate == 0 || !PositionSelectByTicket(candidate) || !PositionMatchesInstance())
+            continue;
+
+         const long identifier = PositionGetInteger(POSITION_IDENTIFIER);
+         const bool tracked = FindStateByTicket(candidate) >= 0 || FindStateByIdentifier(identifier) >= 0;
+
+         if(!XSparkFallbackPositionIsAcceptable(plan.direction,
+                                                PositionDirection(),
+                                                tracked,
+                                                (datetime)PositionGetInteger(POSITION_TIME),
+                                                result.submit_time,
+                                                PositionGetDouble(POSITION_VOLUME),
+                                                submitted_volume,
+                                                volume_tolerance))
+         {
+            continue;
+         }
+
+         matches++;
+         if(ticket == 0)
+            ticket = candidate;
+      }
+
+      return matches;
+   }
+
+   // Builds managed state from broker truth for the identified position and
+   // enriches it with the strategy metadata of the plan that created it.
+   bool BindStateToTicket(const ulong ticket,
+                          XSparkTradePlan &plan,
+                          XSparkExecutionResult &result,
+                          CXSparkLogger &logger)
+   {
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !PositionMatchesInstance())
+      {
+         m_last_reason = "Execution was confirmed but the identified position is not a live XSpark position.";
+         logger.Critical("PositionManager", m_last_reason);
+         return false;
+      }
+
+      const long identifier = PositionGetInteger(POSITION_IDENTIFIER);
+      const EXSparkSignalDirection live_direction = PositionDirection();
+
+      if(live_direction != plan.direction)
+      {
+         m_last_reason = StringFormat("Identified position ticket=%I64u direction %s does not match executed plan direction %s; refusing to bind state.",
+                                      ticket,
+                                      XSparkDirectionName(live_direction),
+                                      XSparkDirectionName(plan.direction));
+         logger.Critical("PositionManager", m_last_reason);
+         return false;
+      }
+
+      const double live_sl = PositionGetDouble(POSITION_SL);
+      const double live_tp = PositionGetDouble(POSITION_TP);
+      const double submitted_sl = result.submitted_sl > 0.0 ? result.submitted_sl : plan.final_sl;
+      const double submitted_tp = result.submitted_tp > 0.0 ? result.submitted_tp : plan.final_tp;
+
+      XSparkTradeState state;
+      XSparkResetTradeState(state);
+      state.ticket = ticket;
+      state.identifier = identifier;
+      state.direction = live_direction;
+      state.entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      state.initial_sl = live_sl > 0.0 ? live_sl : submitted_sl;
+      state.initial_tp = live_tp > 0.0 ? live_tp : submitted_tp;
+      state.initial_lots = PositionGetDouble(POSITION_VOLUME);
+      state.partial_done = false;
+      state.current_trail_sl = state.initial_sl;
+      state.open_time = (datetime)PositionGetInteger(POSITION_TIME);
+      state.entry_score = plan.score;
+      state.signal_bar_time = plan.signal_bar_time;
+      state.pattern_id = plan.pattern_id;
+      state.pattern_name = plan.pattern_name;
+      state.initial_risk_distance = MathAbs(state.entry - state.initial_sl);
+
+      if(live_sl > 0.0 && submitted_sl > 0.0 &&
+         MathAbs(live_sl - submitted_sl) > XSparkCanonicalPointsToPrice(1.0))
+      {
+         logger.Warn("PositionManager",
+                     StringFormat("Broker stop %s differs from submitted stop %s on ticket=%I64u; broker value is authoritative.",
+                                  DoubleToString(live_sl, SymbolDigits()),
+                                  DoubleToString(submitted_sl, SymbolDigits()),
+                                  ticket));
+      }
+
+      if(state.initial_risk_distance <= 0.0)
+      {
+         logger.Error("PositionManager",
+                      StringFormat("Registered position ticket=%I64u has no usable initial risk distance; partial and trailing management will stay inactive until a stop exists.",
+                                   ticket));
+      }
+
+      int existing = FindStateByIdentifier(identifier);
+      if(existing < 0)
+         existing = FindStateByTicket(ticket);
+
+      // A state carrying a different signal bar already owns this broker
+      // position. On a netting account a second entry merges into the existing
+      // position id, and overwriting would silently reset partial_done and the
+      // initial lots of a trade that is already being managed.
+      if(existing >= 0 &&
+         m_states[existing].signal_bar_time != 0 &&
+         m_states[existing].signal_bar_time != plan.signal_bar_time)
+      {
+         m_last_reason = StringFormat("Broker position identifier=%I64d is already owned by XSpark trade state from signal bar %s; refusing to overwrite it with the new entry.",
+                                      identifier,
+                                      TimeToString(m_states[existing].signal_bar_time, TIME_DATE | TIME_MINUTES));
+         logger.Critical("PositionManager", m_last_reason);
+         return false;
+      }
+
+      if(existing >= 0)
+         m_states[existing] = state;
+      else
+      {
+         const int size = ArraySize(m_states);
+         ArrayResize(m_states, size + 1);
+         m_states[size] = state;
+      }
+
+      PersistState(state);
+      m_managed_position_count = CountMatchingLivePositions();
+      m_last_registration_bound_state = true;
+
+      logger.Info("PositionManager",
+                  StringFormat("Registered XSpark trade ticket=%I64u identifier=%I64d deal=%I64u direction=%s entry=%s SL=%s TP=%s lots=%s score=%.2f pattern=%s",
+                               state.ticket,
+                               state.identifier,
+                               result.deal_ticket,
+                               XSparkDirectionName(state.direction),
+                               DoubleToString(state.entry, SymbolDigits()),
+                               DoubleToString(state.initial_sl, SymbolDigits()),
+                               DoubleToString(state.initial_tp, SymbolDigits()),
+                               DoubleToString(state.initial_lots, 2),
+                               state.entry_score,
+                               state.pattern_name));
+      return true;
+   }
+
+   void ResetFlattenCampaign()
+   {
+      m_flatten_campaign_reason = "";
+      m_flatten_last_attempt_time = 0;
+      m_flatten_last_log_time = 0;
+      m_flatten_attempts = 0;
+      m_flatten_remaining_exposure = 0;
+      m_flatten_last_signature = "";
+   }
+
    bool ModifyPositionStops(const ulong ticket,
                             const double new_sl,
                             const double new_tp,
@@ -397,6 +645,8 @@ public:
       m_use_stop_level_validation = true;
       m_managed_position_count = 0;
       m_last_reason = "Position manager is not initialized.";
+      m_last_registration_bound_state = false;
+      ResetFlattenCampaign();
    }
 
    bool Initialize(const string symbol,
@@ -414,6 +664,8 @@ public:
       m_magic_number = magic_number;
       m_use_stop_level_validation = use_stop_level_validation;
       m_managed_position_count = 0;
+      m_last_registration_bound_state = false;
+      ResetFlattenCampaign();
       ArrayResize(m_states, 0);
       m_store.Initialize((long)AccountInfoInteger(ACCOUNT_LOGIN), m_symbol, m_magic_number);
       m_trade.SetExpertMagicNumber(m_magic_number);
@@ -509,19 +761,118 @@ public:
       return true;
    }
 
+   // Returns true only when the new position was bound from the broker deal's
+   // DEAL_POSITION_ID. Any other outcome is reported as a failure so the EA
+   // runs reconciliation and blocks new entries until state is consistent.
    bool RegisterNewTrade(XSparkTradePlan &plan,
                          XSparkExecutionResult &result,
                          CXSparkLogger &logger)
    {
+      m_last_registration_bound_state = false;
+
       if(!m_initialized || !result.confirmed)
       {
          m_last_reason = "Cannot register unconfirmed execution.";
          return false;
       }
 
+      ulong ticket = 0;
+
+      if(result.position_id != 0)
+      {
+         const bool prebound = result.position_ticket != 0 &&
+                               PositionSelectByTicket(result.position_ticket) &&
+                               PositionMatchesInstance() &&
+                               XSparkPositionIdentityMatches(PositionGetInteger(POSITION_IDENTIFIER),
+                                                             result.position_id);
+
+         if(prebound)
+            ticket = result.position_ticket;
+         else
+         {
+            const int matches = FindLiveTicketByIdentifier(result.position_id, ticket);
+
+            if(matches != 1)
+            {
+               ticket = 0;
+               m_last_reason = StringFormat("Broker position id %I64d from deal %I64u matched %d live XSpark positions; exact state binding failed.",
+                                            result.position_id,
+                                            result.deal_ticket,
+                                            matches);
+               logger.Critical("PositionManager", m_last_reason);
+               return false;
+            }
+         }
+
+         if(!BindStateToTicket(ticket, plan, result, logger))
+            return false;
+
+         result.position_ticket = ticket;
+         m_last_reason = "New XSpark trade state registered against the exact broker position id.";
+         return true;
+      }
+
+      m_last_reason = StringFormat("Exact broker position identification failed for deal %I64u; attempting the documented fail-safe fallback.",
+                                   result.deal_ticket);
+      logger.Critical("PositionManager", m_last_reason);
+
+      const int fallback_matches = FindFallbackTicket(plan, result, ticket);
+
+      if(fallback_matches != 1)
+      {
+         m_last_reason = StringFormat("Fail-safe fallback matched %d candidate positions for deal %I64u; refusing to attach strategy state by guesswork.",
+                                      fallback_matches,
+                                      result.deal_ticket);
+         logger.Critical("PositionManager", m_last_reason);
+         return false;
+      }
+
+      if(!BindStateToTicket(ticket, plan, result, logger))
+         return false;
+
+      result.position_ticket = ticket;
+      m_last_reason = StringFormat("Trade state bound to ticket %I64u by documented fail-safe fallback; broker-exact identification was unavailable.",
+                                   ticket);
+      logger.Critical("PositionManager", m_last_reason);
+      return false;
+   }
+
+   // True when the last RegisterNewTrade call attached strategy state to a
+   // position, even if it had to use the fail-safe fallback to do so.
+   bool LastRegistrationBoundState()
+   {
+      return m_last_registration_bound_state;
+   }
+
+   bool HasStateForIdentifier(const long identifier)
+   {
+      return FindStateByIdentifier(identifier) >= 0;
+   }
+
+   bool PositionIsLive(const long identifier)
+   {
+      ulong ticket = 0;
+      return FindLiveTicketByIdentifier(identifier, ticket) > 0;
+   }
+
+   int LiveMatchingPositionCount()
+   {
+      return CountMatchingLivePositions();
+   }
+
+   // Every live XSpark position must be represented in managed state, otherwise
+   // exposure exists that XSpark is not protecting deliberately.
+   bool ManagedStateCoversLivePositions(string &reason)
+   {
+      reason = "";
+
+      if(!m_initialized)
+      {
+         reason = "Position manager is not initialized.";
+         return false;
+      }
+
       const int total_positions = PositionsTotal();
-      ulong best_ticket = 0;
-      datetime best_time = 0;
 
       for(int index = 0; index < total_positions; index++)
       {
@@ -529,67 +880,17 @@ public:
          if(ticket == 0 || !PositionSelectByTicket(ticket) || !PositionMatchesInstance())
             continue;
 
-         if(PositionDirection() != plan.direction)
+         const long identifier = PositionGetInteger(POSITION_IDENTIFIER);
+         if(FindStateByTicket(ticket) >= 0 || FindStateByIdentifier(identifier) >= 0)
             continue;
 
-         const datetime open_time = (datetime)PositionGetInteger(POSITION_TIME);
-         if(open_time >= best_time)
-         {
-            best_ticket = ticket;
-            best_time = open_time;
-         }
-      }
-
-      if(best_ticket == 0 || !PositionSelectByTicket(best_ticket))
-      {
-         m_last_reason = "Execution was confirmed but matching live position was not found.";
-         logger.Warn("PositionManager", m_last_reason);
+         reason = StringFormat("Live XSpark position ticket=%I64u identifier=%I64d has no managed trade state.",
+                               ticket,
+                               identifier);
          return false;
       }
 
-      XSparkTradeState state;
-      XSparkResetTradeState(state);
-      state.ticket = best_ticket;
-      state.identifier = PositionGetInteger(POSITION_IDENTIFIER);
-      state.direction = plan.direction;
-      state.entry = PositionGetDouble(POSITION_PRICE_OPEN);
-      state.initial_sl = plan.final_sl;
-      state.initial_tp = plan.final_tp;
-      state.initial_lots = PositionGetDouble(POSITION_VOLUME);
-      state.partial_done = false;
-      state.current_trail_sl = plan.final_sl;
-      state.open_time = (datetime)PositionGetInteger(POSITION_TIME);
-      state.entry_score = plan.score;
-      state.signal_bar_time = plan.signal_bar_time;
-      state.pattern_id = plan.pattern_id;
-      state.pattern_name = plan.pattern_name;
-      state.initial_risk_distance = MathAbs(state.entry - plan.final_sl);
-
-      const int existing = FindStateByTicket(best_ticket);
-      if(existing >= 0)
-         m_states[existing] = state;
-      else
-      {
-         const int size = ArraySize(m_states);
-         ArrayResize(m_states, size + 1);
-         m_states[size] = state;
-      }
-
-      PersistState(state);
-      m_managed_position_count = CountMatchingLivePositions();
-      m_last_reason = "New XSpark trade state registered.";
-
-      logger.Info("PositionManager",
-                  StringFormat("Registered XSpark trade ticket=%I64u identifier=%I64d direction=%s entry=%s SL=%s TP=%s lots=%s score=%.2f pattern=%s",
-                               state.ticket,
-                               state.identifier,
-                               XSparkDirectionName(state.direction),
-                               DoubleToString(state.entry, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                               DoubleToString(state.initial_sl, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                               DoubleToString(state.initial_tp, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                               DoubleToString(state.initial_lots, 2),
-                               state.entry_score,
-                               state.pattern_name));
+      reason = "Managed state covers every live XSpark position.";
       return true;
    }
 
@@ -794,6 +1095,10 @@ public:
          logger.Info("PositionManager", message);
    }
 
+   // Keeps attempting to remove XSpark-owned exposure until none remains, and
+   // never touches another symbol or Magic Number. Broker retries and log
+   // output are paced so a latched killswitch does not emit identical CRITICAL
+   // lines on every tick while still surfacing what is left.
    void FlattenManagedExposure(const string reason,
                                CXSparkLogger &logger,
                                const bool critical = true)
@@ -801,8 +1106,52 @@ public:
       if(!m_initialized)
          return;
 
+      const datetime now = ServerTimeNow();
+      const int remaining_positions = CountMatchingLivePositions();
+      const int remaining_orders = CountMatchingPendingOrders();
+
+      m_flatten_remaining_exposure = remaining_positions + remaining_orders;
+
+      if(m_flatten_remaining_exposure == 0)
+      {
+         if(m_flatten_campaign_reason != "")
+         {
+            LogFlattenResult(logger,
+                             critical,
+                             StringFormat("%s complete: no XSpark exposure remains after %d attempt(s).",
+                                          m_flatten_campaign_reason,
+                                          m_flatten_attempts));
+            ResetFlattenCampaign();
+         }
+
+         return;
+      }
+
+      if(m_flatten_campaign_reason != reason)
+      {
+         ResetFlattenCampaign();
+         m_flatten_campaign_reason = reason;
+         m_flatten_last_log_time = now;
+         LogFlattenResult(logger,
+                          critical,
+                          StringFormat("%s started: %d XSpark position(s) and %d pending order(s) must be removed.",
+                                       reason,
+                                       remaining_positions,
+                                       remaining_orders));
+      }
+      else if(m_flatten_last_attempt_time > 0 &&
+              (long)now - (long)m_flatten_last_attempt_time < XSPARK_FLATTEN_RETRY_INTERVAL_SECONDS)
+      {
+         return;
+      }
+
+      m_flatten_last_attempt_time = now;
+      m_flatten_attempts++;
+
       m_trade.SetExpertMagicNumber(m_magic_number);
       m_trade.SetTypeFillingBySymbol(m_symbol);
+
+      string outcome = "";
 
       for(int index = PositionsTotal() - 1; index >= 0; index--)
       {
@@ -811,17 +1160,12 @@ public:
             continue;
 
          const bool local_result = m_trade.PositionClose(ticket);
-         const long retcode = (long)m_trade.ResultRetcode();
-         const string description = m_trade.ResultRetcodeDescription();
 
-         LogFlattenResult(logger,
-                          critical,
-                          StringFormat("%s close ticket=%I64u local_result=%s retcode=%I64d description=%s",
-                                       reason,
-                                       ticket,
-                                       local_result ? "true" : "false",
-                                       retcode,
-                                       description));
+         outcome += StringFormat("position=%I64u local_result=%s retcode=%I64d description=%s; ",
+                                 ticket,
+                                 local_result ? "true" : "false",
+                                 (long)m_trade.ResultRetcode(),
+                                 m_trade.ResultRetcodeDescription());
       }
 
       for(int order_index = OrdersTotal() - 1; order_index >= 0; order_index--)
@@ -837,20 +1181,61 @@ public:
             continue;
 
          const bool local_result = m_trade.OrderDelete(order_ticket);
-         const long retcode = (long)m_trade.ResultRetcode();
-         const string description = m_trade.ResultRetcodeDescription();
 
-         LogFlattenResult(logger,
-                          critical,
-                          StringFormat("%s delete pending order=%I64u local_result=%s retcode=%I64d description=%s",
-                                       reason,
-                                       order_ticket,
-                                       local_result ? "true" : "false",
-                                       retcode,
-                                       description));
+         outcome += StringFormat("order=%I64u local_result=%s retcode=%I64d description=%s; ",
+                                 order_ticket,
+                                 local_result ? "true" : "false",
+                                 (long)m_trade.ResultRetcode(),
+                                 m_trade.ResultRetcodeDescription());
       }
 
       Reconcile(logger);
+
+      const int after_positions = CountMatchingLivePositions();
+      const int after_orders = CountMatchingPendingOrders();
+      m_flatten_remaining_exposure = after_positions + after_orders;
+
+      if(m_flatten_remaining_exposure == 0)
+      {
+         LogFlattenResult(logger,
+                          critical,
+                          StringFormat("%s complete after %d attempt(s): %s",
+                                       reason,
+                                       m_flatten_attempts,
+                                       outcome));
+         ResetFlattenCampaign();
+         return;
+      }
+
+      const string signature = StringFormat("%s|%d|%d", outcome, after_positions, after_orders);
+      const bool outcome_changed = signature != m_flatten_last_signature;
+      const bool log_interval_elapsed = m_flatten_last_log_time == 0 ||
+                                        (long)now - (long)m_flatten_last_log_time >= XSPARK_FLATTEN_LOG_INTERVAL_SECONDS;
+
+      if(outcome_changed || log_interval_elapsed)
+      {
+         LogFlattenResult(logger,
+                          critical,
+                          StringFormat("%s attempt %d still leaves %d XSpark position(s) and %d pending order(s); retrying. Last results: %s",
+                                       reason,
+                                       m_flatten_attempts,
+                                       after_positions,
+                                       after_orders,
+                                       outcome));
+         m_flatten_last_log_time = now;
+      }
+
+      m_flatten_last_signature = signature;
+   }
+
+   int RemainingFlattenExposure()
+   {
+      return m_flatten_remaining_exposure;
+   }
+
+   bool FlattenInProgress()
+   {
+      return m_flatten_campaign_reason != "";
    }
 
    int CountEntryDealsSince(const datetime from_time, const datetime to_time)

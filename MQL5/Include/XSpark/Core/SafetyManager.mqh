@@ -1,6 +1,7 @@
 #ifndef XSPARK_CORE_SAFETY_MANAGER_MQH
 #define XSPARK_CORE_SAFETY_MANAGER_MQH
 
+#include <XSpark/Core/ExecutionMath.mqh>
 #include <XSpark/Core/Logger.mqh>
 #include <XSpark/Core/StateStore.mqh>
 #include <XSpark/Core/SymbolMath.mqh>
@@ -24,6 +25,12 @@ private:
    double m_runtime_high_water_equity;
    bool   m_total_dd_killswitch_latched;
    double m_total_dd_pct;
+
+   int    m_max_quote_age_seconds;
+   long   m_last_quote_age_seconds;
+
+   bool   m_state_recovery_latched;
+   string m_state_recovery_reason;
 
    double m_max_daily_dd_pct;
    bool   m_daily_halt_latched;
@@ -76,6 +83,35 @@ private:
       return true;
    }
 
+   // Production safety addition: a frozen or invalid feed must never be used to
+   // open new exposure. It never blocks management of existing positions.
+   bool QuoteIsFresh()
+   {
+      m_last_quote_age_seconds = 0;
+
+      MqlTick tick;
+      if(!SymbolInfoTick(m_symbol, tick))
+      {
+         m_last_reason = "Current tick is unavailable; new exposure is blocked.";
+         return false;
+      }
+
+      const datetime server_time = TimeTradeServer() == 0 ? TimeCurrent() : TimeTradeServer();
+      string quote_reason = "";
+
+      if(!XSparkQuoteAgeIsAcceptable(tick.time,
+                                     server_time,
+                                     m_max_quote_age_seconds,
+                                     m_last_quote_age_seconds,
+                                     quote_reason))
+      {
+         m_last_reason = "Stale quote: " + quote_reason;
+         return false;
+      }
+
+      return true;
+   }
+
 public:
    CXSparkSafetyManager()
    {
@@ -93,6 +129,10 @@ public:
       m_runtime_high_water_equity = 0.0;
       m_total_dd_killswitch_latched = false;
       m_total_dd_pct = 0.0;
+      m_max_quote_age_seconds = 15;
+      m_last_quote_age_seconds = 0;
+      m_state_recovery_latched = false;
+      m_state_recovery_reason = "";
       m_max_daily_dd_pct = 5.0;
       m_daily_halt_latched = false;
       m_daily_peak_equity = 0.0;
@@ -111,6 +151,7 @@ public:
                    const bool use_total_dd_killswitch,
                    const double max_total_dd_pct,
                    const double max_daily_dd_pct,
+                   const int max_quote_age_seconds,
                    CXSparkLogger &logger)
    {
       if(symbol == "" || magic_number == 0)
@@ -125,6 +166,12 @@ public:
          return false;
       }
 
+      if(max_quote_age_seconds <= 0)
+      {
+         m_last_reason = "Maximum quote age must be at least 1 second.";
+         return false;
+      }
+
       m_initialized = true;
       m_symbol = symbol;
       m_magic_number = magic_number;
@@ -136,6 +183,10 @@ public:
       m_use_total_dd_killswitch = use_total_dd_killswitch;
       m_max_total_dd_pct = max_total_dd_pct;
       m_max_daily_dd_pct = max_daily_dd_pct;
+      m_max_quote_age_seconds = max_quote_age_seconds;
+      m_last_quote_age_seconds = 0;
+      m_state_recovery_latched = false;
+      m_state_recovery_reason = "";
       m_runtime_high_water_equity = AccountInfoDouble(ACCOUNT_EQUITY);
       m_total_dd_killswitch_latched = false;
       m_total_dd_pct = 0.0;
@@ -268,6 +319,12 @@ public:
          return false;
       }
 
+      if(m_state_recovery_latched)
+      {
+         m_last_reason = "XSpark state recovery is active: " + m_state_recovery_reason;
+         return false;
+      }
+
       if(!TerminalTradeStateIsValid())
          return false;
 
@@ -290,6 +347,9 @@ public:
          m_last_reason = "Daily DD halt is latched for the current server day.";
          return false;
       }
+
+      if(!QuoteIsFresh())
+         return false;
 
       if(m_use_spread_filter)
       {
@@ -324,6 +384,52 @@ public:
 
       m_last_reason = "Safety gates allow a new entry.";
       return true;
+   }
+
+   // Broker execution succeeded but XSpark could not represent the resulting
+   // position in managed state. New entries stay blocked until reconciliation
+   // proves the state is consistent again.
+   void LatchStateRecovery(const string reason, CXSparkLogger &logger)
+   {
+      m_state_recovery_reason = reason;
+
+      if(m_state_recovery_latched)
+         return;
+
+      m_state_recovery_latched = true;
+      logger.Critical("SafetyManager",
+                      "State recovery latched; new entries are blocked: " + reason);
+   }
+
+   void ClearStateRecovery(CXSparkLogger &logger)
+   {
+      if(!m_state_recovery_latched)
+         return;
+
+      m_state_recovery_latched = false;
+      m_state_recovery_reason = "";
+      logger.Warn("SafetyManager",
+                  "State recovery cleared; XSpark managed state is consistent with broker state again.");
+   }
+
+   bool StateRecoveryLatched()
+   {
+      return m_state_recovery_latched;
+   }
+
+   string StateRecoveryReason()
+   {
+      return m_state_recovery_reason;
+   }
+
+   int MaxQuoteAgeSeconds()
+   {
+      return m_max_quote_age_seconds;
+   }
+
+   long LastQuoteAgeSeconds()
+   {
+      return m_last_quote_age_seconds;
    }
 
    bool TradingEnabled()
@@ -381,9 +487,10 @@ public:
       - daily loss halt
       - total drawdown killswitch latch
       - XSpark-managed position count limit
+      - stale/invalid quote rejection for new exposure
+      - state-recovery latch after a confirmed entry that could not be registered
 
       Future checks:
-      - stale quote detection
       - market/session restrictions outside strategy score semantics
    */
 };

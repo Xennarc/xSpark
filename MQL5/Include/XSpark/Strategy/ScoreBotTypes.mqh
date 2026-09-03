@@ -107,16 +107,31 @@ struct XSparkTradePlan
    string                 pattern_name;
 };
 
+// Broker-derived execution facts. Everything MT5 exposes about a confirmed
+// entry is captured here so downstream state registration never has to guess
+// which position was created.
 struct XSparkExecutionResult
 {
-   bool   confirmed;
-   ulong  order_ticket;
-   ulong  deal_ticket;
-   ulong  position_ticket;
-   long   retcode;
-   string retcode_description;
-   double price;
-   double volume;
+   bool     confirmed;
+   ulong    order_ticket;
+   ulong    deal_ticket;
+   ulong    position_ticket;             // live broker position ticket bound to the entry deal
+   long     position_id;                 // DEAL_POSITION_ID of the entry deal
+   bool     position_id_exact;           // true when position_id came from the broker deal record
+   long     retcode;
+   string   retcode_description;
+   double   price;                       // trade-server result price
+   double   volume;                      // trade-server result volume
+   double   fill_price;                  // DEAL_PRICE of the entry deal when available
+   double   fill_volume;                 // DEAL_VOLUME of the entry deal when available
+   datetime fill_time;                   // DEAL_TIME of the entry deal when available
+   datetime submit_time;                 // server time captured immediately before the order send
+   double   submitted_entry_reference;   // execution-time entry reference used for sizing
+   double   submitted_sl;
+   double   submitted_tp;
+   double   submitted_volume;
+   double   actual_risk_distance;        // execution-time stop distance the volume was sized from
+   double   actual_rr;                   // execution-time reward ratio the target was derived from
 };
 
 string XSparkDirectionName(const EXSparkSignalDirection direction)
@@ -232,10 +247,22 @@ void XSparkResetExecutionResult(XSparkExecutionResult &result)
    result.order_ticket = 0;
    result.deal_ticket = 0;
    result.position_ticket = 0;
+   result.position_id = 0;
+   result.position_id_exact = false;
    result.retcode = 0;
    result.retcode_description = "";
    result.price = 0.0;
    result.volume = 0.0;
+   result.fill_price = 0.0;
+   result.fill_volume = 0.0;
+   result.fill_time = 0;
+   result.submit_time = 0;
+   result.submitted_entry_reference = 0.0;
+   result.submitted_sl = 0.0;
+   result.submitted_tp = 0.0;
+   result.submitted_volume = 0.0;
+   result.actual_risk_distance = 0.0;
+   result.actual_rr = 0.0;
 }
 
 #endif
