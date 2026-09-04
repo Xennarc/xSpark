@@ -73,15 +73,28 @@ public:
          EnsureLine(index);
    }
 
-   void Deinitialize()
+   // remove_trade_annotations must be false for a de-init that will be followed by a
+   // re-init on the same chart (parameter change, recompile, template, terminal
+   // restart). AnnotateEntry only ever runs at fill time, so deleting those objects
+   // there would permanently erase the entry/SL/TP markers of positions that are
+   // still open and still being managed.
+   void Deinitialize(const bool remove_trade_annotations)
    {
       for(int index = ObjectsTotal(0) - 1; index >= 0; index--)
       {
          const string name = ObjectName(0, index);
+
          if(StringFind(name, m_dashboard_prefix) == 0)
+         {
+            ObjectDelete(0, name);
+            continue;
+         }
+
+         if(remove_trade_annotations && StringFind(name, m_trade_prefix) == 0)
             ObjectDelete(0, name);
       }
 
+      ChartRedraw(0);
       m_initialized = false;
    }
 
@@ -99,7 +112,8 @@ public:
       if(!m_initialized)
          Initialize();
 
-      const color status_color = status == "KILLSWITCH" || status == "DD HALT" || status == "STATE RECOVERY" ? clrTomato :
+      const color status_color = status == "KILLSWITCH" || status == "DD HALT" || status == "STATE RECOVERY" ||
+                                 status == "UNMANAGED EXPOSURE" ? clrTomato :
                                  status == "ANALYSIS ONLY" || status == "TRADING DISABLED" ? clrGold :
                                  status == "SPREAD BLOCKED" || status == "ATR BLOCKED" ||
                                  status == "SESSION BLOCKED" || status == "STALE QUOTE" ||
@@ -155,6 +169,10 @@ public:
                                safety.StateRecoveryLatched() ? "ON" : "OFF",
                                safety.LastQuoteAgeSeconds(),
                                safety.MaxQuoteAgeSeconds()));
+
+      // Object property changes are queued; without this the timer-driven refresh is
+      // not repainted on a chart that is receiving no ticks.
+      ChartRedraw(0);
    }
 
    void AnnotateEntry(XSparkTradePlan &plan, XSparkExecutionResult &result)
@@ -162,7 +180,7 @@ public:
       const string base = StringFormat("%s%I64u_%I64d",
                                        m_trade_prefix,
                                        result.deal_ticket,
-                                       plan.signal_bar_time);
+                                       (long)plan.signal_bar_time);
       const int digits = (int)SymbolInfoInteger(plan.symbol, SYMBOL_DIGITS);
       const color entry_color = plan.direction == XSPARK_SIGNAL_BUY ? clrLimeGreen : clrTomato;
       const int arrow_code = plan.direction == XSPARK_SIGNAL_BUY ? 233 : 234;
@@ -195,6 +213,8 @@ public:
       ObjectSetInteger(0, base + "_TP", OBJPROP_COLOR, clrLimeGreen);
       ObjectSetInteger(0, base + "_TP", OBJPROP_STYLE, STYLE_DOT);
       ObjectSetString(0, base + "_TP", OBJPROP_TEXT, "TP " + DoubleToString(plan.final_tp, digits));
+
+      ChartRedraw(0);
    }
 };
 

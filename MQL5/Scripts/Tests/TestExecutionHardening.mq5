@@ -1,4 +1,3 @@
-#property strict
 #property script_show_inputs
 
 // Deterministic tests for the execution / position-state hardening helpers.

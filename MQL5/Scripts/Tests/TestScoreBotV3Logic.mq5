@@ -1,4 +1,3 @@
-#property strict
 #property script_show_inputs
 
 #include <XSpark/Core/SymbolMath.mqh>

@@ -40,7 +40,9 @@ private:
 
    bool IndicatorValueIsReady(const double value)
    {
-      return value != EMPTY_VALUE && value == value;
+      // MathIsValidNumber rejects NaN and +/-INF; the previous value==value idiom
+      // only caught NaN and let an infinity through into the scoring maths.
+      return MathIsValidNumber(value) && value != EMPTY_VALUE;
    }
 
 public:
@@ -132,11 +134,12 @@ public:
          return false;
       }
 
-      if(!HandleIsReady(m_ema21_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS) ||
-         !HandleIsReady(m_ema50_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS) ||
-         !HandleIsReady(m_rsi14_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS) ||
-         !HandleIsReady(m_atr14_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS) ||
-         !HandleIsReady(m_atr50_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS) ||
+      // Copying starts at shift 1, so N closed values need N+1 calculated bars.
+      if(!HandleIsReady(m_ema21_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS + 1) ||
+         !HandleIsReady(m_ema50_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS + 1) ||
+         !HandleIsReady(m_rsi14_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS + 1) ||
+         !HandleIsReady(m_atr14_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS + 1) ||
+         !HandleIsReady(m_atr50_m15_handle, XSPARK_SCOREBOT_CLOSED_M15_BARS + 1) ||
          !HandleIsReady(m_ema50_h1_handle, 2) ||
          !HandleIsReady(m_rsi14_h1_handle, 2))
       {

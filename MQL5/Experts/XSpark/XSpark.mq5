@@ -1,4 +1,3 @@
-#property strict
 #property version     "1.00"
 #property description "XSpark Expert Advisor with ScoreBot_v3 MAX_SHARPE strategy."
 
@@ -78,6 +77,7 @@ CXSparkPositionManager g_position_manager;
 CXSparkScoreBotV3      g_strategy;
 CXSparkDashboard       g_dashboard;
 
+bool     g_state_purged = false;
 datetime g_current_m15_bar_time = 0;
 datetime g_last_evaluated_signal_bar_time = 0;
 double   g_latest_closed_atr14 = 0.0;
@@ -144,6 +144,16 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   // The whole position model is per-trade: independent tickets, per-position stops,
+   // partial closes and a per-position state store keyed on POSITION_IDENTIFIER. A
+   // netting account merges same-symbol trades into one position with a blended
+   // entry, which silently defeats every one of those. Refuse rather than mis-manage.
+   if((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   {
+      g_logger.Critical("EA", "XSpark requires a hedging account; netting merges positions and defeats per-position management.");
+      return false;
+   }
+
    if(InpMaxOpenTrades != 1 && InpMaxOpenTrades != 2)
    {
       g_logger.Critical("EA", "InpMaxOpenTrades must be 1 or 2.");
@@ -154,6 +164,26 @@ bool XSparkValidateInputs()
    {
       g_logger.Critical("EA", "Strategy score thresholds must be non-negative.");
       return false;
+   }
+
+   // InpLongScoreExtra raises the BUY threshold only, so only InpMinScore on its own
+   // can put both directions out of reach. Raising the long threshold past the
+   // ceiling is a legitimate short-only configuration, not an error.
+   if(InpMinScore > XSPARK_SCOREBOT_MAX_SCORE)
+   {
+      g_logger.Critical("EA",
+                        StringFormat("InpMinScore %.2f exceeds the maximum reachable score %.2f; no trade could ever qualify.",
+                                     InpMinScore,
+                                     XSPARK_SCOREBOT_MAX_SCORE));
+      return false;
+   }
+
+   if(InpMinScore + InpLongScoreExtra > XSPARK_SCOREBOT_MAX_SCORE)
+   {
+      g_logger.Warn("EA",
+                    StringFormat("InpMinScore + InpLongScoreExtra (%.2f) exceeds the maximum reachable score %.2f; long entries can never qualify and XSpark will trade short only.",
+                                 InpMinScore + InpLongScoreExtra,
+                                 XSPARK_SCOREBOT_MAX_SCORE));
    }
 
    if(InpRSILongMin < 0 || InpRSILongMax > 100 || InpRSILongMin > InpRSILongMax ||
@@ -232,6 +262,22 @@ string XSparkStatusFromSafety()
 void XSparkUpdateDashboard()
 {
    const string mode = InpEnableTrading ? "TRADING" : "ANALYSIS ONLY";
+
+   // The unmanaged-exposure alarm is DERIVED here rather than stored in g_status.
+   // Stored, it latches (nothing clears it once the position closes) and every
+   // OnTick early return bypasses it. Derived, it does neither: it is recomputed
+   // from the live count on every render and clears with the condition.
+   string dashboard_status = g_status;
+   string dashboard_reason = g_last_block_reason;
+
+   const int unmanaged = g_position_manager.UnmanagedPositionCount();
+   if(unmanaged > 0 && !g_safety_manager.TotalDDKillSwitchLatched())
+   {
+      dashboard_status = "UNMANAGED EXPOSURE";
+      dashboard_reason = StringFormat("%d of %d XSpark position(s) have no trustworthy entry risk; partial, break-even and trailing are disabled for them.",
+                                      unmanaged,
+                                      g_position_manager.ManagedPositionCount());
+   }
    g_dashboard.Update(g_last_report,
                       g_safety_manager,
                       AccountInfoDouble(ACCOUNT_EQUITY),
@@ -240,8 +286,8 @@ void XSparkUpdateDashboard()
                       g_position_manager.ManagedPositionCount(),
                       InpMaxOpenTrades,
                       mode,
-                      g_status,
-                      g_last_block_reason);
+                      dashboard_status,
+                      dashboard_reason);
 }
 
 void XSparkVerboseBlock(const string component, const string reason)
@@ -877,7 +923,13 @@ void OnDeinit(const int reason)
    EventKillTimer();
    g_indicator_cache.Deinitialize();
    g_strategy.Deinitialize();
-   g_dashboard.Deinitialize();
+   // REASON_CLOSE is a terminal shutdown, not a teardown: the EA comes back on the
+   // same chart with the same positions still open, and AnnotateEntry only ever runs
+   // at fill time, so erasing the markers here would lose them permanently.
+   const bool teardown = reason == REASON_REMOVE ||
+                         reason == REASON_CHARTCLOSE ||
+                         reason == REASON_PROGRAM;
+   g_dashboard.Deinitialize(teardown);
    g_logger.Info("EA", StringFormat("Shutdown reason=%s (%d)",
                                     XSparkDeinitReasonToString(reason),
                                     reason));
@@ -937,6 +989,16 @@ void OnTick()
                                       InpWeekendCloseHour,
                                       InpWeekendCloseMinute,
                                       g_logger);
+
+   // First tick with a live quote and a reconciled position table: the trade context
+   // is synchronised, so PositionsTotal() is now trustworthy enough to sweep on. This
+   // deliberately does NOT run in OnInit, where an unsynchronised terminal reports
+   // zero positions and every persisted key would look orphaned.
+   if(!g_state_purged && TerminalInfoInteger(TERMINAL_CONNECTED) != 0)
+   {
+      g_position_manager.PurgeOrphanedState(g_logger);
+      g_state_purged = true;
+   }
 
    // Protective management above always runs; only new exposure is withheld
    // while managed state and broker state disagree.

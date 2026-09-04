@@ -29,6 +29,7 @@ private:
    string m_symbol;
    bool   m_use_stop_level_validation;
    int    m_managed_position_count;
+   int    m_unmanaged_position_count;
    string m_last_reason;
    bool   m_last_registration_bound_state;
    bool   m_last_registration_position_closed;
@@ -106,23 +107,42 @@ private:
       return StringFormat("p.%I64d.%s", identifier, field_name);
    }
 
-   void PersistState(XSparkTradeState &state)
+   // Returns false if any field failed to persist. A silent failure here loses
+   // partial_done and lets a completed partial close re-fire after a restart.
+   bool PersistState(XSparkTradeState &state)
    {
       if(state.identifier == 0)
-         return;
+         return false;
 
-      m_store.Set(PositionStateKey(state.identifier, "d"), (double)state.direction);
-      m_store.Set(PositionStateKey(state.identifier, "e"), state.entry);
-      m_store.Set(PositionStateKey(state.identifier, "sl"), state.initial_sl);
-      m_store.Set(PositionStateKey(state.identifier, "tp"), state.initial_tp);
-      m_store.Set(PositionStateKey(state.identifier, "l"), state.initial_lots);
-      m_store.Set(PositionStateKey(state.identifier, "pd"), state.partial_done ? 1.0 : 0.0);
-      m_store.Set(PositionStateKey(state.identifier, "ts"), state.current_trail_sl);
-      m_store.Set(PositionStateKey(state.identifier, "ot"), (double)state.open_time);
-      m_store.Set(PositionStateKey(state.identifier, "sc"), state.entry_score);
-      m_store.Set(PositionStateKey(state.identifier, "bt"), (double)state.signal_bar_time);
-      m_store.Set(PositionStateKey(state.identifier, "pi"), (double)state.pattern_id);
-      m_store.Set(PositionStateKey(state.identifier, "rd"), state.initial_risk_distance);
+      bool ok = true;
+
+      ok = m_store.Set(PositionStateKey(state.identifier, "d"), (double)state.direction) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "e"), state.entry) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "sl"), state.initial_sl) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "tp"), state.initial_tp) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "l"), state.initial_lots) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "pd"), state.partial_done ? 1.0 : 0.0) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "ts"), state.current_trail_sl) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "ot"), (double)state.open_time) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "sc"), state.entry_score) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "bt"), (double)state.signal_bar_time) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "pi"), (double)state.pattern_id) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "rd"), state.initial_risk_distance) && ok;
+
+      if(!ok)
+         m_last_reason = "Failed to persist XSpark position state to terminal global variables.";
+
+      return ok;
+   }
+
+   void PersistStateChecked(XSparkTradeState &state, CXSparkLogger &logger)
+   {
+      if(!PersistState(state))
+      {
+         logger.Error("PositionManager",
+                      StringFormat("Failed to persist state for identifier=%I64d; management state may be lost on restart.",
+                                   state.identifier));
+      }
    }
 
    bool LoadPersistedState(XSparkTradeState &state)
@@ -133,14 +153,25 @@ private:
       if(!m_store.Has(PositionStateKey(state.identifier, "l")))
          return false;
 
-      state.direction = (EXSparkSignalDirection)(int)m_store.Get(PositionStateKey(state.identifier, "d"), (double)state.direction);
-      state.entry = m_store.Get(PositionStateKey(state.identifier, "e"), state.entry);
+      // AGENTS.md rule 22: the broker is the source of truth for live exposure, so
+      // direction, entry, open time and current volume are NEVER restored from
+      // storage - the caller reads them from the live position. Only the facts MT5
+      // cannot report come back, and a record that disagrees is rejected outright.
+      const EXSparkSignalDirection stored_direction =
+         (EXSparkSignalDirection)(int)m_store.Get(PositionStateKey(state.identifier, "d"), (double)state.direction);
+      const double stored_entry = m_store.Get(PositionStateKey(state.identifier, "e"), state.entry);
+
+      if(stored_direction != state.direction ||
+         MathAbs(stored_entry - state.entry) > XSparkCanonicalPointsToPrice(1.0))
+      {
+         return false;
+      }
+
       state.initial_sl = m_store.Get(PositionStateKey(state.identifier, "sl"), state.initial_sl);
       state.initial_tp = m_store.Get(PositionStateKey(state.identifier, "tp"), state.initial_tp);
       state.initial_lots = m_store.Get(PositionStateKey(state.identifier, "l"), state.initial_lots);
       state.partial_done = m_store.Get(PositionStateKey(state.identifier, "pd"), 0.0) >= 0.5;
       state.current_trail_sl = m_store.Get(PositionStateKey(state.identifier, "ts"), state.current_trail_sl);
-      state.open_time = (datetime)m_store.Get(PositionStateKey(state.identifier, "ot"), (double)state.open_time);
       state.entry_score = m_store.Get(PositionStateKey(state.identifier, "sc"), state.entry_score);
       state.signal_bar_time = (datetime)m_store.Get(PositionStateKey(state.identifier, "bt"), (double)state.signal_bar_time);
       state.pattern_id = (EXSparkScoreBotPatternId)(int)m_store.Get(PositionStateKey(state.identifier, "pi"), (double)state.pattern_id);
@@ -219,7 +250,10 @@ private:
       state.signal_bar_time = 0;
       state.pattern_id = XSPARK_PATTERN_NONE;
       state.pattern_name = XSparkPatternNameFromId(state.pattern_id);
-      state.initial_risk_distance = MathAbs(state.entry - state.initial_sl);
+      // Never derive the original risk from the LIVE stop: on an adopted position it
+      // may already be trailed or at break-even, where MathAbs(entry - sl) is exactly
+      // zero. Only a persisted record is trustworthy here.
+      state.initial_risk_distance = 0.0;
 
       const int by_ticket = FindStateByTicket(ticket);
       if(by_ticket >= 0)
@@ -235,12 +269,33 @@ private:
          return true;
       }
 
-      LoadPersistedState(state);
+      const bool restored = LoadPersistedState(state);
+
+      if(!restored)
+      {
+         logger.Warn("PositionManager",
+                     StringFormat("Adopted position ticket=%I64u identifier=%I64d has no matching persisted state; "
+                                  "partial, break-even and trailing management are disabled for it.",
+                                  ticket,
+                                  state.identifier));
+      }
 
       const int size = ArraySize(m_states);
-      ArrayResize(m_states, size + 1);
+      if(ArrayResize(m_states, size + 1) != size + 1)
+      {
+         m_last_reason = "Unable to grow the XSpark position state array.";
+         logger.Error("PositionManager", m_last_reason);
+         return false;
+      }
+
       m_states[size] = state;
-      PersistState(m_states[size]);
+
+      // Persist ONLY when a record was restored. Writing this degraded state back
+      // would overwrite the sole recoverable copy of the original risk with zeros,
+      // and would then match its own live values on the next restart - turning a
+      // one-off load failure into a permanently and invisibly unmanaged position.
+      if(restored)
+         PersistStateChecked(m_states[size], logger);
 
       logger.Info("PositionManager",
                   StringFormat("Reconciled XSpark position ticket=%I64u identifier=%I64d direction=%s volume=%s entry=%s",
@@ -250,6 +305,41 @@ private:
                                DoubleToString(state.initial_lots, 2),
                                DoubleToString(state.entry, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS))));
       return true;
+   }
+
+   // A state with no trustworthy original risk is counted but deliberately not
+   // managed. Surfacing the count keeps that visible for as long as it lasts.
+   int CountUnmanagedStates()
+   {
+      int count = 0;
+
+      for(int index = 0; index < ArraySize(m_states); index++)
+      {
+         if(m_states[index].initial_risk_distance <= 0.0)
+            count++;
+      }
+
+      return count;
+   }
+
+   bool LiveIdentifierExists(const long identifier)
+   {
+      if(identifier == 0)
+         return false;
+
+      const int total = PositionsTotal();
+
+      for(int index = 0; index < total; index++)
+      {
+         const ulong ticket = PositionGetTicket(index);
+         if(ticket == 0 || !PositionSelectByTicket(ticket) || !PositionMatchesInstance())
+            continue;
+
+         if(PositionGetInteger(POSITION_IDENTIFIER) == identifier)
+            return true;
+      }
+
+      return false;
    }
 
    int CountMatchingLivePositions()
@@ -495,12 +585,19 @@ private:
       else
       {
          const int size = ArraySize(m_states);
-         ArrayResize(m_states, size + 1);
+         if(ArrayResize(m_states, size + 1) != size + 1)
+         {
+            m_last_reason = "Unable to grow the XSpark position state array for the new trade.";
+            logger.Critical("PositionManager", m_last_reason);
+            return false;
+         }
+
          m_states[size] = state;
       }
 
-      PersistState(state);
+      PersistStateChecked(state, logger);
       m_managed_position_count = CountMatchingLivePositions();
+      m_unmanaged_position_count = CountUnmanagedStates();
       m_last_registration_bound_state = true;
 
       logger.Info("PositionManager",
@@ -725,6 +822,12 @@ private:
       if(close_volume < volume_min || close_volume >= current_volume)
          return 0.0;
 
+      // The broker rejects a partial close that would leave a residual below the
+      // minimum volume, so treat that as "no legal partial" rather than sending it.
+      const double residual = XSparkNormalizeVolumeDown(current_volume - close_volume, volume_step);
+      if(residual < volume_min)
+         return 0.0;
+
       return close_volume;
    }
 
@@ -799,6 +902,7 @@ public:
       m_symbol = "";
       m_use_stop_level_validation = true;
       m_managed_position_count = 0;
+      m_unmanaged_position_count = 0;
       m_last_reason = "Position manager is not initialized.";
       m_last_registration_bound_state = false;
       m_last_registration_position_closed = false;
@@ -821,6 +925,7 @@ public:
       m_magic_number = magic_number;
       m_use_stop_level_validation = use_stop_level_validation;
       m_managed_position_count = 0;
+      m_unmanaged_position_count = 0;
       m_last_registration_bound_state = false;
       m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
@@ -856,6 +961,16 @@ public:
             continue;
 
          AddOrUpdateSelectedPosition(ticket, logger);
+      }
+
+      // The prune below reads PositionsTotal() to decide a state is dead, then deletes
+      // its persisted record. On a disconnected terminal that call reports 0 and every
+      // managed position looks closed, so the records needed to keep managing them
+      // would be destroyed. Adopt-only until the terminal is back.
+      if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0)
+      {
+         m_last_reason = "Terminal disconnected; adopted live positions but skipped state pruning.";
+         return true;
       }
 
       for(int state_index = ArraySize(m_states) - 1; state_index >= 0; state_index--)
@@ -895,7 +1010,13 @@ public:
                                         m_states[state_index].ticket,
                                         matched_ticket));
                m_states[state_index].ticket = matched_ticket;
-               PersistState(m_states[state_index]);
+
+               // Only re-persist a row carrying a trustworthy original risk. A row
+               // adopted without a usable record holds rd=0, and writing that back
+               // would overwrite whatever intact record still exists.
+               if(m_states[state_index].initial_risk_distance > 0.0)
+                  PersistStateChecked(m_states[state_index], logger);
+
                still_live = true;
             }
             else if(match_count > 1)
@@ -916,6 +1037,7 @@ public:
       }
 
       m_managed_position_count = CountMatchingLivePositions();
+      m_unmanaged_position_count = CountUnmanagedStates();
 
       // Exposure can also disappear through a broker-side TP or SL while a
       // flatten campaign is open. Close the campaign here so it cannot absorb
@@ -985,6 +1107,7 @@ public:
                                                DoubleToString(closed_profit, 2));
                   logger.Warn("PositionManager", m_last_reason);
                   m_managed_position_count = CountMatchingLivePositions();
+      m_unmanaged_position_count = CountUnmanagedStates();
                   return false;
                }
 
@@ -1155,35 +1278,70 @@ public:
 
       RepairMissingProtection(server_time, logger);
 
-      for(int index = 0; index < ArraySize(m_states); index++)
+      // Snapshot the identifiers first. Reconcile() runs from inside this loop and
+      // can append, remove and compact m_states; a positional cursor over a mutating
+      // array silently skips whichever record shifts down into the current slot,
+      // leaving a live position unmanaged for that tick.
+      long  identifiers[];
+      ulong tickets[];
+      const int state_count = ArraySize(m_states);
+
+      if(state_count <= 0 ||
+         ArrayResize(identifiers, state_count) != state_count ||
+         ArrayResize(tickets, state_count) != state_count)
       {
-         XSparkTradeState state = m_states[index];
-         if(!PositionSelectByTicket(state.ticket) || !PositionMatchesInstance())
+         return;
+      }
+
+      for(int snapshot = 0; snapshot < state_count; snapshot++)
+      {
+         identifiers[snapshot] = m_states[snapshot].identifier;
+         tickets[snapshot] = m_states[snapshot].ticket;
+      }
+
+      const int digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+
+      for(int snapshot = 0; snapshot < state_count; snapshot++)
+      {
+         // Resolve by identifier, which survives a broker ticket change, and fall
+         // back to the ticket so a state with no identifier is still managed rather
+         // than silently skipped.
+         int index = FindStateByIdentifier(identifiers[snapshot]);
+         if(index < 0)
+            index = FindStateByTicket(tickets[snapshot]);
+         if(index < 0)
             continue;
 
+         const ulong ticket = m_states[index].ticket;
+         if(!PositionSelectByTicket(ticket) || !PositionMatchesInstance())
+            continue;
+
+         const EXSparkSignalDirection direction = m_states[index].direction;
+         const double entry = m_states[index].entry;
          const double current_volume = PositionGetDouble(POSITION_VOLUME);
          const double current_tp = PositionGetDouble(POSITION_TP);
-         const double risk_distance = state.initial_risk_distance > 0.0 ?
-                                      state.initial_risk_distance :
-                                      MathAbs(state.entry - state.initial_sl);
 
+         // Only a recorded original risk is trustworthy. Falling back to
+         // MathAbs(entry - initial_sl) would measure an already-trailed stop as if
+         // it were the entry risk and fire the partial at the wrong price.
+         const double risk_distance = m_states[index].initial_risk_distance;
          if(risk_distance <= 0.0)
             continue;
 
-         const double exit_side_price = state.direction == XSPARK_SIGNAL_BUY ? bid : ask;
+         const double exit_side_price = direction == XSPARK_SIGNAL_BUY ? bid : ask;
 
-         if(!state.partial_done)
+         if(!m_states[index].partial_done)
          {
             bool partial_triggered = false;
 
-            if(state.direction == XSPARK_SIGNAL_BUY)
-               partial_triggered = exit_side_price >= state.entry + partial_tp_ratio * risk_distance;
-            else if(state.direction == XSPARK_SIGNAL_SELL)
-               partial_triggered = exit_side_price <= state.entry - partial_tp_ratio * risk_distance;
+            if(direction == XSPARK_SIGNAL_BUY)
+               partial_triggered = exit_side_price >= entry + partial_tp_ratio * risk_distance;
+            else if(direction == XSPARK_SIGNAL_SELL)
+               partial_triggered = exit_side_price <= entry - partial_tp_ratio * risk_distance;
 
             if(partial_triggered)
             {
-               const double close_volume = LegalPartialCloseVolume(state.initial_lots,
+               const double close_volume = LegalPartialCloseVolume(m_states[index].initial_lots,
                                                                    current_volume,
                                                                    partial_close_pct);
 
@@ -1191,26 +1349,38 @@ public:
                {
                   logger.Info("PositionManager",
                               StringFormat("Partial trigger ticket=%I64u trigger_price=%s current_volume=%s close_volume=%s",
-                                           state.ticket,
-                                           DoubleToString(exit_side_price, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                                           DoubleToString(current_volume, 2),
-                                           DoubleToString(close_volume, 2)));
+                                           ticket,
+                                           DoubleToString(exit_side_price, digits),
+                                           DoubleToString(current_volume, VolumeDigits()),
+                                           DoubleToString(close_volume, VolumeDigits())));
 
-                  if(ClosePartial(state.ticket, close_volume, logger))
+                  if(ClosePartial(ticket, close_volume, logger))
                   {
                      Reconcile(logger);
 
-                     int active_index = FindStateByIdentifier(state.identifier);
+                     int active_index = FindStateByIdentifier(identifiers[snapshot]);
                      if(active_index < 0)
-                        active_index = FindStateByTicket(state.ticket);
+                        active_index = FindStateByTicket(ticket);
+                     if(active_index < 0)
+                        active_index = FindStateByTicket(tickets[snapshot]);
 
-                     if(active_index >= 0 &&
-                        PositionSelectByTicket(m_states[active_index].ticket) &&
-                        PositionMatchesInstance())
+                     if(active_index < 0)
                      {
-                        m_states[active_index].partial_done = true;
-                        PersistState(m_states[active_index]);
+                        logger.Error("PositionManager",
+                                     StringFormat("Partial close confirmed for identifier=%I64d but its state row vanished; "
+                                                  "partial_done was not recorded.",
+                                                  identifiers[snapshot]));
+                        continue;
+                     }
 
+                     // Record the partial before anything else can fail. Leaving the
+                     // flag false re-fires the trigger on every later tick and keeps
+                     // the trailing stop disabled for the rest of the trade.
+                     m_states[active_index].partial_done = true;
+                     PersistStateChecked(m_states[active_index], logger);
+
+                     if(PositionSelectByTicket(m_states[active_index].ticket) && PositionMatchesInstance())
+                     {
                         const double live_sl = PositionGetDouble(POSITION_SL);
                         const double live_tp = PositionGetDouble(POSITION_TP);
 
@@ -1234,7 +1404,7 @@ public:
                            if(tighter && ModifyPositionStops(m_states[active_index].ticket, adjusted_sl, live_tp, "BE", logger))
                            {
                               m_states[active_index].current_trail_sl = adjusted_sl;
-                              PersistState(m_states[active_index]);
+                              PersistStateChecked(m_states[active_index], logger);
                            }
                         }
                      }
@@ -1242,13 +1412,17 @@ public:
                      continue;
                   }
                }
-               else
+               else if(!m_states[index].partial_block_logged)
                {
+                  // Once the trigger price is crossed it stays crossed, so an
+                  // unconditional warning here floods the Experts log on every tick.
+                  m_states[index].partial_block_logged = true;
                   logger.Warn("PositionManager",
-                              StringFormat("No legal partial-close volume for ticket=%I64u initial=%s current=%s pct=%.2f.",
-                                           state.ticket,
-                                           DoubleToString(state.initial_lots, 2),
-                                           DoubleToString(current_volume, 2),
+                              StringFormat("No legal partial-close volume for ticket=%I64u initial=%s current=%s pct=%.2f; "
+                                           "break-even and trailing stay disabled for this position.",
+                                           ticket,
+                                           DoubleToString(m_states[index].initial_lots, VolumeDigits()),
+                                           DoubleToString(current_volume, VolumeDigits()),
                                            partial_close_pct));
                }
             }
@@ -1259,9 +1433,9 @@ public:
             const double trail_distance = atr_mult_trail * atr14;
             double candidate_sl = 0.0;
 
-            if(state.direction == XSPARK_SIGNAL_BUY)
+            if(direction == XSPARK_SIGNAL_BUY)
                candidate_sl = bid - trail_distance;
-            else if(state.direction == XSPARK_SIGNAL_SELL)
+            else if(direction == XSPARK_SIGNAL_SELL)
                candidate_sl = ask + trail_distance;
 
             double adjusted_sl = 0.0;
@@ -1270,7 +1444,7 @@ public:
 
             if(candidate_sl > 0.0 &&
                XSparkAdjustProtectionLevels(m_symbol,
-                                            state.direction,
+                                            direction,
                                             exit_side_price,
                                             candidate_sl,
                                             0.0,
@@ -1280,20 +1454,20 @@ public:
                                             adjust_reason))
             {
                const double live_sl = PositionGetDouble(POSITION_SL);
-               const bool tighter = state.direction == XSPARK_SIGNAL_BUY ?
+               const bool tighter = direction == XSPARK_SIGNAL_BUY ?
                                     adjusted_sl > live_sl :
                                     (live_sl == 0.0 || adjusted_sl < live_sl);
 
-               if(tighter && ModifyPositionStops(state.ticket, adjusted_sl, current_tp, "Trail", logger))
+               if(tighter && ModifyPositionStops(ticket, adjusted_sl, current_tp, "Trail", logger))
                {
                   logger.Info("PositionManager",
                               StringFormat("Trail updated ticket=%I64u oldSL=%s newSL=%s ATR=%s",
-                                           state.ticket,
-                                           DoubleToString(live_sl, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                                           DoubleToString(adjusted_sl, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                                           DoubleToString(atr14, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS))));
+                                           ticket,
+                                           DoubleToString(live_sl, digits),
+                                           DoubleToString(adjusted_sl, digits),
+                                           DoubleToString(atr14, digits)));
                   m_states[index].current_trail_sl = adjusted_sl;
-                  PersistState(m_states[index]);
+                  PersistStateChecked(m_states[index], logger);
                }
             }
          }
@@ -1520,6 +1694,80 @@ public:
    int ManagedPositionCount()
    {
       return m_managed_position_count;
+   }
+
+   int UnmanagedPositionCount()
+   {
+      return m_unmanaged_position_count;
+   }
+
+   // Positions that close while the EA is not running never reach Reconcile's cleanup
+   // path, so their per-position keys accumulate against MT5's 4096 global-variable
+   // budget until GlobalVariableSet starts failing. Both liveness tests below read
+   // PositionsTotal(), directly or through the table Reconcile built from it, so they
+   // are NOT independent: an unsynchronised terminal reports 0 and every key looks
+   // orphaned. The caller must therefore run this only once real position data has
+   // been observed, and never during OnInit.
+   int PurgeOrphanedState(CXSparkLogger &logger)
+   {
+      if(!m_initialized)
+         return 0;
+
+      if(TerminalInfoInteger(TERMINAL_CONNECTED) == 0)
+      {
+         logger.Info("PositionManager", "Skipped orphaned-state sweep: terminal is not connected.");
+         return 0;
+      }
+
+      const string prefix = m_store.Key("p.");
+      const int prefix_length = StringLen(prefix);
+
+      if(prefix_length <= 0)
+         return 0;
+
+      // A prefix scan can only match keys written in readable form, and only ever
+      // this instance's prefix, so it is always safe to run. Probe the SHORTEST
+      // possible key: only if even that one is hashed is every key unreachable.
+      if(!m_store.KeyIsReadable(PositionStateKey(1, "d")))
+      {
+         logger.Info("PositionManager",
+                     "Orphaned-state sweep is inactive: every state key for this instance is hash-encoded.");
+      }
+
+      int removed = 0;
+
+      for(int index = GlobalVariablesTotal() - 1; index >= 0; index--)
+      {
+         const string name = GlobalVariableName(index);
+         if(StringFind(name, prefix) != 0)
+            continue;
+
+         const int id_end = StringFind(name, ".", prefix_length);
+         if(id_end <= prefix_length)
+            continue;
+
+         const long identifier = StringToInteger(StringSubstr(name, prefix_length, id_end - prefix_length));
+
+         // Two guards, both tracing back to PositionsTotal(); see the note above for
+         // why that is only trustworthy once the trade context is synchronised.
+         if(identifier == 0 ||
+            FindStateByIdentifier(identifier) >= 0 ||
+            LiveIdentifierExists(identifier))
+         {
+            continue;
+         }
+
+         if(GlobalVariableDel(name))
+            removed++;
+      }
+
+      if(removed > 0)
+      {
+         logger.Info("PositionManager",
+                     StringFormat("Removed %d orphaned XSpark position state variable(s).", removed));
+      }
+
+      return removed;
    }
 
    string LastReason()

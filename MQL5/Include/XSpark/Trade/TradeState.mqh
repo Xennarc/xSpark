@@ -20,6 +20,7 @@ struct XSparkTradeState
    EXSparkScoreBotPatternId pattern_id;
    string                 pattern_name;
    double                 initial_risk_distance;
+   bool                   partial_block_logged;   // RAM-only: throttles the "no legal partial" warning
 };
 
 void XSparkResetTradeState(XSparkTradeState &state)
@@ -39,6 +40,7 @@ void XSparkResetTradeState(XSparkTradeState &state)
    state.pattern_id = XSPARK_PATTERN_NONE;
    state.pattern_name = "NO PATTERN";
    state.initial_risk_distance = 0.0;
+   state.partial_block_logged = false;
 }
 
 #endif
