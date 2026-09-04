@@ -211,6 +211,15 @@ private:
       ArrayResize(m_states, count - 1);
    }
 
+   // Broker lot precision for LOG FORMATTING only. The volume actually sent to the
+   // broker is normalized by XSparkNormalizeVolumeDown; this just stops the journal
+   // printing a hardcoded 2 decimals for a symbol whose lot step has a different
+   // precision. AGENTS.md rule 12: never assume instrument characteristics.
+   int VolumeDigits()
+   {
+      return XSparkVolumeDigitsFromStep(SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP));
+   }
+
    bool PositionMatchesInstance()
    {
       const string symbol = PositionGetString(POSITION_SYMBOL);
