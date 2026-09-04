@@ -99,9 +99,11 @@ public:
       if(!m_initialized)
          Initialize();
 
-      const color status_color = status == "KILLSWITCH" || status == "DD HALT" ? clrTomato :
+      const color status_color = status == "KILLSWITCH" || status == "DD HALT" || status == "STATE RECOVERY" ? clrTomato :
                                  status == "ANALYSIS ONLY" || status == "TRADING DISABLED" ? clrGold :
-                                 status == "SPREAD BLOCKED" || status == "ATR BLOCKED" || status == "SESSION BLOCKED" ? clrOrange :
+                                 status == "SPREAD BLOCKED" || status == "ATR BLOCKED" ||
+                                 status == "SESSION BLOCKED" || status == "STALE QUOTE" ||
+                                 status == "WEEKEND CLOSE" ? clrOrange :
                                  clrLimeGreen;
 
       SetLine(0, "XSpark ScoreBot_v3", clrAqua);
@@ -147,9 +149,12 @@ public:
       SetLine(12, StringFormat("Signal bar: %s",
                                report.signal_bar_time > 0 ? TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES) : "waiting"));
       SetLine(13, "Last reason: " + block_reason, status_color);
-      SetLine(14, StringFormat("Daily halt: %s | Killswitch: %s",
+      SetLine(14, StringFormat("Daily halt: %s | Killswitch: %s | State recovery: %s | Quote age: %I64ds/%ds",
                                safety.DailyHaltLatched() ? "ON" : "OFF",
-                               safety.TotalDDKillSwitchLatched() ? "ON" : "OFF"));
+                               safety.TotalDDKillSwitchLatched() ? "ON" : "OFF",
+                               safety.StateRecoveryLatched() ? "ON" : "OFF",
+                               safety.LastQuoteAgeSeconds(),
+                               safety.MaxQuoteAgeSeconds()));
    }
 
    void AnnotateEntry(XSparkTradePlan &plan, XSparkExecutionResult &result)

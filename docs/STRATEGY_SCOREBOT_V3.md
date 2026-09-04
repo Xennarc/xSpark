@@ -264,6 +264,69 @@ Before order submission, the EA uses `OrderCalcMargin` and requires free margin 
 
 Disabled by default. When enabled, it closes only XSpark-owned positions for the chart symbol and Magic Number based on server time.
 
+### Stale Quote Rejection
+
+`InpMaxQuoteAgeSeconds` defaults to 15 seconds. This is a production safety addition, not tested ScoreBot strategy logic.
+
+Before any new exposure is approved, SafetyManager reads the current tick and compares its timestamp against server time:
+
+- A tick timestamp of zero or an unreadable tick blocks new entries.
+- A quote older than the configured maximum blocks new entries.
+- A quote dated more than 5 seconds ahead of server time is treated as invalid and blocks new entries.
+
+The gate applies to new exposure only. Score, pattern detection, dashboard analysis, and protective management of existing positions are unaffected.
+
+Quote age is measured against `TimeTradeServer()`, which MT5 derives from the host clock and the server offset. A badly skewed VPS clock therefore blocks new entries rather than allowing stale ones, and the block is logged as a WARNING so the cause is visible. Keep the VPS clock synchronised.
+
+### Execution-Time Risk Revalidation
+
+Trade planning happens on the closed-bar evaluation price. The price the broker actually trades at can differ, so ExecutionEngine recomputes the entire risk chain immediately before every order send:
+
+1. Refresh the broker tick and reject a stale or invalid quote.
+2. Take the current entry reference: Ask for BUY, Bid for SELL.
+3. Abort when the entry reference has drifted from the planned reference by more than the configured deviation (30 canonical points). The market is never chased.
+4. Keep the locked ATR stop where the strategy placed it. Abort when price has already moved through it.
+5. Re-run broker stop-level validation against the close-side price (Bid for a long, Ask for a short), which is the side MT5 measures protective levels against.
+6. Recompute the actual stop distance from the current entry reference and the broker-valid stop.
+7. Recompute the volume from that actual distance so the monetary risk stays at the selected risk percentage.
+8. Recompute TP from the actual distance and the locked dynamic RR.
+9. Abort when the resulting broker-valid RR falls outside `InpMinRR` to `InpMaxRR`.
+10. Re-run margin validation with the recomputed volume.
+
+The theoretical ATR stop is never moved to preserve the originally planned lot size. Risk percentage is the constraint and the volume adapts.
+
+### Exact Post-Execution Position Identification
+
+After a confirmed entry, ExecutionEngine reads `CTrade::ResultDeal()`, selects that deal from MT5 history, and takes `DEAL_POSITION_ID`, `DEAL_PRICE`, `DEAL_VOLUME`, and `DEAL_TIME`. The position id binds the trade state to the exact broker position.
+
+A same-direction match is only a documented fail-safe fallback. It is used solely when the broker deal exposes no position id, it does not use newest-open-time, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or whose executed volume does not match. A broker position that already existed before the send is refused outright.
+
+### Broker Protection Verification
+
+A confirmed retcode means the order was accepted, not that the broker applied the stop that was sent with it. After a confirmed entry the EA reads the live `POSITION_SL`. If it is missing, the submitted stop is applied immediately, the condition is logged CRITICAL, and registration is reported as failed until a stop exists. Every management pass re-attempts protection repair for any XSpark position found without a broker stop, and new entries stay blocked while any XSpark exposure is unprotected.
+
+Exit operations use a wider deviation (100 canonical points) than entries. Closing at a slightly worse price is always preferable to failing to close.
+
+### Weekend Close Entry Block
+
+When `InpUseWeekendClose` is enabled, new entries are refused inside the weekend-close window. Previously the EA could open a position that PositionManager would flatten on the same tick.
+
+### Residual Execution Slippage
+
+The configured deviation is accepted execution tolerance, so a market order can still fill up to 30 canonical points away from the price the volume was sized from. With a fixed absolute stop this makes the realised entry-to-stop distance, and therefore the realised monetary risk, slightly larger than the sized figure. The EA does not pre-shrink the volume for this, because that would change tested position sizing; instead it computes the realised distance from the actual fill and logs a WARNING whenever realised risk exceeds the sized risk. Reduce `XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS` if this residual is unacceptable for a given account.
+
+### State Recovery
+
+If broker execution is confirmed but the resulting position cannot be bound exactly, the EA logs CRITICAL, latches SafetyManager into a state-recovery condition, reconciles against MT5, and verifies that every live XSpark position is represented in managed state.
+
+While the state stays inconsistent:
+
+- New entries are blocked.
+- Protective management of live broker positions continues.
+- Dashboard status reads `STATE RECOVERY` rather than `MANAGING`.
+
+The latch clears only after reconciliation proves that every live XSpark position has managed state, with a matching direction, a broker stop in place, and — for the position this entry created — ownership by this entry's signal bar rather than by a different XSpark trade.
+
 ## Execution Boundary
 
 ScoreBot_v3 does not include `Trade/Trade.mqh`, `CTrade`, `OrderSend`, direct buy/sell calls, direct close calls, or stop modification calls.

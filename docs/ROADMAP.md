@@ -10,7 +10,7 @@ Implemented: repository, architecture, agent rules, logging, and initial module 
 
 ## Phase 1 - Market & Account State
 
-Partially implemented: market state, indicator cache, symbol validation, terminal/account trading checks. Further validation is still needed in MetaTrader.
+Partially implemented: market state, indicator cache, symbol validation, terminal/account trading checks, stale/invalid quote rejection for new exposure. Further validation is still needed in MetaTrader.
 
 ## Phase 2 - Risk Engine
 
@@ -22,11 +22,11 @@ Implemented for ScoreBot_v3: balance-based risk cash, actual stop distance, tick
 
 ## Phase 4 - Execution Engine
 
-Implemented for market entries: CTrade boundary, broker-aware filling, 30 canonical-point deviation, three transient price attempts, retcode inspection, duplicate signal-bar guard. Requires MetaEditor and broker-side validation.
+Implemented for market entries: CTrade boundary, broker-aware filling, 30 canonical-point deviation, three transient price attempts, retcode inspection, duplicate signal-bar guard, execution-time risk revalidation before every send, and exact position identification from the entry deal. Requires MetaEditor and broker-side validation.
 
 ## Phase 5 - Position Reconciliation
 
-Partially implemented: symbol+magic reconciliation, persisted trade state by position identifier, ticket rebind attempt. Ambiguous same-direction matching is logged and not guessed.
+Partially implemented: symbol+magic reconciliation, persisted trade state by position identifier, ticket rebind attempt, exact `DEAL_POSITION_ID` binding for new entries, and a fail-closed state-recovery latch when a confirmed entry cannot be registered. Ambiguous same-direction matching is logged and not guessed.
 
 ## Phase 6 - Position Management
 

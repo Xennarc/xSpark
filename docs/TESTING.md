@@ -66,13 +66,26 @@ The script checks pattern detection, pattern priority, zero-range safety, zero-b
 
 The script must print explicit `PASS` and `FAIL` lines plus a final count.
 
+### Execution / State Hardening Script
+
+Compile and run:
+
+```text
+MQL5/Scripts/Tests/TestExecutionHardening.mq5
+```
+
+The script checks duplicate signal-bar protection, entry-drift tolerance against the configured deviation, protective-stop geometry, risk distance from the execution price, target derivation from the actual risk distance and locked RR, RR bounds, volume recalculation from risk inputs, the price-movement risk revalidation contract, position-identity matching, fail-safe fallback acceptance rules, stale-quote calculations, and execution-result state reset.
+
+It exercises pure helpers only. It does not and cannot simulate broker behaviour: order sends, deal history lookup, live position binding, margin rejection, and flattening retries must be validated in the Strategy Tester and on a demo account.
+
 ### Compile Targets
 
-Compile both:
+Compile all three:
 
 ```text
 MQL5/Experts/XSpark/XSpark.mq5
 MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5
+MQL5/Scripts/Tests/TestExecutionHardening.mq5
 ```
 
 Target result before merge:
@@ -95,3 +108,18 @@ Preset: MAX_SHARPE defaults
 ```
 
 The historical Python harness suggested approximately 1 to 1.5 trades/day, but this is only a smoke-test prior. It is not a target to optimize toward.
+
+### Execution Hardening Checks That Need MetaTrader
+
+The following cannot be proven outside MT5 and must be checked in the Strategy Tester or on a demo account:
+
+- `DEAL_POSITION_ID` resolution after a confirmed entry, including the retry path when the deal is not yet in the history cache.
+- Binding of the resulting live position by `POSITION_IDENTIFIER`, with `InpMaxOpenTrades = 2`.
+- The state-recovery path: CRITICAL log, `STATE RECOVERY` status, blocked new entries, and continued protective management.
+- Execution-time revalidation against real quote movement, requotes, and broker stop levels.
+- Margin rejection at send time with the recomputed volume.
+- Killswitch flattening retries, pacing, remaining-exposure reporting, and the single completion log line.
+- Broker protection verification: a broker that accepts a market order but does not apply the stop, and the protection-repair retry loop.
+- Exit deviation: that XSpark-owned closes and modifications fill at the wider tolerance.
+- The weekend-close entry block.
+- Stale-quote rejection against a real feed, including weekend and rollover behaviour.

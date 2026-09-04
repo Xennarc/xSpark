@@ -62,6 +62,7 @@ xspark-mt5/
 |   |-- Include/
 |   |   `-- XSpark/
 |   |       |-- Core/
+|   |       |   |-- ExecutionMath.mqh
 |   |       |   |-- IndicatorCache.mqh
 |   |       |   |-- MarketState.mqh
 |   |       |   |-- SafetyManager.mqh
@@ -86,6 +87,7 @@ xspark-mt5/
 |   |           `-- Dashboard.mqh
 |   `-- Scripts/
 |       `-- Tests/
+|           |-- TestExecutionHardening.mq5
 |           `-- TestScoreBotV3Logic.mq5
 |-- docs/
 |   |-- ARCHITECTURE.md
@@ -110,7 +112,7 @@ xspark-mt5/
 
 Compile success proves only that code builds. Functional validation, execution validation, strategy validation, and profitability testing are separate concerns. A profitable backtest does not prove that a strategy is safe or production-ready.
 
-The included MQL5 script `MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5` is intended for deterministic logic validation inside MetaTrader.
+The included MQL5 scripts `MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5` and `MQL5/Scripts/Tests/TestExecutionHardening.mq5` are intended for deterministic logic validation inside MetaTrader. They cover pure calculations only; broker behaviour must be validated in the Strategy Tester and on a demo account.
 
 ## Deployment Target
 
