@@ -339,6 +339,14 @@ Execution authority is split as follows:
 Both boundaries filter by symbol and Magic Number where appropriate and inspect trade-server retcodes.
 Market-entry, stop-modification, and partial-close mutations are treated as confirmed only on completed trade-server retcodes, not on a local function return alone.
 
+### Adopted Positions Without Persisted State
+
+A position XSpark adopts without a matching persisted record receives no partial, break-even or trailing management; it runs on the SL/TP the broker already holds (see ADR-018). The condition is never silent: the dashboard reports `UNMANAGED EXPOSURE` in the alarm colour, with a count, for as long as any such position is open, and that status is derived on every render so it cannot latch or be overwritten.
+
+### State Store Hygiene
+
+Per-position state is keyed by account, symbol, Magic Number and `POSITION_IDENTIFIER`. Keys that would exceed MT5's 63-character name limit fall back to a deterministic hash of the same logical key. Orphaned records are swept on the first tick after a valid quote and a completed reconciliation, never during `OnInit` (see ADR-019).
+
 ## Implementation Assumptions
 
 ### Assumption SBV3-001

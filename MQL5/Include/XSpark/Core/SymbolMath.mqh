@@ -5,6 +5,10 @@
 
 #define XSPARK_XAU_CANONICAL_POINT_SIZE 0.01
 
+// Upper bound on the outward stop/target walk so a pathological point size or
+// stop level can never spin OnTick forever.
+#define XSPARK_MAX_STOP_ADJUST_STEPS 1000
+
 double XSparkCanonicalPointsToPrice(const double canonical_points)
 {
    return canonical_points * XSPARK_XAU_CANONICAL_POINT_SIZE;
@@ -56,10 +60,12 @@ int XSparkVolumeDigitsFromStep(const double volume_step)
    if(volume_step <= 0.0)
       return 2;
 
+   // Relative tolerance: an absolute epsilon would report 0 decimals for a very
+   // small step (e.g. 1e-8) because the un-scaled value is already below it.
    for(int digits = 0; digits <= 8; digits++)
    {
       const double scaled = volume_step * MathPow(10.0, digits);
-      if(MathAbs(scaled - MathRound(scaled)) < 0.0000001)
+      if(MathAbs(scaled - MathRound(scaled)) < 0.0000001 * MathMax(1.0, scaled))
          return digits;
    }
 
@@ -135,7 +141,9 @@ bool XSparkAdjustProtectionLevels(const string symbol,
       if(adjusted_sl > 0.0 && (reference_price - adjusted_sl) < min_distance)
       {
          adjusted_sl = XSparkNormalizePrice(symbol, reference_price - min_distance);
-         while(adjusted_sl > 0.0 && (reference_price - adjusted_sl) < min_distance)
+         for(int step = 0;
+             step < XSPARK_MAX_STOP_ADJUST_STEPS && adjusted_sl > 0.0 && (reference_price - adjusted_sl) < min_distance;
+             step++)
             adjusted_sl = XSparkNormalizePrice(symbol, adjusted_sl - broker_point);
          changed = true;
       }
@@ -143,7 +151,9 @@ bool XSparkAdjustProtectionLevels(const string symbol,
       if(adjusted_tp > 0.0 && (adjusted_tp - reference_price) < min_distance)
       {
          adjusted_tp = XSparkNormalizePrice(symbol, reference_price + min_distance);
-         while(adjusted_tp > 0.0 && (adjusted_tp - reference_price) < min_distance)
+         for(int step = 0;
+             step < XSPARK_MAX_STOP_ADJUST_STEPS && adjusted_tp > 0.0 && (adjusted_tp - reference_price) < min_distance;
+             step++)
             adjusted_tp = XSparkNormalizePrice(symbol, adjusted_tp + broker_point);
          changed = true;
       }
@@ -153,7 +163,9 @@ bool XSparkAdjustProtectionLevels(const string symbol,
       if(adjusted_sl > 0.0 && (adjusted_sl - reference_price) < min_distance)
       {
          adjusted_sl = XSparkNormalizePrice(symbol, reference_price + min_distance);
-         while(adjusted_sl > 0.0 && (adjusted_sl - reference_price) < min_distance)
+         for(int step = 0;
+             step < XSPARK_MAX_STOP_ADJUST_STEPS && adjusted_sl > 0.0 && (adjusted_sl - reference_price) < min_distance;
+             step++)
             adjusted_sl = XSparkNormalizePrice(symbol, adjusted_sl + broker_point);
          changed = true;
       }
@@ -161,7 +173,9 @@ bool XSparkAdjustProtectionLevels(const string symbol,
       if(adjusted_tp > 0.0 && (reference_price - adjusted_tp) < min_distance)
       {
          adjusted_tp = XSparkNormalizePrice(symbol, reference_price - min_distance);
-         while(adjusted_tp > 0.0 && (reference_price - adjusted_tp) < min_distance)
+         for(int step = 0;
+             step < XSPARK_MAX_STOP_ADJUST_STEPS && adjusted_tp > 0.0 && (reference_price - adjusted_tp) < min_distance;
+             step++)
             adjusted_tp = XSparkNormalizePrice(symbol, adjusted_tp - broker_point);
          changed = true;
       }
@@ -169,6 +183,27 @@ bool XSparkAdjustProtectionLevels(const string symbol,
    else
    {
       reason = "Protection levels cannot be adjusted for a NONE signal.";
+      return false;
+   }
+
+   // Fail closed: a bounded walk can run out of steps or cross zero, which would
+   // otherwise hand the caller a non-positive or still-invalid protection price.
+   if((requested_sl > 0.0 && adjusted_sl <= 0.0) || (requested_tp > 0.0 && adjusted_tp <= 0.0))
+   {
+      reason = "Stop-level adjustment produced a non-positive protection price.";
+      return false;
+   }
+
+   const bool buy_ok = direction != XSPARK_SIGNAL_BUY ||
+                       ((adjusted_sl <= 0.0 || (reference_price - adjusted_sl) >= min_distance) &&
+                        (adjusted_tp <= 0.0 || (adjusted_tp - reference_price) >= min_distance));
+   const bool sell_ok = direction != XSPARK_SIGNAL_SELL ||
+                        ((adjusted_sl <= 0.0 || (adjusted_sl - reference_price) >= min_distance) &&
+                         (adjusted_tp <= 0.0 || (reference_price - adjusted_tp) >= min_distance));
+
+   if(!buy_ok || !sell_ok)
+   {
+      reason = "Protection levels could not be moved far enough to satisfy broker stop-level rules.";
       return false;
    }
 

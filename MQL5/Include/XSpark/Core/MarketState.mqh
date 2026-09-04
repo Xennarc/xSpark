@@ -43,17 +43,29 @@ public:
       if(!SymbolSelect(m_symbol, true))
          return false;
 
-      m_bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
-      m_ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
-      m_point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
-      m_digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
-      m_server_time = TimeTradeServer();
+      // Validate into locals first: committing before the checks would leave the
+      // object holding a half-refreshed quote after a failed refresh.
+      const double bid = SymbolInfoDouble(m_symbol, SYMBOL_BID);
+      const double ask = SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+      const double point = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
+      const int digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
 
-      if(m_server_time == 0)
-         m_server_time = TimeCurrent();
-
-      if(m_bid <= 0.0 || m_ask <= 0.0 || m_point <= 0.0 || m_digits < 0)
+      if(bid <= 0.0 || ask <= 0.0 || point <= 0.0 || digits < 0)
          return false;
+
+      // A crossed book (ask below bid) means the feed is broken; fail closed.
+      if(ask < bid)
+         return false;
+
+      datetime server_time = TimeTradeServer();
+      if(server_time == 0)
+         server_time = TimeCurrent();
+
+      m_bid = bid;
+      m_ask = ask;
+      m_point = point;
+      m_digits = digits;
+      m_server_time = server_time;
 
       return true;
    }
