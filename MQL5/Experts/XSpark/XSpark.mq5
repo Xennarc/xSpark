@@ -78,6 +78,13 @@ CXSparkScoreBotV3      g_strategy;
 CXSparkDashboard       g_dashboard;
 
 bool     g_state_purged = false;
+// Resolved once in OnInit and never re-read from the terminal. A conversion on
+// the killswitch flatten path runs while the quote feed is unusable, so the
+// size must already be held rather than fetched at the moment it is needed.
+double g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+bool   g_score_point_size_conforms = false;
+string g_score_point_size_reason = "ScoreBot point size has not been resolved.";
+
 datetime g_current_m15_bar_time = 0;
 datetime g_last_evaluated_signal_bar_time = 0;
 double   g_latest_closed_atr14 = 0.0;
@@ -500,15 +507,15 @@ void XSparkLogEntry(XSparkTradePlan &plan,
    {
       const double overshoot_pct = ((realised_distance / result.actual_risk_distance) - 1.0) * 100.0;
       g_logger.Warn("EA",
-                    StringFormat("Fill slipped inside the permitted deviation: sized stop distance %.2f canonical points, realised %.2f, so realised risk is %.2f%% above the %.2f%% budget.",
-                                 XSparkPriceToCanonicalPoints(result.actual_risk_distance),
-                                 XSparkPriceToCanonicalPoints(realised_distance),
+                    StringFormat("Fill slipped inside the permitted deviation: sized stop distance %.2f ScoreBot points, realised %.2f, so realised risk is %.2f%% above the %.2f%% budget.",
+                                 XSparkPriceToScorePoints(result.actual_risk_distance, g_score_point_size),
+                                 XSparkPriceToScorePoints(realised_distance, g_score_point_size),
                                  overshoot_pct,
                                  plan.risk_pct));
    }
 
    g_logger.Info("EA",
-                 StringFormat("Execution facts position_id=%I64d position_ticket=%I64u exact_id=%s state_registered_exactly=%s fill_price=%s fill_volume=%s submitted_entry=%s submitted_lots=%s risk_distance=%.2f canonical points actual_RR=%.4f retcode=%I64d %s",
+                 StringFormat("Execution facts position_id=%I64d position_ticket=%I64u exact_id=%s state_registered_exactly=%s fill_price=%s fill_volume=%s submitted_entry=%s submitted_lots=%s risk_distance=%.2f ScoreBot points actual_RR=%.4f retcode=%I64d %s",
                               result.position_id,
                               result.position_ticket,
                               XSparkBoolToString(result.position_id_exact),
@@ -517,7 +524,7 @@ void XSparkLogEntry(XSparkTradePlan &plan,
                               DoubleToString(result.fill_volume, 2),
                               DoubleToString(result.submitted_entry_reference, g_market_state.Digits()),
                               DoubleToString(result.submitted_volume, 2),
-                              XSparkPriceToCanonicalPoints(result.actual_risk_distance),
+                              XSparkPriceToScorePoints(result.actual_risk_distance, g_score_point_size),
                               result.actual_rr,
                               result.retcode,
                               result.retcode_description));
@@ -783,6 +790,61 @@ void XSparkEvaluateNewBar()
    XSparkEnterStateRecovery(plan, execution_result);
 }
 
+// Resolves the ScoreBot point size for the chart symbol and asserts it against
+// the declared XAUUSD baseline.
+//
+// A non-conforming size is NOT an initialisation failure. Refusing to initialise
+// would stop OnTick entirely, which would abandon trailing, break-even,
+// protection repair and the total-drawdown killswitch while live positions stay
+// open at the broker - strictly worse than the mis-scaled thresholds the check
+// exists to catch. The EA instead falls back to the declared baseline, which is
+// the size that shipped before this change, and latches a SafetyManager veto so
+// no NEW exposure is opened while the unit is untrusted.
+void XSparkResolveSessionScorePointSize()
+{
+   double resolved = 0.0;
+   string reason = "";
+
+   if(!XSparkResolveScorePointSize(_Symbol, resolved, reason))
+   {
+      g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+      g_score_point_size_conforms = false;
+      g_score_point_size_reason = reason;
+      g_logger.Critical("EA",
+                        StringFormat("ScoreBot point size could not be resolved for %s: %s "
+                                     "Falling back to the declared XAUUSD baseline %s and blocking new entries; "
+                                     "protective management of existing positions continues.",
+                                     _Symbol,
+                                     reason,
+                                     DoubleToString(XSPARK_XAUUSD_SCORE_POINT_SIZE, 8)));
+      return;
+   }
+
+   // Phase 0 keeps the EA XAUUSD-only, and the behaviour-neutrality claim holds
+   // exactly where the resolved size equals the size the tested thresholds were
+   // specified in. Anything else would silently rescale every threshold.
+   if(MathAbs(resolved - XSPARK_XAUUSD_SCORE_POINT_SIZE) > 0.0)
+   {
+      g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+      g_score_point_size_conforms = false;
+      g_score_point_size_reason =
+         StringFormat("Resolved size %s does not match the declared XAUUSD baseline %s.",
+                      DoubleToString(resolved, 8),
+                      DoubleToString(XSPARK_XAUUSD_SCORE_POINT_SIZE, 8));
+      g_logger.Critical("EA",
+                        StringFormat("%s Broker digits=%d point=%s. Falling back to the baseline and blocking "
+                                     "new entries; protective management of existing positions continues.",
+                                     g_score_point_size_reason,
+                                     (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
+                                     DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_POINT), 10)));
+      return;
+   }
+
+   g_score_point_size = resolved;
+   g_score_point_size_conforms = true;
+   g_score_point_size_reason = "ScoreBot point size matches the declared XAUUSD baseline.";
+}
+
 int OnInit()
 {
    XSparkResetScoreBotReport(g_last_report);
@@ -804,6 +866,8 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   XSparkResolveSessionScorePointSize();
+
    g_strategy.Configure(InpMinScore,
                         InpDropIBR,
                         InpLongScoreExtra,
@@ -817,7 +881,8 @@ int OnInit()
                         InpMinRR,
                         InpMaxRR,
                         InpATRRatioBoost,
-                        InpAllowAsianReduced);
+                        InpAllowAsianReduced,
+                        g_score_point_size);
 
    if(!g_strategy.Initialize(_Symbol))
    {
@@ -836,6 +901,9 @@ int OnInit()
                                    InpMaxTotalDDPct,
                                    InpMaxDailyDDPct,
                                    InpMaxQuoteAgeSeconds,
+                                   g_score_point_size,
+                                   g_score_point_size_conforms,
+                                   g_score_point_size_reason,
                                    g_logger))
    {
       g_logger.Critical("SafetyManager", g_safety_manager.LastReason());
@@ -859,7 +927,8 @@ int OnInit()
 
    if(!g_execution_engine.Initialize(InpMagicNumber,
                                      InpOrderComment,
-                                     XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS,
+                                     XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS,
+                                     g_score_point_size,
                                      InpUseStopLevelValidation,
                                      InpUseMarginCheck,
                                      InpMarginBufferPct,
@@ -873,6 +942,7 @@ int OnInit()
 
    if(!g_position_manager.Initialize(_Symbol,
                                      InpMagicNumber,
+                                     g_score_point_size,
                                      InpUseStopLevelValidation))
    {
       g_logger.Critical("PositionManager", g_position_manager.LastReason());
@@ -892,11 +962,12 @@ int OnInit()
    EventSetTimer(5);
    g_dashboard.Initialize();
 
-   g_logger.Info("EA", StringFormat("Symbol=%s digits=%d point=%s spread_canonical_points=%.2f",
+   g_logger.Info("EA", StringFormat("Symbol=%s digits=%d point=%s score_point_size=%s spread_score_points=%.2f",
                                     g_market_state.SymbolName(),
                                     g_market_state.Digits(),
                                     DoubleToString(g_market_state.PointSize(), g_market_state.Digits()),
-                                    XSparkPriceToCanonicalPoints(g_market_state.SpreadPrice())));
+                                    DoubleToString(g_score_point_size, 8),
+                                    XSparkPriceToScorePoints(g_market_state.SpreadPrice(), g_score_point_size)));
 
    g_logger.Info("EA", StringFormat("Account login=%s server=%s company=%s trade_allowed=%s",
                                     IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)),

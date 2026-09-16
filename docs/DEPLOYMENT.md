@@ -40,6 +40,7 @@ The VPS is production infrastructure, not the primary development environment.
 - Run the relevant MT5 Strategy Tester checks.
 - Confirm account type: demo or live.
 - Confirm symbol list and broker specifications.
+- Confirm the startup log reports `score_point_size=0.01000000` for the production XAUUSD symbol, and that no CRITICAL ScoreBot point size line was logged.
 - Confirm XSpark Magic Number.
 - Confirm automated trading permissions in MT5.
 - Confirm account-level and EA-level risk limits.

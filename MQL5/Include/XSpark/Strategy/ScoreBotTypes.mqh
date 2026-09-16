@@ -9,7 +9,7 @@
 #define XSPARK_SCOREBOT_MAX_SCORE 9.0
 #define XSPARK_SCOREBOT_TIER3_THRESHOLD 5.5
 #define XSPARK_SCOREBOT_TIER2_THRESHOLD 4.5
-#define XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS 30.0
+#define XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS 30.0
 
 enum EXSparkScoreBotPatternId
 {
@@ -71,6 +71,7 @@ struct XSparkScoreBotReport
    double                 atr14;
    double                 atr50;
    double                 atr_points;
+   double                 atr50_points;
    double                 rsi_m15;
    double                 rsi_h1;
    double                 ema21_m15;
@@ -205,6 +206,7 @@ void XSparkResetScoreBotReport(XSparkScoreBotReport &report)
    report.atr14 = 0.0;
    report.atr50 = 0.0;
    report.atr_points = 0.0;
+   report.atr50_points = 0.0;
    report.rsi_m15 = 0.0;
    report.rsi_h1 = 0.0;
    report.ema21_m15 = 0.0;

@@ -19,7 +19,7 @@
 // Exits must not fail on price movement. Closing an XSpark position at a
 // slightly worse price is always better than failing to close it, so exit
 // operations use a wider tolerance than the 30-point entry deviation.
-#define XSPARK_CLOSE_DEVIATION_CANONICAL_POINTS 100.0
+#define XSPARK_CLOSE_DEVIATION_SCORE_POINTS 100.0
 
 class CXSparkPositionManager
 {
@@ -28,6 +28,7 @@ private:
    ulong  m_magic_number;
    string m_symbol;
    bool   m_use_stop_level_validation;
+   double m_score_point_size;
    int    m_managed_position_count;
    int    m_unmanaged_position_count;
    string m_last_reason;
@@ -71,9 +72,13 @@ private:
       m_trade.SetTypeFillingBySymbol(m_symbol);
 
       const double deviation_broker_points =
-         XSparkCanonicalPointsToBrokerPoints(m_symbol, XSPARK_CLOSE_DEVIATION_CANONICAL_POINTS);
+         XSparkScorePointsToBrokerPoints(XSPARK_CLOSE_DEVIATION_SCORE_POINTS,
+                                         m_score_point_size,
+                                         SymbolInfoDouble(m_symbol, SYMBOL_POINT));
 
-      if(deviation_broker_points > 0.0)
+      // A non-finite value would be undefined as a ulong and is the slippage
+      // tolerance an exit is sent with, so it must never reach the cast.
+      if(MathIsValidNumber(deviation_broker_points) && deviation_broker_points > 0.0)
          m_trade.SetDeviationInPoints((ulong)MathRound(deviation_broker_points));
    }
 
@@ -162,7 +167,7 @@ private:
       const double stored_entry = m_store.Get(PositionStateKey(state.identifier, "e"), state.entry);
 
       if(stored_direction != state.direction ||
-         MathAbs(stored_entry - state.entry) > XSparkCanonicalPointsToPrice(1.0))
+         MathAbs(stored_entry - state.entry) > XSparkScorePointsToPrice(1.0, m_score_point_size))
       {
          return false;
       }
@@ -543,7 +548,7 @@ private:
       state.initial_risk_distance = MathAbs(state.entry - state.initial_sl);
 
       if(live_sl > 0.0 && submitted_sl > 0.0 &&
-         MathAbs(live_sl - submitted_sl) > XSparkCanonicalPointsToPrice(1.0))
+         MathAbs(live_sl - submitted_sl) > XSparkScorePointsToPrice(1.0, m_score_point_size))
       {
          logger.Warn("PositionManager",
                      StringFormat("Broker stop %s differs from submitted stop %s on ticket=%I64u; broker value is authoritative.",
@@ -910,6 +915,7 @@ public:
       m_magic_number = 0;
       m_symbol = "";
       m_use_stop_level_validation = true;
+      m_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
       m_managed_position_count = 0;
       m_unmanaged_position_count = 0;
       m_last_reason = "Position manager is not initialized.";
@@ -921,6 +927,7 @@ public:
 
    bool Initialize(const string symbol,
                    const ulong magic_number,
+                   const double score_point_size,
                    const bool use_stop_level_validation = true)
    {
       if(symbol == "" || magic_number == 0)
@@ -929,10 +936,17 @@ public:
          return false;
       }
 
+      if(!MathIsValidNumber(score_point_size) || score_point_size <= 0.0)
+      {
+         m_last_reason = "PositionManager requires a resolved ScoreBot point size.";
+         return false;
+      }
+
       m_initialized = true;
       m_symbol = symbol;
       m_magic_number = magic_number;
       m_use_stop_level_validation = use_stop_level_validation;
+      m_score_point_size = score_point_size;
       m_managed_position_count = 0;
       m_unmanaged_position_count = 0;
       m_last_registration_bound_state = false;
@@ -1005,7 +1019,7 @@ public:
                   continue;
 
                const double entry = PositionGetDouble(POSITION_PRICE_OPEN);
-               if(MathAbs(entry - m_states[state_index].entry) <= XSparkCanonicalPointsToPrice(1.0))
+               if(MathAbs(entry - m_states[state_index].entry) <= XSparkScorePointsToPrice(1.0, m_score_point_size))
                {
                   match_count++;
                   matched_ticket = candidate_ticket;

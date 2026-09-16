@@ -22,7 +22,7 @@ Implemented for ScoreBot_v3: balance-based risk cash, actual stop distance, tick
 
 ## Phase 4 - Execution Engine
 
-Implemented for market entries: CTrade boundary, broker-aware filling, 30 canonical-point deviation, three transient price attempts, retcode inspection, duplicate signal-bar guard, execution-time risk revalidation before every send, and exact position identification from the entry deal. Requires MetaEditor and broker-side validation.
+Implemented for market entries: CTrade boundary, broker-aware filling, 30 ScoreBot-point deviation, three transient price attempts, retcode inspection, duplicate signal-bar guard, execution-time risk revalidation before every send, and exact position identification from the entry deal. Requires MetaEditor and broker-side validation.
 
 ## Phase 5 - Position Reconciliation
 

@@ -50,10 +50,10 @@ void TestDuplicateSignalProtection()
 
 void TestEntryDriftTolerance()
 {
-   const double max_drift = XSparkCanonicalPointsToPrice(30.0);
+   const double max_drift = XSparkScorePointsToPrice(30.0, XSPARK_XAUUSD_SCORE_POINT_SIZE);
    double drift = 0.0;
 
-   Check("max drift equals 30 canonical points", NearlyEqual(max_drift, 0.30));
+   Check("max drift equals 30 ScoreBot points", NearlyEqual(max_drift, 0.30));
    Check("small adverse drift is inside tolerance",
          XSparkEntryDriftIsWithinTolerance(2000.00, 2000.20, max_drift, drift));
    Check("drift value is reported", NearlyEqual(drift, 0.20));
@@ -208,7 +208,7 @@ void TestPriceMovementRiskRevalidation()
    const double volume_min = 0.01;
    const double volume_max = 100.0;
    const double volume_step = 0.01;
-   const double max_drift = XSparkCanonicalPointsToPrice(30.0);
+   const double max_drift = XSparkScorePointsToPrice(30.0, XSPARK_XAUUSD_SCORE_POINT_SIZE);
 
    double drift = 0.0;
    double loss_per_lot = 0.0;

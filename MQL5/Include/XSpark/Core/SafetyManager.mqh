@@ -31,6 +31,9 @@ private:
 
    bool   m_state_recovery_latched;
    string m_state_recovery_reason;
+   double m_score_point_size;
+   bool   m_score_point_size_conforms;
+   string m_score_point_size_reason;
 
    double m_max_daily_dd_pct;
    bool   m_daily_halt_latched;
@@ -160,6 +163,9 @@ public:
       m_daily_dd_pct = 0.0;
       m_daily_day_id = 0;
       m_drawdown_state_valid = false;
+      m_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+      m_score_point_size_conforms = false;
+      m_score_point_size_reason = "ScoreBot point size has not been resolved.";
    }
 
    bool Initialize(const string symbol,
@@ -173,6 +179,9 @@ public:
                    const double max_total_dd_pct,
                    const double max_daily_dd_pct,
                    const int max_quote_age_seconds,
+                   const double score_point_size,
+                   const bool score_point_size_conforms,
+                   const string score_point_size_reason,
                    CXSparkLogger &logger)
    {
       if(symbol == "" || magic_number == 0)
@@ -208,6 +217,9 @@ public:
       m_last_quote_age_seconds = 0;
       m_state_recovery_latched = false;
       m_state_recovery_reason = "";
+      m_score_point_size = score_point_size;
+      m_score_point_size_conforms = score_point_size_conforms;
+      m_score_point_size_reason = score_point_size_reason;
       m_runtime_high_water_equity = AccountInfoDouble(ACCOUNT_EQUITY);
       m_total_dd_killswitch_latched = false;
       m_total_dd_pct = 0.0;
@@ -348,6 +360,18 @@ public:
          return false;
       }
 
+      // Every ScoreBot threshold is denominated in the resolved point size. If
+      // that size could not be trusted at initialisation, the ATR gate, the
+      // spread cap and the entry deviation are all measuring in an unknown
+      // unit, so no new exposure may be opened. Protective management of live
+      // positions is deliberately unaffected: it runs on the declared baseline
+      // fallback, which is strictly the behaviour that shipped before.
+      if(!m_score_point_size_conforms)
+      {
+         m_last_reason = "ScoreBot point size is not trusted: " + m_score_point_size_reason;
+         return false;
+      }
+
       if(!TerminalTradeStateIsValid())
          return false;
 
@@ -376,13 +400,13 @@ public:
 
       if(m_use_spread_filter)
       {
-         const double spread_canonical_points = XSparkPriceToCanonicalPoints(spread_price);
-         const double max_spread_price = XSparkCanonicalPointsToPrice(m_max_spread_points);
+         const double spread_score_points = XSparkPriceToScorePoints(spread_price, m_score_point_size);
+         const double max_spread_price = XSparkScorePointsToPrice(m_max_spread_points, m_score_point_size);
 
          if(spread_price > max_spread_price)
          {
-            m_last_reason = StringFormat("Spread %.2f canonical points exceeds max %.2f.",
-                                         spread_canonical_points,
+            m_last_reason = StringFormat("Spread %.2f ScoreBot points exceeds max %.2f.",
+                                         spread_score_points,
                                          m_max_spread_points);
             return false;
          }

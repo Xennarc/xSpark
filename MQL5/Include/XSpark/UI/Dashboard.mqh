@@ -143,7 +143,7 @@ public:
                               report.dynamic_rr));
       SetLine(6, StringFormat("ATR14: %.2f pts | ATR50: %.2f pts",
                               report.atr_points,
-                              XSparkPriceToCanonicalPoints(report.atr50)));
+                              report.atr50_points));
       SetLine(7, StringFormat("RSI M15 %.2f | RSI H1 %.2f",
                               report.rsi_m15,
                               report.rsi_h1));
