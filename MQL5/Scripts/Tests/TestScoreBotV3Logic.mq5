@@ -178,11 +178,45 @@ void TestScorePointSizeDerivation()
    Check("zero point is rejected", !XSparkPipSizeForSpec(2, 0.0, pip, reason));
    Check("zero point yields no size", NearlyEqual(pip, 0.0));
    Check("negative point is rejected", !XSparkPipSizeForSpec(2, -0.01, pip, reason));
-   Check("negative digits are rejected", !XSparkPipSizeForSpec(-1, 0.01, pip, reason));
+   // The reason is asserted as well as the rejection. The digits-range guard runs
+   // before the point/digits agreement guard, so a rejection alone would not say
+   // which branch fired, and these would still pass if the order ever changed.
+   Check("negative digits are rejected", !XSparkPipSizeForSpec(-1, 10.0, pip, reason));
+   Check("negative digits are rejected for being out of range",
+         StringFind(reason, "outside the supported range") >= 0);
    Check("digits above the supported range are rejected",
-         !XSparkPipSizeForSpec(XSPARK_SPEC_MAX_DIGITS + 1, 0.01, pip, reason));
+         !XSparkPipSizeForSpec(XSPARK_SPEC_MAX_DIGITS + 1, 0.000000001, pip, reason));
+   Check("high digits are rejected for being out of range",
+         StringFind(reason, "outside the supported range") >= 0);
    Check("point disagreeing with digits is rejected", !XSparkPipSizeForSpec(2, 0.001, pip, reason));
    Check("rejection states a reason", reason != "");
+
+   // Non-finite guards. Built through MathPow overflow rather than a literal
+   // expression or a division by zero, so the compiler cannot fold it and the
+   // test does not depend on divide-by-zero semantics. Nothing downstream may
+   // turn these into a usable distance: the consumer of the broker-point
+   // conversion is the slippage tolerance an order is sent with, and MQL5
+   // leaves a non-finite-to-ulong cast undefined.
+   const double infinity = MathPow(10.0, 400.0);
+   const double not_a_number = infinity - infinity;
+
+   Check("infinity is not a valid number", !MathIsValidNumber(infinity));
+   Check("nan is not a valid number", !MathIsValidNumber(not_a_number));
+
+   Check("non-finite point is rejected", !XSparkPipSizeForSpec(2, infinity, pip, reason));
+   Check("nan point is rejected", !XSparkPipSizeForSpec(2, not_a_number, pip, reason));
+   Check("non-finite size yields no price distance",
+         NearlyEqual(XSparkScorePointsToPrice(80.0, infinity), 0.0));
+   Check("non-finite points yield no price distance",
+         NearlyEqual(XSparkScorePointsToPrice(infinity, XSPARK_XAUUSD_SCORE_POINT_SIZE), 0.0));
+   Check("non-finite size yields no ScoreBot points",
+         NearlyEqual(XSparkPriceToScorePoints(0.80, infinity), 0.0));
+   Check("non-finite distance yields no broker points",
+         NearlyEqual(XSparkPriceDistanceToBrokerPoints(infinity, 0.01), 0.0));
+   Check("non-finite broker point yields no broker points",
+         NearlyEqual(XSparkPriceDistanceToBrokerPoints(0.30, infinity), 0.0));
+   Check("a non-finite chain yields no broker points",
+         NearlyEqual(XSparkScorePointsToBrokerPoints(100.0, infinity, 0.01), 0.0));
 
    // Conversion guards: an unresolved size must never produce a usable distance.
    Check("zero size yields no price distance", NearlyEqual(XSparkScorePointsToPrice(80.0, 0.0), 0.0));

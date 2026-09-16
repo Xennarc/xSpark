@@ -21,10 +21,14 @@
 // approximation.
 //
 // Resolution happens ONCE at initialisation and the size is passed to the
-// modules that need it. A conversion never reads the terminal: the exit
-// deviation is converted on the killswitch flatten path, which deliberately
-// runs while the quote feed is unusable, and a SymbolInfoDouble call there
-// could fail at exactly the moment the conversion matters most.
+// modules that need it, so no conversion reads the ScoreBot point size from the
+// terminal. The exit deviation is converted on the killswitch flatten path,
+// which deliberately runs while the quote feed is unusable, and re-deriving the
+// size there could fail at exactly the moment the conversion matters most.
+//
+// The broker point size is a separate quantity and is still read at the call
+// site, exactly as it was before this change. Hoisting that too is deliberately
+// out of scope here: it would be a behaviour change rather than unit plumbing.
 
 #define XSPARK_XAUUSD_SCORE_POINT_SIZE 0.01
 

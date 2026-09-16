@@ -249,6 +249,12 @@ string XSparkStatusFromSafety()
    if(g_safety_manager.StateRecoveryLatched())
       return "STATE RECOVERY";
 
+   // A non-conforming point size blocks every new entry for the life of the
+   // session. Without its own status the panel would render that as a healthy
+   // green SCANNING, which is the one reading an operator must never get.
+   if(!g_safety_manager.ScorePointSizeConforms())
+      return "POINT SIZE FAULT";
+
    if(g_safety_manager.DailyHaltLatched())
       return "DD HALT";
 
@@ -823,7 +829,14 @@ void XSparkResolveSessionScorePointSize()
    // Phase 0 keeps the EA XAUUSD-only, and the behaviour-neutrality claim holds
    // exactly where the resolved size equals the size the tested thresholds were
    // specified in. Anything else would silently rescale every threshold.
-   if(MathAbs(resolved - XSPARK_XAUUSD_SCORE_POINT_SIZE) > 0.0)
+   //
+   // Compared on the same relative tolerance the resolver already accepts between
+   // SYMBOL_POINT and 10^-SYMBOL_DIGITS. Demanding bitwise equality here while
+   // tolerating 1e-6 on the input it was derived from would be internally
+   // inconsistent: a spec that passes resolution could still latch a permanent
+   // veto. A genuine rescaling is a factor of ten, nine orders outside this
+   // tolerance, so nothing real is admitted by it.
+   if(MathAbs(resolved / XSPARK_XAUUSD_SCORE_POINT_SIZE - 1.0) > XSPARK_SPEC_RELATIVE_TOLERANCE)
    {
       g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
       g_score_point_size_conforms = false;
@@ -840,9 +853,16 @@ void XSparkResolveSessionScorePointSize()
       return;
    }
 
-   g_score_point_size = resolved;
+   // The declared baseline, not the broker-derived double, becomes the operating
+   // denominator. That makes the bit-for-bit neutrality guarantee structural
+   // rather than contingent on the broker reporting an exactly representable
+   // point. The resolved value is still logged so a within-tolerance but
+   // non-identical broker figure stays visible.
+   g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
    g_score_point_size_conforms = true;
-   g_score_point_size_reason = "ScoreBot point size matches the declared XAUUSD baseline.";
+   g_score_point_size_reason =
+      StringFormat("ScoreBot point size matches the declared XAUUSD baseline (resolved %s).",
+                   DoubleToString(resolved, 10));
 }
 
 int OnInit()

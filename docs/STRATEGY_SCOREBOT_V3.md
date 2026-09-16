@@ -37,9 +37,15 @@ a broker may use for gold - 2 digits with point 0.01, and 3 digits with point
 0.001 - so the resolution changes no threshold on gold. See ADR-020.
 
 Resolution happens once, in `OnInit`, and the resolved size is passed to the
-strategy, SafetyManager, ExecutionEngine and PositionManager. Conversions never
-read the terminal: the exit deviation is converted on the killswitch flatten
-path, which runs deliberately while the quote feed is unusable.
+strategy, SafetyManager, ExecutionEngine and PositionManager, so no conversion
+re-derives it from the terminal. The exit deviation is converted on the
+killswitch flatten path, which runs deliberately while the quote feed is
+unusable. The broker point size is a separate quantity and is still read at the
+call site, unchanged from before.
+
+A size that does not match the baseline blocks every new entry for the rest of
+the session, so the dashboard reports `POINT SIZE FAULT` in the alarm colour
+rather than a healthy `SCANNING`.
 
 If the size cannot be resolved, or does not match the declared XAUUSD baseline,
 the EA does **not** refuse to initialize. Refusing would stop `OnTick`, which

@@ -464,6 +464,11 @@ public:
       return m_state_recovery_latched;
    }
 
+   bool ScorePointSizeConforms()
+   {
+      return m_score_point_size_conforms;
+   }
+
    string StateRecoveryReason()
    {
       return m_state_recovery_reason;
