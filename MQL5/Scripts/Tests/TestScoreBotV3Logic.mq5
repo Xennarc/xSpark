@@ -146,12 +146,19 @@ void TestScorePointSizeDerivation()
    Check("XAUUSD 3-digit size equals the declared baseline exactly",
          pip == XSPARK_XAUUSD_SCORE_POINT_SIZE);
 
+   // Both return values are asserted before the sizes are compared. Comparing
+   // them alone would pass vacuously if BOTH calls failed, because a rejected
+   // spec leaves the out-parameter at 0.0 and 0.0 == 0.0. Equality against the
+   // declared baseline is the claim; equality with each other is not enough.
    double pip_2_digit = 0.0;
    double pip_3_digit = 0.0;
-   XSparkPipSizeForSpec(2, 0.01, pip_2_digit, reason);
-   XSparkPipSizeForSpec(3, 0.001, pip_3_digit, reason);
+   const bool resolved_2_digit = XSparkPipSizeForSpec(2, 0.01, pip_2_digit, reason);
+   const bool resolved_3_digit = XSparkPipSizeForSpec(3, 0.001, pip_3_digit, reason);
+   Check("both XAUUSD quote conventions resolve", resolved_2_digit && resolved_3_digit);
    Check("both XAUUSD quote conventions resolve to the same double",
-         pip_2_digit == pip_3_digit);
+         resolved_2_digit && resolved_3_digit && pip_2_digit == pip_3_digit);
+   Check("the shared XAUUSD size is the declared baseline",
+         resolved_2_digit && pip_2_digit == XSPARK_XAUUSD_SCORE_POINT_SIZE);
 
    Check("EURUSD 5-digit spec resolves", XSparkPipSizeForSpec(5, 0.00001, pip, reason));
    Check("EURUSD 5-digit size is a pip", NearlyEqual(pip, 0.0001));
