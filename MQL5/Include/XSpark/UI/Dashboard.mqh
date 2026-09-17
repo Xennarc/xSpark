@@ -113,6 +113,7 @@ public:
 
       const color status_color = status == "KILLSWITCH" || status == "DD HALT" || status == "STATE RECOVERY" ||
                                  status == "UNMANAGED EXPOSURE" || status == "POINT SIZE FAULT" ||
+                                 status == "DRIFT GATE FAULT" ||
                                  status == "ACCOUNT RISK" ? clrTomato :
                                  status == "ANALYSIS ONLY" || status == "TRADING DISABLED" ? clrGold :
                                  status == "SPREAD BLOCKED" || status == "ATR BLOCKED" ||

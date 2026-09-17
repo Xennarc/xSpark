@@ -35,6 +35,8 @@ private:
    double m_score_point_size;
    bool   m_score_point_size_conforms;
    string m_score_point_size_reason;
+   bool   m_entry_drift_bound_usable;
+   string m_entry_drift_bound_reason;
 
    double m_max_daily_dd_pct;
    bool   m_daily_halt_latched;
@@ -168,6 +170,8 @@ public:
       m_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
       m_score_point_size_conforms = false;
       m_score_point_size_reason = "ScoreBot point size has not been resolved.";
+      m_entry_drift_bound_usable = false;
+      m_entry_drift_bound_reason = "Entry drift bound has not been evaluated.";
    }
 
    bool Initialize(const string symbol,
@@ -185,6 +189,8 @@ public:
                    const double score_point_size,
                    const bool score_point_size_conforms,
                    const string score_point_size_reason,
+                   const bool entry_drift_bound_usable,
+                   const string entry_drift_bound_reason,
                    CXSparkLogger &logger)
    {
       if(symbol == "" || magic_number == 0)
@@ -223,6 +229,8 @@ public:
       m_score_point_size = score_point_size;
       m_score_point_size_conforms = score_point_size_conforms;
       m_score_point_size_reason = score_point_size_reason;
+      m_entry_drift_bound_usable = entry_drift_bound_usable;
+      m_entry_drift_bound_reason = entry_drift_bound_reason;
       m_clear_killswitch_latch = clear_killswitch_latch;
       m_total_dd_pct = 0.0;
 
@@ -436,6 +444,18 @@ public:
          return false;
       }
 
+      // The entry deviation is what keeps a permitted fill from realising more
+      // risk than was selected. When it no longer bounds that, every new entry
+      // would carry an unknown multiple of its own risk budget, so no new
+      // exposure may be opened. Live positions keep their protective
+      // management: the fault is in what a NEW fill could cost, not in what an
+      // existing stop is doing. See ADR-024.
+      if(!m_entry_drift_bound_usable)
+      {
+         m_last_reason = "Entry drift gate is inert: " + m_entry_drift_bound_reason;
+         return false;
+      }
+
       if(!TerminalTradeStateIsValid())
          return false;
 
@@ -531,6 +551,16 @@ public:
    bool ScorePointSizeConforms()
    {
       return m_score_point_size_conforms;
+   }
+
+   bool EntryDriftBoundUsable()
+   {
+      return m_entry_drift_bound_usable;
+   }
+
+   string EntryDriftBoundReason()
+   {
+      return m_entry_drift_bound_reason;
    }
 
    string StateRecoveryReason()
