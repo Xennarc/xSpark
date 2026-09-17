@@ -242,11 +242,113 @@ void TestScorePointSizeDerivation()
                         XSPARK_XAUUSD_SCORE_POINT_SIZE), 800.0));
 }
 
+// Phase 1: the base/higher timeframe table and the operating point size
+// decision. Both are pure and take their inputs as data, so they run from a
+// script on any chart.
+void TestTimeframePairing()
+{
+   ENUM_TIMEFRAMES higher = PERIOD_CURRENT;
+   string reason = "";
+
+   Check("M15 is supported", XSparkHigherTimeframeFor(PERIOD_M15, higher, reason));
+   Check("M15 pairs with H1 (the tested pair)", higher == PERIOD_H1);
+
+   Check("M1 is supported", XSparkHigherTimeframeFor(PERIOD_M1, higher, reason));
+   Check("M1 pairs with M5", higher == PERIOD_M5);
+   Check("M5 is supported", XSparkHigherTimeframeFor(PERIOD_M5, higher, reason));
+   Check("M5 pairs with M30", higher == PERIOD_M30);
+   Check("M30 is supported", XSparkHigherTimeframeFor(PERIOD_M30, higher, reason));
+   Check("M30 pairs with H2", higher == PERIOD_H2);
+   Check("H1 is supported", XSparkHigherTimeframeFor(PERIOD_H1, higher, reason));
+   Check("H1 pairs with H4", higher == PERIOD_H4);
+   Check("H2 is supported", XSparkHigherTimeframeFor(PERIOD_H2, higher, reason));
+   Check("H2 pairs with H8", higher == PERIOD_H8);
+   Check("H4 is supported", XSparkHigherTimeframeFor(PERIOD_H4, higher, reason));
+   Check("H4 pairs with D1", higher == PERIOD_D1);
+
+   // The partner must always be strictly longer, which is what IndicatorCache
+   // validates on initialisation.
+   Check("every supported pair is strictly increasing",
+         PeriodSeconds(PERIOD_M5) > PeriodSeconds(PERIOD_M1) &&
+         PeriodSeconds(PERIOD_M30) > PeriodSeconds(PERIOD_M5) &&
+         PeriodSeconds(PERIOD_H1) > PeriodSeconds(PERIOD_M15) &&
+         PeriodSeconds(PERIOD_H2) > PeriodSeconds(PERIOD_M30) &&
+         PeriodSeconds(PERIOD_H4) > PeriodSeconds(PERIOD_H1) &&
+         PeriodSeconds(PERIOD_H8) > PeriodSeconds(PERIOD_H2) &&
+         PeriodSeconds(PERIOD_D1) > PeriodSeconds(PERIOD_H4));
+
+   // Periods with no sane partner are refused rather than given an absurd ratio.
+   Check("H8 is refused", !XSparkHigherTimeframeFor(PERIOD_H8, higher, reason));
+   Check("refusal states a reason", reason != "");
+   Check("H12 is refused", !XSparkHigherTimeframeFor(PERIOD_H12, higher, reason));
+   Check("D1 is refused", !XSparkHigherTimeframeFor(PERIOD_D1, higher, reason));
+   Check("W1 is refused", !XSparkHigherTimeframeFor(PERIOD_W1, higher, reason));
+   Check("MN1 is refused", !XSparkHigherTimeframeFor(PERIOD_MN1, higher, reason));
+   Check("PERIOD_CURRENT is refused", !XSparkHigherTimeframeFor(PERIOD_CURRENT, higher, reason));
+   Check("a refused period yields no partner", higher == PERIOD_CURRENT);
+}
+
+void TestOperatingPointSizeSelection()
+{
+   double size = 0.0;
+   bool conforms = false;
+   string reason = "";
+
+   // XAUUSD keeps the Phase 0 regression assertion: the baseline constant is
+   // what operates, not the broker double.
+   Check("gold with a conforming resolve is trusted",
+         XSparkSelectOperatingPointSize(true, true, 0.01, 0.01, size, conforms, reason));
+   Check("gold operates on the declared baseline exactly", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+   Check("gold conforming sets the trusted flag", conforms);
+
+   Check("gold on a 3-digit feed is trusted",
+         XSparkSelectOperatingPointSize(true, true, 0.001 * 10.0, 0.001, size, conforms, reason));
+   Check("gold 3-digit still operates on the baseline", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+
+   // A rescaled gold feed must never be trusted, and must still leave a usable
+   // denominator so the exit deviation cannot collapse to CTrade's default.
+   Check("rescaled gold is refused",
+         !XSparkSelectOperatingPointSize(true, true, 0.0001, 0.0001, size, conforms, reason));
+   Check("rescaled gold is not trusted", !conforms);
+   Check("rescaled gold still yields the baseline denominator", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+   Check("unresolvable gold is refused",
+         !XSparkSelectOperatingPointSize(true, false, 0.0, 0.0, size, conforms, reason));
+   Check("unresolvable gold still yields the baseline denominator",
+         size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+
+   // Non-gold instruments have no declared baseline, so the spec-validated
+   // derivation is the answer and is trusted.
+   Check("EURUSD derivation is trusted",
+         XSparkSelectOperatingPointSize(false, true, 0.0001, 0.00001, size, conforms, reason));
+   Check("EURUSD operates on the derived pip", NearlyEqual(size, 0.0001));
+   Check("EURUSD is trusted", conforms);
+
+   Check("USDJPY derivation is trusted",
+         XSparkSelectOperatingPointSize(false, true, 0.01, 0.001, size, conforms, reason));
+   Check("USDJPY operates on the derived pip", NearlyEqual(size, 0.01));
+
+   // A non-gold instrument whose spec did not validate falls back to the raw
+   // broker point, still untrusted. Zero here would drop CTrade to its 10-point
+   // default on exits, which is the ADR-014 hazard.
+   Check("unresolvable EURUSD is refused",
+         !XSparkSelectOperatingPointSize(false, false, 0.0, 0.00001, size, conforms, reason));
+   Check("unresolvable EURUSD is not trusted", !conforms);
+   Check("unresolvable EURUSD falls back to the broker point", NearlyEqual(size, 0.00001));
+   Check("fallback states a reason", reason != "");
+
+   Check("unusable broker point is refused",
+         !XSparkSelectOperatingPointSize(false, false, 0.0, 0.0, size, conforms, reason));
+   Check("unusable broker point yields no denominator", NearlyEqual(size, 0.0));
+   Check("unusable broker point is not trusted", !conforms);
+}
+
 void OnStart()
 {
    Print("Starting ScoreBot_v3 deterministic logic tests");
    TestPatterns();
    TestPureCalculations();
    TestScorePointSizeDerivation();
+   TestTimeframePairing();
+   TestOperatingPointSizeSelection();
    PrintFormat("ScoreBot_v3 logic tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }

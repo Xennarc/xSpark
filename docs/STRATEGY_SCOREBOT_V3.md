@@ -1,6 +1,6 @@
 # ScoreBot_v3 Strategy
 
-ScoreBot_v3 is the first XSpark strategy implementation. It targets XAUUSD on M15 and runs inside the native MT5 Expert Advisor. This document separates the locked tested strategy logic from production safety additions added for live-risk control.
+ScoreBot_v3 is the first XSpark strategy implementation. It was developed and tested on XAUUSD M15, and since Phase 1 it will run on any symbol and any supported base timeframe. It runs inside the native MT5 Expert Advisor. This document separates the locked tested strategy logic from production safety additions added for live-risk control.
 
 The default configuration is MAX_SHARPE. Reference Python backtest results are unvalidated priors only, not expected returns.
 
@@ -9,11 +9,52 @@ The default configuration is MAX_SHARPE. Reference Python backtest results are u
 - Strategy ID: `ScoreBot_v3`
 - Default Magic Number: `770331`
 - Default order comment: `ScoreBot_v3`
-- Primary symbol: XAUUSD, including broker suffixes/prefixes containing `XAUUSD`
-- Primary timeframe: M15
+- Tested symbol: XAUUSD, including broker suffixes/prefixes containing `XAUUSD`
+- Tested timeframe pair: M15 base, H1 higher
 - Production runtime: native MQL5
 
-The EA refuses initialization on non-XAUUSD symbols or non-M15 chart timeframes.
+The instrument guard is lifted. The EA initializes on any symbol whose broker
+specification validates, and on any supported base timeframe.
+
+### Supported timeframes
+
+The base timeframe is the chart period. The multi-timeframe partner comes from
+an explicit table rather than arithmetic, because a computed `base x 4` produces
+absurd ratios at the edges of the period list (H8 would pair with W1, a 21x
+jump) and has no answer at all above D1.
+
+| Base | Higher |
+|---|---|
+| M1 | M5 |
+| M5 | M30 |
+| M15 | **H1** (the tested pair) |
+| M30 | H2 |
+| H1 | H4 |
+| H2 | H8 |
+| H4 | D1 |
+
+Any other chart period is refused at initialization. That is the same posture
+the old M15 guard had: a chart the strategy cannot be evaluated on at all is
+refused up front. It is not the runtime-fault case ADR-020 deliberately keeps
+out of `OnInit`.
+
+### Phase 1 limitations
+
+Phase 1 makes the EA *run* anywhere. It does not make the tested thresholds
+*correct* anywhere. Two consequences are expected, not bugs, and Phase 2's
+self-calibrating gates are what resolve them:
+
+- **Thresholds are still absolute.** `InpATRMinPoints = 80` now means 80 pips
+  on an FX pair. EURUSD M15 ATR is roughly 5-15 pips, so the ATR gate rejects
+  every bar and the dashboard reads `ATR BLOCKED`. `InpMaxSpreadPoints = 50`
+  becomes 50 pips, which is far too loose to filter anything. Running a non-gold
+  instrument therefore needs the ATR and spread inputs re-entered by hand until
+  Phase 2 derives them.
+- **Session weighting degrades on high timeframes.** The session weight is taken
+  from the hour of the signal bar. On H4 that hour is only ever 0, 4, 8, 12, 16
+  or 20, and on D1 it is always the session open hour, so the London/New York
+  windows stop discriminating. Above H1 the weighting should be treated as
+  meaningless. Phase 2's learned hourly activity profile replaces it.
 
 ## ScoreBot Point Normalization
 

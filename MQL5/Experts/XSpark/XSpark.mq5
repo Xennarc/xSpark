@@ -81,15 +81,18 @@ bool     g_state_purged = false;
 // Resolved once in OnInit and never re-read from the terminal. A conversion on
 // the killswitch flatten path runs while the quote feed is unusable, so the
 // size must already be held rather than fetched at the moment it is needed.
+ENUM_TIMEFRAMES g_base_timeframe = XSPARK_SCOREBOT_TESTED_BASE_TIMEFRAME;
+ENUM_TIMEFRAMES g_higher_timeframe = XSPARK_SCOREBOT_TESTED_HIGHER_TIMEFRAME;
+
 double g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
 bool   g_score_point_size_conforms = false;
 string g_score_point_size_reason = "ScoreBot point size has not been resolved.";
 
-datetime g_current_m15_bar_time = 0;
+datetime g_current_base_bar_time = 0;
 datetime g_last_evaluated_signal_bar_time = 0;
 double   g_latest_closed_atr14 = 0.0;
 string   g_status = "SCANNING";
-string   g_last_block_reason = "Waiting for the next closed M15 bar.";
+string   g_last_block_reason = "Waiting for the next closed base timeframe bar.";
 long     g_state_recovery_position_id = 0;
 datetime g_state_recovery_signal_bar_time = 0;
 datetime g_state_recovery_last_log_time = 0;
@@ -133,17 +136,20 @@ string XSparkDeinitReasonToString(const int reason)
 
 bool XSparkValidateInputs()
 {
-   if(!XSparkIsXauUsdSymbol(_Symbol))
+   // The instrument guard is lifted: the ScoreBot point size is now derived from
+   // the broker specification for any symbol (see ADR-021). The chart period is
+   // still validated, because an unsupported period has no multi-timeframe
+   // partner and the strategy cannot be evaluated at all without one. Refusing a
+   // chart the EA cannot analyse is the same posture the M15 guard had; it is not
+   // the runtime-fault case ADR-020 keeps out of OnInit.
+   string timeframe_reason = "";
+   if(!XSparkHigherTimeframeFor((ENUM_TIMEFRAMES)Period(), g_higher_timeframe, timeframe_reason))
    {
-      g_logger.Critical("EA", "ScoreBot_v3 supports only XAUUSD broker symbols.");
+      g_logger.Critical("EA", timeframe_reason);
       return false;
    }
 
-   if((ENUM_TIMEFRAMES)Period() != PERIOD_M15)
-   {
-      g_logger.Critical("EA", "ScoreBot_v3 must be attached to an M15 chart.");
-      return false;
-   }
+   g_base_timeframe = (ENUM_TIMEFRAMES)Period();
 
    if(InpMagicNumber == 0)
    {
@@ -638,20 +644,20 @@ void XSparkEvaluateNewBar()
       return;
    }
 
-   g_latest_closed_atr14 = g_indicator_cache.ATR14M15();
+   g_latest_closed_atr14 = g_indicator_cache.ATR14Base();
 
    XSparkCandle signal_bar;
-   if(!g_indicator_cache.M15Bar(1, signal_bar))
+   if(!g_indicator_cache.BaseBar(1, signal_bar))
    {
       g_status = "SCANNING";
-      g_last_block_reason = "Closed M15 signal bar is unavailable.";
+      g_last_block_reason = "Closed signal bar is unavailable.";
       return;
    }
 
    if(signal_bar.time == g_last_evaluated_signal_bar_time)
    {
       g_status = "SCANNING";
-      g_last_block_reason = "Closed M15 signal bar was already evaluated.";
+      g_last_block_reason = "Closed signal bar was already evaluated.";
       XSparkVerboseBlock("ScoreBotV3", g_last_block_reason);
       return;
    }
@@ -702,7 +708,7 @@ void XSparkEvaluateNewBar()
 
       // A blocked entry is normal; a blocked entry because the feed looks
       // frozen is worth seeing in the journal without verbose logging, and a
-      // skewed host clock shows up here first. Evaluations are once per M15
+      // skewed host clock shows up here first. Evaluations are once per base
       // bar, so this cannot flood.
       if(g_status == "STALE QUOTE")
          g_logger.Warn("SafetyManager", g_last_block_reason);
@@ -796,73 +802,59 @@ void XSparkEvaluateNewBar()
    XSparkEnterStateRecovery(plan, execution_result);
 }
 
-// Resolves the ScoreBot point size for the chart symbol and asserts it against
-// the declared XAUUSD baseline.
+// Resolves the ScoreBot point size for the chart symbol and decides whether it
+// can be trusted for new exposure. The decision itself lives in the pure
+// XSparkSelectOperatingPointSize so it is testable from a script; this wrapper
+// only supplies the broker facts and reports the outcome.
 //
-// A non-conforming size is NOT an initialisation failure. Refusing to initialise
+// XAUUSD keeps the Phase 0 regression assertion against the declared baseline.
+// Every other instrument has no tested baseline to compare against, so the
+// spec-validated derivation is the answer.
+//
+// An untrusted size is NOT an initialisation failure. Refusing to initialise
 // would stop OnTick entirely, which would abandon trailing, break-even,
 // protection repair and the total-drawdown killswitch while live positions stay
 // open at the broker - strictly worse than the mis-scaled thresholds the check
-// exists to catch. The EA instead falls back to the declared baseline, which is
-// the size that shipped before this change, and latches a SafetyManager veto so
-// no NEW exposure is opened while the unit is untrusted.
+// exists to catch. The EA falls back to a usable denominator and latches a
+// SafetyManager veto so no NEW exposure is opened while the unit is untrusted.
 void XSparkResolveSessionScorePointSize()
 {
    double resolved = 0.0;
-   string reason = "";
+   string resolve_reason = "";
+   const bool resolve_ok = XSparkResolveScorePointSize(_Symbol, resolved, resolve_reason);
+   const bool is_xauusd = XSparkIsXauUsdSymbol(_Symbol);
 
-   if(!XSparkResolveScorePointSize(_Symbol, resolved, reason))
+   string select_reason = "";
+   const bool trusted = XSparkSelectOperatingPointSize(is_xauusd,
+                                                       resolve_ok,
+                                                       resolved,
+                                                       SymbolInfoDouble(_Symbol, SYMBOL_POINT),
+                                                       g_score_point_size,
+                                                       g_score_point_size_conforms,
+                                                       select_reason);
+
+   g_score_point_size_reason = select_reason;
+
+   if(trusted)
    {
-      g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
-      g_score_point_size_conforms = false;
-      g_score_point_size_reason = reason;
-      g_logger.Critical("EA",
-                        StringFormat("ScoreBot point size could not be resolved for %s: %s "
-                                     "Falling back to the declared XAUUSD baseline %s and blocking new entries; "
-                                     "protective management of existing positions continues.",
-                                     _Symbol,
-                                     reason,
-                                     DoubleToString(XSPARK_XAUUSD_SCORE_POINT_SIZE, 8)));
+      g_logger.Info("EA",
+                    StringFormat("ScoreBot point size for %s resolved to %s. %s",
+                                 _Symbol,
+                                 DoubleToString(g_score_point_size, 10),
+                                 select_reason));
       return;
    }
 
-   // Phase 0 keeps the EA XAUUSD-only, and the behaviour-neutrality claim holds
-   // exactly where the resolved size equals the size the tested thresholds were
-   // specified in. Anything else would silently rescale every threshold.
-   //
-   // Compared on the same relative tolerance the resolver already accepts between
-   // SYMBOL_POINT and 10^-SYMBOL_DIGITS. Demanding bitwise equality here while
-   // tolerating 1e-6 on the input it was derived from would be internally
-   // inconsistent: a spec that passes resolution could still latch a permanent
-   // veto. A genuine rescaling is a factor of ten, nine orders outside this
-   // tolerance, so nothing real is admitted by it.
-   if(MathAbs(resolved / XSPARK_XAUUSD_SCORE_POINT_SIZE - 1.0) > XSPARK_SPEC_RELATIVE_TOLERANCE)
-   {
-      g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
-      g_score_point_size_conforms = false;
-      g_score_point_size_reason =
-         StringFormat("Resolved size %s does not match the declared XAUUSD baseline %s.",
-                      DoubleToString(resolved, 8),
-                      DoubleToString(XSPARK_XAUUSD_SCORE_POINT_SIZE, 8));
-      g_logger.Critical("EA",
-                        StringFormat("%s Broker digits=%d point=%s. Falling back to the baseline and blocking "
-                                     "new entries; protective management of existing positions continues.",
-                                     g_score_point_size_reason,
-                                     (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
-                                     DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_POINT), 10)));
-      return;
-   }
-
-   // The declared baseline, not the broker-derived double, becomes the operating
-   // denominator. That makes the bit-for-bit neutrality guarantee structural
-   // rather than contingent on the broker reporting an exactly representable
-   // point. The resolved value is still logged so a within-tolerance but
-   // non-identical broker figure stays visible.
-   g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
-   g_score_point_size_conforms = true;
-   g_score_point_size_reason =
-      StringFormat("ScoreBot point size matches the declared XAUUSD baseline (resolved %s).",
-                   DoubleToString(resolved, 10));
+   g_logger.Critical("EA",
+                     StringFormat("ScoreBot point size is not trusted for %s: %s "
+                                  "Resolver said: %s Broker digits=%d point=%s. Operating size %s. "
+                                  "New entries are blocked; protective management of existing positions continues.",
+                                  _Symbol,
+                                  select_reason,
+                                  resolve_reason == "" ? "(resolved cleanly)" : resolve_reason,
+                                  (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS),
+                                  DoubleToString(SymbolInfoDouble(_Symbol, SYMBOL_POINT), 10),
+                                  DoubleToString(g_score_point_size, 10)));
 }
 
 int OnInit()
@@ -880,7 +872,7 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(!g_indicator_cache.Initialize(_Symbol))
+   if(!g_indicator_cache.Initialize(_Symbol, g_base_timeframe, g_higher_timeframe))
    {
       g_logger.Critical("IndicatorCache", g_indicator_cache.LastReason());
       return INIT_FAILED;
@@ -976,9 +968,9 @@ int OnInit()
    }
 
    if(g_indicator_cache.IsValid())
-      g_latest_closed_atr14 = g_indicator_cache.ATR14M15();
+      g_latest_closed_atr14 = g_indicator_cache.ATR14Base();
 
-   g_current_m15_bar_time = iTime(_Symbol, PERIOD_M15, 0);
+   g_current_base_bar_time = iTime(_Symbol, g_base_timeframe, 0);
    EventSetTimer(5);
    g_dashboard.Initialize();
 
@@ -1003,7 +995,7 @@ int OnInit()
                                     XSparkBoolToString(MQLInfoInteger(MQL_TESTER) != 0),
                                     XSparkBoolToString(MQLInfoInteger(MQL_OPTIMIZATION) != 0)));
 
-   g_logger.Info("EA", "Startup complete. Waiting for the next genuine M15 bar before first strategy evaluation.");
+   g_logger.Info("EA", "Startup complete. Waiting for the next genuine base timeframe bar before first strategy evaluation.");
    XSparkUpdateDashboard();
 
    return INIT_SUCCEEDED;
@@ -1096,27 +1088,27 @@ void OnTick()
    if(g_safety_manager.StateRecoveryLatched())
       XSparkAttemptStateRecovery();
 
-   const datetime current_bar_time = iTime(_Symbol, PERIOD_M15, 0);
+   const datetime current_bar_time = iTime(_Symbol, g_base_timeframe, 0);
    if(current_bar_time == 0)
    {
       g_status = "SCANNING";
-      g_last_block_reason = "Current M15 bar timestamp is unavailable.";
+      g_last_block_reason = "Current bar timestamp is unavailable.";
       XSparkUpdateDashboard();
       return;
    }
 
-   if(g_current_m15_bar_time == 0)
+   if(g_current_base_bar_time == 0)
    {
-      g_current_m15_bar_time = current_bar_time;
+      g_current_base_bar_time = current_bar_time;
       g_status = "SCANNING";
-      g_last_block_reason = "Initialized current M15 bar timestamp; waiting for next bar.";
+      g_last_block_reason = "Initialized current bar timestamp; waiting for next bar.";
       XSparkUpdateDashboard();
       return;
    }
 
-   if(current_bar_time != g_current_m15_bar_time)
+   if(current_bar_time != g_current_base_bar_time)
    {
-      g_current_m15_bar_time = current_bar_time;
+      g_current_base_bar_time = current_bar_time;
       XSparkEvaluateNewBar();
    }
    else if(g_position_manager.ManagedPositionCount() > 0 &&

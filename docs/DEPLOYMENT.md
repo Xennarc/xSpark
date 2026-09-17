@@ -42,6 +42,9 @@ The VPS is production infrastructure, not the primary development environment.
 - Confirm symbol list and broker specifications.
 - Confirm no CRITICAL "ScoreBot point size" line was logged at startup, and that the dashboard status is not `POINT SIZE FAULT`. The startup `score_point_size=` value reads `0.01000000` on the failure paths too, because the EA falls back to the declared baseline before that line is emitted, so the absence of the CRITICAL is the check that carries the information.
 - Confirm XSpark Magic Number.
+- Confirm only ONE XSpark instance is attached per symbol per account. Positions are owned by symbol and Magic Number, not by chart period, so two instances on the same symbol with different chart periods will manage each other's positions and collide on per-position state keys. The EA cannot detect this from the inside; it is an operational rule.
+- Confirm the chart period is one of the supported base timeframes (M1, M5, M15, M30, H1, H2, H4).
+- On a non-XAUUSD symbol, confirm the ATR and spread inputs have been set for that instrument. The shipped defaults are XAUUSD values and will block every bar on an FX pair.
 - Confirm automated trading permissions in MT5.
 - Confirm account-level and EA-level risk limits.
 - Confirm VPS time, connectivity, and MT5 login state.

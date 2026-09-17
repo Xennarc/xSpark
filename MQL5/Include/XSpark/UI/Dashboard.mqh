@@ -143,9 +143,9 @@ public:
       SetLine(6, StringFormat("ATR14: %.2f pts | ATR50: %.2f pts",
                               report.atr_points,
                               report.atr50_points));
-      SetLine(7, StringFormat("RSI M15 %.2f | RSI H1 %.2f",
-                              report.rsi_m15,
-                              report.rsi_h1));
+      SetLine(7, StringFormat("RSI base %.2f | RSI HTF %.2f",
+                              report.rsi_base,
+                              report.rsi_higher));
       SetLine(8, StringFormat("Risk selected: %.2f%% | Threshold %.2f",
                               report.selected_risk_pct,
                               report.effective_threshold));
