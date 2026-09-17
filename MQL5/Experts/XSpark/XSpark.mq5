@@ -107,6 +107,10 @@ double g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
 bool   g_score_point_size_conforms = false;
 string g_score_point_size_reason = "ScoreBot point size has not been resolved.";
 
+// Increments in OnTester and OnDeinit so a single run proves which ran first,
+// rather than the ordering being assumed from documentation.
+int g_tester_sequence = 0;
+
 datetime g_current_base_bar_time = 0;
 datetime g_last_evaluated_signal_bar_time = 0;
 double   g_latest_closed_atr14 = 0.0;
@@ -1130,8 +1134,53 @@ int OnInit()
    return INIT_SUCCEEDED;
 }
 
+// Strategy Tester optimisation fitness, in R.
+//
+// ORDERING: OnTester() runs BEFORE OnDeinit(). The flush of trades that closed
+// but have not yet been detected must therefore happen here, as the first
+// statement, and not in OnDeinit - otherwise every pass scores a trade count
+// lower than the one it actually produced, and the under-count is silent.
+// The claim is not taken on faith: both handlers log their sequence position,
+// so a single run confirms the order empirically.
+double OnTester()
+{
+   // First statement. Reconcile detects positions that have closed and routes
+   // them through the closure path, which is what feeds the ledger.
+   g_position_manager.Reconcile(g_logger);
+
+   g_tester_sequence++;
+   g_logger.Info("Tester", StringFormat("OnTester ran at sequence position %d.", g_tester_sequence));
+
+   const int trades = g_position_manager.RecordedTradeCount();
+   const int live_at_end = g_position_manager.LiveManagedCount();
+   const double fitness = g_position_manager.RecordedFitness(XSPARK_FITNESS_PENALTY_K,
+                                                             XSPARK_FITNESS_MIN_TRADES);
+
+   // The journal's trade count should equal the tester's, or differ by exactly
+   // the live-at-end count. Reporting both is what makes that a check rather
+   // than an assumption.
+   g_logger.Info("Tester",
+                 StringFormat("Pass result: recorded_trades=%d live_at_end=%d mean_R=%.4f stdev_R=%.4f "
+                              "min_R=%.4f max_R=%.4f fitness=%.6f%s",
+                              trades,
+                              live_at_end,
+                              g_position_manager.RecordedMeanR(),
+                              g_position_manager.RecordedStdDevR(),
+                              g_position_manager.RecordedMinR(),
+                              g_position_manager.RecordedMaxR(),
+                              fitness,
+                              fitness <= XSPARK_FITNESS_SENTINEL + 1.0
+                                 ? StringFormat(" (SENTINEL: below the %d-trade minimum)", XSPARK_FITNESS_MIN_TRADES)
+                                 : ""));
+
+   return fitness;
+}
+
 void OnDeinit(const int reason)
 {
+   g_tester_sequence++;
+   g_logger.Info("Tester", StringFormat("OnDeinit ran at sequence position %d.", g_tester_sequence));
+
    EventKillTimer();
    g_indicator_cache.Deinitialize();
    g_strategy.Deinitialize();

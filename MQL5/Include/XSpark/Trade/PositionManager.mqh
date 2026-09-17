@@ -29,6 +29,7 @@ private:
    string m_symbol;
    bool   m_use_stop_level_validation;
    double m_score_point_size;
+   XSparkRLedger m_r_ledger;
    int    m_managed_position_count;
    int    m_unmanaged_position_count;
    string m_last_reason;
@@ -942,6 +943,13 @@ private:
                                   has_r ? DoubleToString(mae_r, 4) : "n/a",
                                   DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2)));
 
+         // Only a trade with a real original risk distance contributes to the
+         // fitness ledger. An adopted position has no denominator (ADR-018), so
+         // including it would mean averaging a fabricated zero into the mean R
+         // and quietly diluting the very statistic the optimisation reads.
+         if(has_r)
+            XSparkRLedgerAdd(m_r_ledger, realised_r);
+
          // The plan's Stage 2 gate is that every exit record satisfies
          // mfe_r >= mae_r. A violation means the excursion tracking is wrong,
          // not that the market did something unusual, so it is surfaced rather
@@ -980,6 +988,7 @@ public:
       m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
       ResetFlattenCampaign();
+      XSparkResetRLedger(m_r_ledger);
    }
 
    bool Initialize(const string symbol,
@@ -1010,6 +1019,12 @@ public:
       m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
       ResetFlattenCampaign();
+
+      // The ledger is per-run, and MT5 reruns OnInit on a parameter change, so a
+      // live restart resets it. That is correct for its purpose: it exists to
+      // score one Strategy Tester pass, not to be a live accounting record. The
+      // durable per-trade record is the journal, not this.
+      XSparkResetRLedger(m_r_ledger);
       ArrayResize(m_states, 0);
       m_store.Initialize((long)AccountInfoInteger(ACCOUNT_LOGIN), m_symbol, m_magic_number);
       m_trade.SetExpertMagicNumber(m_magic_number);
@@ -1860,6 +1875,47 @@ public:
       }
 
       return removed;
+   }
+
+   // Realised-R ledger for the Strategy Tester fitness. Read-only to callers;
+   // it is fed exclusively by the closure path so a trade cannot be counted
+   // twice or counted without having actually closed.
+   int RecordedTradeCount()
+   {
+      return m_r_ledger.count;
+   }
+
+   double RecordedMeanR()
+   {
+      return XSparkRLedgerMean(m_r_ledger);
+   }
+
+   double RecordedStdDevR()
+   {
+      return XSparkRLedgerStdDev(m_r_ledger);
+   }
+
+   double RecordedMinR()
+   {
+      return m_r_ledger.min_r;
+   }
+
+   double RecordedMaxR()
+   {
+      return m_r_ledger.max_r;
+   }
+
+   double RecordedFitness(const double k, const int min_trades)
+   {
+      return XSparkRLedgerFitness(m_r_ledger, k, min_trades);
+   }
+
+   // Positions still live at end of test. The journal's trade count should equal
+   // the tester's, or differ by exactly this, and reporting it is what makes
+   // that check possible rather than a guess.
+   int LiveManagedCount()
+   {
+      return m_managed_position_count;
    }
 
    string LastReason()
