@@ -133,6 +133,8 @@ private:
       ok = m_store.Set(PositionStateKey(state.identifier, "bt"), (double)state.signal_bar_time) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "pi"), (double)state.pattern_id) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "rd"), state.initial_risk_distance) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "mf"), state.mfe_price) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "ma"), state.mae_price) && ok;
 
       if(!ok)
          m_last_reason = "Failed to persist XSpark position state to terminal global variables.";
@@ -182,6 +184,8 @@ private:
       state.pattern_id = (EXSparkScoreBotPatternId)(int)m_store.Get(PositionStateKey(state.identifier, "pi"), (double)state.pattern_id);
       state.pattern_name = XSparkPatternNameFromId(state.pattern_id);
       state.initial_risk_distance = m_store.Get(PositionStateKey(state.identifier, "rd"), state.initial_risk_distance);
+      state.mfe_price = m_store.Get(PositionStateKey(state.identifier, "mf"), state.mfe_price);
+      state.mae_price = m_store.Get(PositionStateKey(state.identifier, "ma"), state.mae_price);
       return true;
    }
 
@@ -547,6 +551,11 @@ private:
       state.pattern_name = plan.pattern_name;
       state.initial_risk_distance = MathAbs(state.entry - state.initial_sl);
 
+      // Excursions start at the entry, so a position that never moves reports
+      // zero in both directions rather than an unset sentinel.
+      state.mfe_price = state.entry;
+      state.mae_price = state.entry;
+
       if(live_sl > 0.0 && submitted_sl > 0.0 &&
          MathAbs(live_sl - submitted_sl) > XSparkScorePointsToPrice(1.0, m_score_point_size))
       {
@@ -700,7 +709,27 @@ private:
       if(identifier == 0 || !HistorySelectByPosition(identifier))
          return false;
 
-      bool found = false;
+      XSparkClosureTotals totals;
+      XSparkResetClosureTotals(totals);
+      AccumulateSelectedClosureDeals(totals);
+
+      if(totals.deal_count <= 0)
+         return false;
+
+      profit = totals.net_profit;
+      exit_price = totals.exit_price;
+      return true;
+   }
+
+   // Walks whatever history selection is already in place and folds every
+   // closing deal into the shared accumulator. Both closure paths call this, so
+   // the commission/swap accounting and the volume-weighted exit price cannot
+   // diverge between them.
+   void AccumulateSelectedClosureDeals(XSparkClosureTotals &totals,
+                                       const string filter_symbol = "",
+                                       const ulong filter_magic = 0,
+                                       const long filter_identifier = 0)
+   {
       const int deals = HistoryDealsTotal();
 
       for(int index = 0; index < deals; index++)
@@ -713,12 +742,23 @@ private:
          if(entry_type != DEAL_ENTRY_OUT && entry_type != DEAL_ENTRY_OUT_BY)
             continue;
 
-         profit += HistoryDealGetDouble(deal, DEAL_PROFIT);
-         exit_price = HistoryDealGetDouble(deal, DEAL_PRICE);
-         found = true;
-      }
+         if(filter_symbol != "" && HistoryDealGetString(deal, DEAL_SYMBOL) != filter_symbol)
+            continue;
 
-      return found;
+         if(filter_magic != 0 && (ulong)HistoryDealGetInteger(deal, DEAL_MAGIC) != filter_magic)
+            continue;
+
+         if(filter_identifier != 0 && HistoryDealGetInteger(deal, DEAL_POSITION_ID) != filter_identifier)
+            continue;
+
+         XSparkAccumulateClosureDeal(totals,
+                                     HistoryDealGetDouble(deal, DEAL_PROFIT),
+                                     HistoryDealGetDouble(deal, DEAL_COMMISSION),
+                                     HistoryDealGetDouble(deal, DEAL_SWAP),
+                                     HistoryDealGetDouble(deal, DEAL_VOLUME),
+                                     HistoryDealGetDouble(deal, DEAL_PRICE),
+                                     (datetime)HistoryDealGetInteger(deal, DEAL_TIME));
+      }
    }
 
    void ResetFlattenCampaign()
@@ -859,45 +899,62 @@ private:
          return;
       }
 
-      double profit = 0.0;
-      double exit_price = 0.0;
-      bool found = false;
+      XSparkClosureTotals totals;
+      XSparkResetClosureTotals(totals);
+      AccumulateSelectedClosureDeals(totals, m_symbol, m_magic_number, state.identifier);
 
-      const int deals = HistoryDealsTotal();
-      for(int index = 0; index < deals; index++)
+      if(totals.deal_count > 0)
       {
-         const ulong deal = HistoryDealGetTicket(index);
-         if(deal == 0)
-            continue;
+         // R is reported against the ORIGINAL entry risk, which is the only
+         // denominator the exit rules are expressed in. It is unavailable for an
+         // adopted position (ADR-018), so it is omitted rather than fabricated.
+         const double realised_r = state.initial_risk_distance > 0.0 && totals.exit_price > 0.0
+                                   ? (state.direction == XSPARK_SIGNAL_BUY
+                                      ? (totals.exit_price - state.entry)
+                                      : (state.entry - totals.exit_price)) / state.initial_risk_distance
+                                   : 0.0;
 
-         if(HistoryDealGetString(deal, DEAL_SYMBOL) != m_symbol)
-            continue;
+         const int digits = (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS);
+         const bool has_r = state.initial_risk_distance > 0.0;
 
-         const long magic = HistoryDealGetInteger(deal, DEAL_MAGIC);
-         if(magic < 0 || (ulong)magic != m_magic_number)
-            continue;
+         const double mfe_r = XSparkExcursionR(state.direction, state.entry,
+                                               state.mfe_price, state.initial_risk_distance);
+         const double mae_r = XSparkExcursionR(state.direction, state.entry,
+                                               state.mae_price, state.initial_risk_distance);
 
-         const long position_id = HistoryDealGetInteger(deal, DEAL_POSITION_ID);
-         if(state.identifier != 0 && position_id != state.identifier)
-            continue;
-
-         const long entry_type = HistoryDealGetInteger(deal, DEAL_ENTRY);
-         if(entry_type == DEAL_ENTRY_OUT || entry_type == DEAL_ENTRY_OUT_BY)
-         {
-            profit += HistoryDealGetDouble(deal, DEAL_PROFIT);
-            exit_price = HistoryDealGetDouble(deal, DEAL_PRICE);
-            found = true;
-         }
-      }
-
-      if(found)
-      {
          logger.Info("PositionManager",
-                     StringFormat("Closed XSpark position identifier=%I64d entry=%s exit=%s P/L=%s",
+                     StringFormat("Closed XSpark position identifier=%I64d pattern=%s score=%.4f entry=%s exit=%s "
+                                  "lots=%s deals=%d gross=%s commission=%s swap=%s net=%s R=%s MFE_R=%s MAE_R=%s "
+                                  "balance=%s",
                                   state.identifier,
-                                  DoubleToString(state.entry, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                                  DoubleToString(exit_price, (int)SymbolInfoInteger(m_symbol, SYMBOL_DIGITS)),
-                                  DoubleToString(profit, 2)));
+                                  state.pattern_name,
+                                  state.entry_score,
+                                  DoubleToString(state.entry, digits),
+                                  DoubleToString(totals.exit_price, digits),
+                                  DoubleToString(totals.volume, 2),
+                                  totals.deal_count,
+                                  DoubleToString(totals.gross_profit, 2),
+                                  DoubleToString(totals.commission, 2),
+                                  DoubleToString(totals.swap, 2),
+                                  DoubleToString(totals.net_profit, 2),
+                                  has_r ? DoubleToString(realised_r, 4) : "n/a",
+                                  has_r ? DoubleToString(mfe_r, 4) : "n/a",
+                                  has_r ? DoubleToString(mae_r, 4) : "n/a",
+                                  DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2)));
+
+         // The plan's Stage 2 gate is that every exit record satisfies
+         // mfe_r >= mae_r. A violation means the excursion tracking is wrong,
+         // not that the market did something unusual, so it is surfaced rather
+         // than left for a later analyst to discover in aggregate.
+         if(has_r && mfe_r < mae_r - 0.0000001)
+         {
+            logger.Warn("PositionManager",
+                        StringFormat("Excursion invariant violated on identifier=%I64d: MFE_R %.4f < MAE_R %.4f. "
+                                     "Treat this trade's excursion fields as unreliable.",
+                                     state.identifier,
+                                     mfe_r,
+                                     mae_r));
+         }
       }
       else
       {
@@ -1341,6 +1398,18 @@ public:
 
          const EXSparkSignalDirection direction = m_states[index].direction;
          const double entry = m_states[index].entry;
+
+         // Excursion tracking, before any management decision. Measured on the
+         // exit side - Bid for a long, Ask for a short - because that is the
+         // price the position could actually have been closed at. Sampling here
+         // means the resolution is the management pass rather than the tick, so
+         // these are a lower bound on the true excursion, which is the honest
+         // direction to be wrong in.
+         XSparkUpdateExcursion(direction,
+                               direction == XSPARK_SIGNAL_BUY ? bid : ask,
+                               m_states[index].mfe_price,
+                               m_states[index].mae_price);
+
          const double current_volume = PositionGetDouble(POSITION_VOLUME);
          const double current_tp = PositionGetDouble(POSITION_TP);
 

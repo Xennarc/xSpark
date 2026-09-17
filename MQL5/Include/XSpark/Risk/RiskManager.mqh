@@ -21,6 +21,41 @@ double XSparkRiskPercentForScore(const double final_score,
    return MathMin(selected, max_risk_pct);
 }
 
+// How many consecutive full-stop losses reach a drawdown limit at a given risk
+// percentage. Risk is a fraction of the CURRENT balance, so losses compound
+// down rather than subtract linearly: after k losses the balance is
+// (1 - f)^k, and the drawdown is 1 - (1 - f)^k.
+//
+// This exists to be printed at startup. The relationship between risk size and
+// how long the account survives an ordinary losing streak is the single number
+// an operator most needs before choosing a risk level, and it is not obvious:
+// doubling the risk does not halve the tolerance, and the baseline run in
+// docs/IMPROVEMENT_PLAN.md already contained an 8-loss streak.
+//
+// Returns 0 when the inputs cannot produce an answer.
+int XSparkConsecutiveLossesToDrawdown(const double risk_pct, const double drawdown_limit_pct)
+{
+   if(!MathIsValidNumber(risk_pct) || !MathIsValidNumber(drawdown_limit_pct))
+      return 0;
+
+   if(risk_pct <= 0.0 || risk_pct >= 100.0)
+      return 0;
+
+   if(drawdown_limit_pct <= 0.0 || drawdown_limit_pct >= 100.0)
+      return 0;
+
+   const double f = risk_pct / 100.0;
+   const double limit = drawdown_limit_pct / 100.0;
+
+   // Smallest k with 1 - (1-f)^k >= limit, i.e. k >= ln(1-limit) / ln(1-f).
+   // Both logarithms are negative, so the quotient is positive.
+   const double exact = MathLog(1.0 - limit) / MathLog(1.0 - f);
+   if(!MathIsValidNumber(exact) || exact <= 0.0)
+      return 0;
+
+   return (int)MathCeil(exact - 0.0000001);
+}
+
 class CXSparkRiskManager
 {
 private:

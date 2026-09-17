@@ -43,11 +43,21 @@ input double InpPartialClosePct = 50.0;
 input double InpATRMultTrail = 2.0;
 
 input group "Risk"
-input double InpRiskPctTier1 = 1.0;
-input double InpRiskPctTier2 = 1.5;
-input double InpRiskPctTier3 = 2.0;
-input double InpMaxRiskPct = 2.0;
-input double InpMaxDailyDDPct = 5.0;
+// Defaults are the growth-optimal region for the edge measured in
+// docs/IMPROVEMENT_PLAN.md (36% win rate, 1.974 payoff, +0.0706 R per trade),
+// which puts the Kelly fraction at 3.58%. Growth per trade PEAKS there and
+// falls away above it: 10% risk turns a genuinely positive edge into a
+// decaying account, because compounding is multiplicative. See ADR-022.
+//
+// The tiers are flat by default. Tier selection reads the session-weighted
+// score, so identical evidence would otherwise size differently purely by the
+// hour of day, and at a larger risk figure that distortion is amplified. The
+// inputs remain separate so tiering can be reinstated deliberately.
+input double InpRiskPctTier1 = 3.0;
+input double InpRiskPctTier2 = 3.0;
+input double InpRiskPctTier3 = 3.0;
+input double InpMaxRiskPct = 3.5;
+input double InpMaxDailyDDPct = 15.0;
 
 input group "Sessions"
 input bool InpAllowAsianReduced = true;
@@ -57,7 +67,16 @@ input bool   InpUseSpreadFilter = true;
 input double InpMaxSpreadPoints = 50.0;
 input double InpMaxSpreadATRPct = 10.0;
 input bool   InpUseTotalDDKillSwitch = true;
-input double InpMaxTotalDDPct = 8.0;
+// Sized to survive an ordinary losing streak at the configured risk rather than
+// to feel small. At 3% risk, eight consecutive full-stop losses - the streak
+// the baseline run already produced - cost 21.6%. An 8% limit would latch on
+// the third loss and stop the account permanently on routine variance. The
+// startup log prints the exact tolerance for whatever values are set.
+input double InpMaxTotalDDPct = 25.0;
+// Clears a PERSISTED killswitch latch. The latch now survives restarts, so
+// this is the only way to resume after one. Set it true, attach, confirm the
+// CRITICAL line, then set it back to false.
+input bool   InpClearKillswitchLatch = false;
 input bool   InpUseStopLevelValidation = true;
 input bool   InpUseMarginCheck = true;
 input double InpMarginBufferPct = 20.0;
@@ -216,6 +235,8 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   // Risk inputs were previously checked only for positivity, so a fat-fingered
+   // 30.0 was accepted in silence. Every one now carries an upper bound.
    if(InpRiskPctTier1 <= 0.0 || InpRiskPctTier2 <= 0.0 ||
       InpRiskPctTier3 <= 0.0 || InpMaxRiskPct <= 0.0 ||
       InpMaxDailyDDPct <= 0.0)
@@ -224,11 +245,61 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   if(InpRiskPctTier1 > XSPARK_MAX_ALLOWED_RISK_PCT ||
+      InpRiskPctTier2 > XSPARK_MAX_ALLOWED_RISK_PCT ||
+      InpRiskPctTier3 > XSPARK_MAX_ALLOWED_RISK_PCT ||
+      InpMaxRiskPct > XSPARK_MAX_ALLOWED_RISK_PCT)
+   {
+      g_logger.Critical("EA",
+                        StringFormat("Risk per trade above %.1f%% is refused. Growth per trade peaks near the Kelly "
+                                     "fraction and turns negative well below this ceiling, so a larger figure trades "
+                                     "faster toward ruin, not toward profit. See ADR-022.",
+                                     XSPARK_MAX_ALLOWED_RISK_PCT));
+      return false;
+   }
+
    if(InpMaxSpreadPoints <= 0.0 || InpMaxSpreadATRPct <= 0.0 ||
       InpMaxTotalDDPct <= 0.0 || InpMarginBufferPct < 0.0)
    {
       g_logger.Critical("EA", "Production-control inputs are invalid.");
       return false;
+   }
+
+   // A daily limit at or above the total limit can never bind, which would
+   // silently remove the shorter-horizon brake entirely.
+   if(InpMaxTotalDDPct >= 100.0 || InpMaxDailyDDPct >= 100.0 ||
+      InpMaxDailyDDPct >= InpMaxTotalDDPct)
+   {
+      g_logger.Critical("EA",
+                        "Drawdown limits are invalid: both must be below 100% and the daily limit must be "
+                        "strictly below the total limit, or the daily halt can never fire.");
+      return false;
+   }
+
+   // The killswitch must survive an ordinary losing streak at the configured
+   // risk, or it converts routine variance into a permanent stop. Refusing is
+   // wrong here - the operator may want a tight limit deliberately - but it
+   // must never be a surprise, so it is stated loudly at startup.
+   const int losses_to_killswitch = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxTotalDDPct);
+   const int losses_to_daily_halt = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxDailyDDPct);
+
+   g_logger.Info("EA",
+                 StringFormat("Risk tolerance at max %.2f%% per trade: %d consecutive full-stop losses latch the "
+                              "%.1f%% killswitch, %d latch the %.1f%% daily halt.",
+                              InpMaxRiskPct,
+                              losses_to_killswitch,
+                              InpMaxTotalDDPct,
+                              losses_to_daily_halt,
+                              InpMaxDailyDDPct));
+
+   if(losses_to_killswitch > 0 && losses_to_killswitch < XSPARK_MIN_LOSS_STREAK_TOLERANCE)
+   {
+      g_logger.Warn("EA",
+                    StringFormat("The killswitch latches after only %d consecutive losses. The reference run in "
+                                 "docs/IMPROVEMENT_PLAN.md contained an 8-loss streak, which at a 64%% loss rate is "
+                                 "roughly the MEDIAN longest run over 50 trades rather than a tail event. Expect the "
+                                 "killswitch to fire on ordinary variance at these settings.",
+                                 losses_to_killswitch));
    }
 
    if(InpMaxQuoteAgeSeconds <= 0)
@@ -307,6 +378,46 @@ void XSparkUpdateDashboard()
                       mode,
                       dashboard_status,
                       dashboard_reason);
+}
+
+// Machine-greppable record of a signal that did NOT become a trade.
+//
+// Without this, the journal cannot distinguish a strategy that found no setups
+// from one that found them and could not fund them - which is the difference
+// between "the market was quiet" and "the account is too small for the ATR band
+// this gate admits". Both look like silence. It carries the score components so
+// a rejected population can be compared against the taken one offline, and the
+// balance so that comparison survives across account sizes.
+//
+// Emitted at most once per evaluated bar, so it cannot flood.
+void XSparkLogSignalRejection(const string stage,
+                              const string reason,
+                              XSparkScoreBotReport &report)
+{
+   g_logger.Info("Rejected",
+                 StringFormat("stage=%s bar=%s pattern=%s dir=%s raw=%.4f final=%.4f threshold=%.4f "
+                              "session_w=%.2f pat=%.2f atr=%.2f trend=%.2f rsi=%.2f sr=%.2f vol=%.2f mtf=%.2f "
+                              "atr14_pts=%.2f atr50_pts=%.2f rr=%.4f balance=%s reason=%s",
+                              stage,
+                              TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES),
+                              report.pattern_name,
+                              XSparkDirectionName(report.direction),
+                              report.components.raw,
+                              report.components.final_score,
+                              report.effective_threshold,
+                              report.components.session_weight,
+                              report.components.pattern,
+                              report.components.atr,
+                              report.components.trend,
+                              report.components.rsi,
+                              report.components.sr,
+                              report.components.volume,
+                              report.components.mtf,
+                              report.atr_points,
+                              report.atr50_points,
+                              report.dynamic_rr,
+                              DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
+                              reason));
 }
 
 void XSparkVerboseBlock(const string component, const string reason)
@@ -679,6 +790,13 @@ void XSparkEvaluateNewBar()
    {
       g_status = report.status;
       g_last_block_reason = report.block_reason;
+
+      // Only bars where a pattern actually formed are recorded. A bar with no
+      // pattern is not a rejected signal, it is the absence of one, and logging
+      // every quiet bar would bury the population that matters.
+      if(report.has_pattern)
+         XSparkLogSignalRejection("strategy", g_last_block_reason, report);
+
       if(StringFind(g_last_block_reason, "Unexpected ScoreBot score") >= 0)
          g_logger.Error("ScoreBotV3", g_last_block_reason);
       else
@@ -710,6 +828,8 @@ void XSparkEvaluateNewBar()
       // frozen is worth seeing in the journal without verbose logging, and a
       // skewed host clock shows up here first. Evaluations are once per base
       // bar, so this cannot flood.
+      XSparkLogSignalRejection("safety", g_last_block_reason, report);
+
       if(g_status == "STALE QUOTE")
          g_logger.Warn("SafetyManager", g_last_block_reason);
       else
@@ -723,6 +843,7 @@ void XSparkEvaluateNewBar()
    {
       g_status = "SCANNING";
       g_last_block_reason = g_risk_manager.LastReason();
+      XSparkLogSignalRejection("risk", g_last_block_reason, report);
       XSparkVerboseBlock("RiskManager", g_last_block_reason);
       return;
    }
@@ -733,6 +854,13 @@ void XSparkEvaluateNewBar()
    if(!XSparkPrepareTradePlan(signal, risk_pct, plan))
    {
       g_status = "SCANNING";
+
+      // The most consequential rejection class on a small account: the signal
+      // passed every gate and then could not be funded, because normalising the
+      // volume down landed below the broker minimum and the sizer aborts rather
+      // than round up past the risk budget. In the journal this is otherwise
+      // indistinguishable from the market being quiet.
+      XSparkLogSignalRejection("plan", g_last_block_reason, report);
       XSparkVerboseBlock("TradePlan", g_last_block_reason);
       return;
    }
@@ -913,6 +1041,7 @@ int OnInit()
                                    InpMaxTotalDDPct,
                                    InpMaxDailyDDPct,
                                    InpMaxQuoteAgeSeconds,
+                                   InpClearKillswitchLatch,
                                    g_score_point_size,
                                    g_score_point_size_conforms,
                                    g_score_point_size_reason,

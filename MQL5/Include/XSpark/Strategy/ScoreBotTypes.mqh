@@ -46,6 +46,20 @@ bool XSparkHigherTimeframeFor(const ENUM_TIMEFRAMES base,
 #define XSPARK_SCOREBOT_TIER2_THRESHOLD 4.5
 #define XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS 30.0
 
+// Hard ceiling on risk per trade. Not a preference: with the edge measured in
+// docs/IMPROVEMENT_PLAN.md the growth-optimal (Kelly) fraction is 3.58% and
+// expected log-growth crosses zero at about 7.2%. Above that a genuinely
+// positive edge still shrinks the account, because compounding is
+// multiplicative and a large loss needs a larger gain to undo. 10% leaves room
+// to size well past the optimum deliberately while refusing the fat-finger
+// entries that would otherwise be accepted in silence.
+#define XSPARK_MAX_ALLOWED_RISK_PCT 10.0
+
+// Below this many consecutive full-stop losses to the killswitch, the limit is
+// tight enough that ordinary variance will latch it. The reference run already
+// contained an 8-loss streak.
+#define XSPARK_MIN_LOSS_STREAK_TOLERANCE 6
+
 enum EXSparkScoreBotPatternId
 {
    XSPARK_PATTERN_NONE = 0,
