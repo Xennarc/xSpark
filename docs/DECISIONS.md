@@ -20,7 +20,7 @@ Reason: A single-trader retail system should remain cheap, simple, and operation
 
 Reason: EA RAM state can disappear after restart, crash, recompilation, chart changes, or VPS interruption.
 
-## ADR-006 - Canonical XAU Point Model
+## ADR-006 - Canonical XAU Point Model (superseded by ADR-020)
 
 Reason: ScoreBot_v3 thresholds were specified in 0.01 XAUUSD price units, while brokers may quote gold with different native point sizes. Strategy thresholds use canonical points and convert to broker-native values only at MT5 boundaries.
 
@@ -54,7 +54,7 @@ Reason: A `TRADE_RETCODE_DONE` retcode proves the order was accepted; it does no
 
 ## ADR-014 - Wider Deviation For Exits Than For Entries
 
-Reason: An entry that cannot be filled inside a tight tolerance can simply be abandoned. An exit cannot. `CTrade` defaults to a 10-point deviation, which for gold is smaller than a typical spread, so a killswitch close could be rejected repeatedly and leave exposure open. XSpark-owned exits use 100 canonical points; closing at a slightly worse price is always better than failing to close.
+Reason: An entry that cannot be filled inside a tight tolerance can simply be abandoned. An exit cannot. `CTrade` defaults to a 10-point deviation, which for gold is smaller than a typical spread, so a killswitch close could be rejected repeatedly and leave exposure open. XSpark-owned exits use 100 ScoreBot points; closing at a slightly worse price is always better than failing to close.
 
 ## ADR-015 - Residual Execution Slippage Is Reported, Not Pre-Compensated
 
@@ -77,3 +77,19 @@ A position is therefore managed only when a persisted record for its `POSITION_I
 ## ADR-019 - Per-Position State Is Swept, Never During OnInit
 
 Reason: Positions that close while the EA is not running never reach reconciliation's cleanup path, so their per-position keys accumulate against MT5's global-variable budget until `GlobalVariableSet` begins to fail. The sweep's two liveness tests both trace back to `PositionsTotal()`, directly or through the table reconciliation builds from it, so they are not independent: a terminal whose trade context has not synchronised reports zero positions and every key looks orphaned. Running the sweep in `OnInit` would therefore delete the state of live positions. It runs on the first tick after a valid quote and a completed reconciliation, is skipped while the terminal is disconnected, and reconciliation itself defers pruning under the same condition.
+
+## ADR-020 - The ScoreBot Point Size Is Resolved, Not Hardcoded
+
+Reason: Every ScoreBot threshold - the ATR gate, the spread cap, the entry deviation and the exit deviation - was denominated against `XSPARK_XAU_CANONICAL_POINT_SIZE`, a compile-time 0.01 that is only meaningful for gold. The size is now derived from the instrument specification through the pure `XSparkPipSizeForSpec(digits, point, ...)`, which requires `SYMBOL_POINT` to agree with `10^-SYMBOL_DIGITS` and fails closed when it does not. `SYMBOL_POINT` and `SYMBOL_DIGITS` are independent broker-reported fields, and deriving the threshold size from one while `XSparkNormalizePrice` rounds prices with the other is only sound while the two agree.
+
+On XAUUSD the derivation is not an approximation of the old constant, it is the same double. At 2 digits the derived size is `SYMBOL_POINT` itself, 0.01. At 3 digits it is `0.001 * 10`, a product that is exact in binary64 and carries the identical bit pattern. Both quote conventions a broker may use for gold therefore produce a size bitwise equal to the constant they replace, so no threshold, no gate and no deviation changes on gold. The deterministic tests assert this with exact equality rather than a tolerance, because a tolerance would also pass for a size that silently rescales every threshold.
+
+The resolved size is compared against the declared baseline on the same relative tolerance the resolver already accepts between `SYMBOL_POINT` and `10^-SYMBOL_DIGITS`, and on success the baseline constant itself becomes the operating denominator. Demanding bitwise equality at the assertion while tolerating `1e-6` on the input it was derived from would be internally inconsistent: a specification that passed resolution could still latch a permanent veto. Assigning the baseline rather than the broker-derived double also makes the bit-for-bit neutrality guarantee structural instead of contingent on the broker reporting an exactly representable point. A genuine rescaling is a factor of ten, nine orders of magnitude outside the tolerance, so nothing real is admitted by it.
+
+A size that cannot be resolved, or that is outside that tolerance of the declared XAUUSD baseline, is deliberately NOT an initialization failure. If `OnInit` does not succeed, `OnTick` never runs: trailing, break-even, partial management, protection repair, weekend close and the total-drawdown killswitch all stop while live positions remain open at the broker. That is strictly worse than the mis-scaled thresholds the check exists to catch, and it contradicts the reconciliation posture of ADR-005. The EA instead falls back to the declared baseline - the size that shipped before this change, so exits keep the distance ADR-014 requires - logs CRITICAL, and latches a SafetyManager veto that blocks new exposure while leaving protective management untouched. Because that veto holds for the rest of the session, it has its own dashboard status, `POINT SIZE FAULT`, in the alarm colour: a permanent block on new entries must never render as a healthy green `SCANNING`.
+
+The size is resolved once in `OnInit` and passed to each module rather than read inside a conversion. `Reconcile` runs on every tick, and the exit-deviation conversion executes on the killswitch flatten path, which sits above the market-state validity check precisely so that flattening still runs when the quote feed has dropped. A `SymbolInfoDouble` call inside those conversions could fail at the moment the conversion matters most. For the same reason the broker-point conversion now rejects non-finite results: MQL5 leaves a non-finite-to-`ulong` conversion undefined, and the consumer is the slippage tolerance an order is sent with.
+
+The ScoreBot point size is what this change hoists. The broker point size is a separate quantity and is still read at the conversion call site, exactly as before; hoisting that too would be a behaviour change rather than unit plumbing, so it is out of scope here.
+
+This change is unit plumbing only. The EA remains XAUUSD-only and M15-only, no threshold value is altered, and no scoring, sizing or exit rule is touched.

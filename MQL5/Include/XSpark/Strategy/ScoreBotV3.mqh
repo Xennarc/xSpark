@@ -31,6 +31,7 @@ private:
    double m_max_rr;
    double m_atr_ratio_boost;
    bool   m_allow_asian_reduced;
+   double m_score_point_size;
 
    double MeanTickVolumeBars2To10(CXSparkIndicatorCache &cache)
    {
@@ -101,7 +102,8 @@ public:
       m_symbol = "";
       m_initialized = false;
       m_last_reason = "ScoreBot_v3 is not initialized.";
-      Configure(2.0, false, 0.0, 40, 70, 30, 60, 80.0, 800.0, 1.5, 1.5, 3.0, 1.3, true);
+      Configure(2.0, false, 0.0, 40, 70, 30, 60, 80.0, 800.0, 1.5, 1.5, 3.0, 1.3, true,
+                XSPARK_XAUUSD_SCORE_POINT_SIZE);
    }
 
    void Configure(const double min_score,
@@ -117,7 +119,8 @@ public:
                   const double min_rr,
                   const double max_rr,
                   const double atr_ratio_boost,
-                  const bool allow_asian_reduced)
+                  const bool allow_asian_reduced,
+                  const double score_point_size)
    {
       m_min_score = min_score;
       m_drop_ibr = drop_ibr;
@@ -133,6 +136,7 @@ public:
       m_max_rr = max_rr;
       m_atr_ratio_boost = atr_ratio_boost;
       m_allow_asian_reduced = allow_asian_reduced;
+      m_score_point_size = score_point_size;
    }
 
    bool Initialize(const string symbol)
@@ -193,7 +197,8 @@ public:
       report.signal_bar_time = bar1.time;
       report.atr14 = cache.ATR14M15();
       report.atr50 = cache.ATR50M15();
-      report.atr_points = XSparkPriceToCanonicalPoints(report.atr14);
+      report.atr_points = XSparkPriceToScorePoints(report.atr14, m_score_point_size);
+      report.atr50_points = XSparkPriceToScorePoints(report.atr50, m_score_point_size);
       report.rsi_m15 = cache.RSI14M15();
       report.rsi_h1 = cache.RSI14H1();
       report.ema21_m15 = cache.EMA21M15();
@@ -226,7 +231,7 @@ public:
       if(report.atr_points < m_atr_min_points || report.atr_points > m_atr_max_points)
       {
          report.status = "ATR BLOCKED";
-         report.block_reason = StringFormat("ATR14 %.2f canonical points is outside %.2f-%.2f.",
+         report.block_reason = StringFormat("ATR14 %.2f ScoreBot points is outside %.2f-%.2f.",
                                             report.atr_points,
                                             m_atr_min_points,
                                             m_atr_max_points);

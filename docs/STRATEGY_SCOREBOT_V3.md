@@ -15,9 +15,11 @@ The default configuration is MAX_SHARPE. Reference Python backtest results are u
 
 The EA refuses initialization on non-XAUUSD symbols or non-M15 chart timeframes.
 
-## XAU Point Normalization
+## ScoreBot Point Normalization
 
-ScoreBot canonical XAU points are not broker-native MT5 points.
+A ScoreBot point is a price quantity, not a broker-native MT5 point. The tested
+strategy specified its thresholds in US cents of gold, so for XAUUSD one
+ScoreBot point is 0.01 price units.
 
 ```text
 1 ScoreBot point = 0.01 XAUUSD price units
@@ -27,7 +29,35 @@ ScoreBot canonical XAU points are not broker-native MT5 points.
 30 points        = $0.30
 ```
 
-The implementation converts between canonical ScoreBot points, broker-native points, and price distance through `SymbolMath.mqh`. Strategy thresholds such as ATR, spread, and slippage use canonical ScoreBot points first, then convert to broker-native values for MT5 operations.
+The size of a ScoreBot point is resolved from the instrument specification at
+initialization rather than hardcoded, and asserted against the declared XAUUSD
+baseline `XSPARK_XAUUSD_SCORE_POINT_SIZE` while the EA remains XAUUSD-only. On
+XAUUSD the resolved and declared values are identical at both quote conventions
+a broker may use for gold - 2 digits with point 0.01, and 3 digits with point
+0.001 - so the resolution changes no threshold on gold. See ADR-020.
+
+Resolution happens once, in `OnInit`, and the resolved size is passed to the
+strategy, SafetyManager, ExecutionEngine and PositionManager, so no conversion
+re-derives it from the terminal. The exit deviation is converted on the
+killswitch flatten path, which runs deliberately while the quote feed is
+unusable. The broker point size is a separate quantity and is still read at the
+call site, unchanged from before.
+
+A size that does not match the baseline blocks every new entry for the rest of
+the session, so the dashboard reports `POINT SIZE FAULT` in the alarm colour
+rather than a healthy `SCANNING`.
+
+If the size cannot be resolved, or does not match the declared XAUUSD baseline,
+the EA does **not** refuse to initialize. Refusing would stop `OnTick`, which
+would abandon trailing, break-even, protection repair and the total-drawdown
+killswitch while live positions stay open at the broker. Instead the EA falls
+back to the declared baseline, logs CRITICAL, and blocks all new entries through
+SafetyManager while protective management of existing positions continues.
+
+The implementation converts between ScoreBot points, broker-native points, and
+price distance through `SymbolMath.mqh`. Strategy thresholds such as ATR,
+spread, and slippage use ScoreBot points first, then convert to broker-native
+values for MT5 operations.
 
 ## Tested Strategy Logic
 
@@ -115,7 +145,7 @@ Session gate:
 
 ATR gate:
 
-- ATR14 must be between 80 and 800 canonical ScoreBot points.
+- ATR14 must be between 80 and 800 ScoreBot points.
 - This means `$0.80 <= ATR14 <= $8.00`.
 
 ### Scoring
@@ -226,7 +256,7 @@ These controls were not part of the original tested core strategy and do not alt
 
 Enabled by default:
 
-- Max spread: 50 canonical ScoreBot points, or $0.50
+- Max spread: 50 ScoreBot points, or $0.50
 - Max spread as ATR percentage: 10%
 
 This is an execution gate, not a score component.
@@ -284,7 +314,7 @@ Trade planning happens on the closed-bar evaluation price. The price the broker 
 
 1. Refresh the broker tick and reject a stale or invalid quote.
 2. Take the current entry reference: Ask for BUY, Bid for SELL.
-3. Abort when the entry reference has drifted from the planned reference by more than the configured deviation (30 canonical points). The market is never chased.
+3. Abort when the entry reference has drifted from the planned reference by more than the configured deviation (30 ScoreBot points). The market is never chased.
 4. Keep the locked ATR stop where the strategy placed it. Abort when price has already moved through it.
 5. Re-run broker stop-level validation against the close-side price (Bid for a long, Ask for a short), which is the side MT5 measures protective levels against.
 6. Recompute the actual stop distance from the current entry reference and the broker-valid stop.
@@ -305,7 +335,7 @@ A same-direction match is only a documented fail-safe fallback. It is used solel
 
 A confirmed retcode means the order was accepted, not that the broker applied the stop that was sent with it. After a confirmed entry the EA reads the live `POSITION_SL`. If it is missing, the submitted stop is applied immediately, the condition is logged CRITICAL, and registration is reported as failed until a stop exists. Every management pass re-attempts protection repair for any XSpark position found without a broker stop, and new entries stay blocked while any XSpark exposure is unprotected.
 
-Exit operations use a wider deviation (100 canonical points) than entries. Closing at a slightly worse price is always preferable to failing to close.
+Exit operations use a wider deviation (100 ScoreBot points) than entries. Closing at a slightly worse price is always preferable to failing to close.
 
 ### Weekend Close Entry Block
 
@@ -313,7 +343,7 @@ When `InpUseWeekendClose` is enabled, new entries are refused inside the weekend
 
 ### Residual Execution Slippage
 
-The configured deviation is accepted execution tolerance, so a market order can still fill up to 30 canonical points away from the price the volume was sized from. With a fixed absolute stop this makes the realised entry-to-stop distance, and therefore the realised monetary risk, slightly larger than the sized figure. The EA does not pre-shrink the volume for this, because that would change tested position sizing; instead it computes the realised distance from the actual fill and logs a WARNING whenever realised risk exceeds the sized risk. Reduce `XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS` if this residual is unacceptable for a given account.
+The configured deviation is accepted execution tolerance, so a market order can still fill up to 30 ScoreBot points away from the price the volume was sized from. With a fixed absolute stop this makes the realised entry-to-stop distance, and therefore the realised monetary risk, slightly larger than the sized figure. The EA does not pre-shrink the volume for this, because that would change tested position sizing; instead it computes the realised distance from the actual fill and logs a WARNING whenever realised risk exceeds the sized risk. Reduce `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS` if this residual is unacceptable for a given account.
 
 ### State Recovery
 

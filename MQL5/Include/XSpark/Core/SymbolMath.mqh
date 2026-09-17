@@ -3,41 +3,168 @@
 
 #include <XSpark/Strategy/StrategyInterface.mqh>
 
-#define XSPARK_XAU_CANONICAL_POINT_SIZE 0.01
+// ---------------------------------------------------------------------------
+// ScoreBot point size
+// ---------------------------------------------------------------------------
+// ScoreBot thresholds - the ATR gate, the spread cap, the entry deviation and
+// the exit deviation - are denominated in "ScoreBot points". A ScoreBot point
+// is a PRICE quantity, not a quote-precision artefact: the tested strategy
+// specified its thresholds in US cents of gold, so for XAUUSD one ScoreBot
+// point is 0.01 price units.
+//
+// The size is now resolved from the instrument specification rather than
+// hardcoded, and asserted against the declared XAUUSD baseline below while the
+// EA remains XAUUSD-only. On XAUUSD the resolved and declared values are
+// bitwise identical at both quote conventions a broker may use for gold
+// (2 digits: point 0.01; 3 digits: 0.001 * 10, an exact binary64 product), so
+// the change is behaviour-neutral on gold by construction rather than by
+// approximation.
+//
+// Resolution happens ONCE at initialisation and the size is passed to the
+// modules that need it, so no conversion reads the ScoreBot point size from the
+// terminal. The exit deviation is converted on the killswitch flatten path,
+// which deliberately runs while the quote feed is unusable, and re-deriving the
+// size there could fail at exactly the moment the conversion matters most.
+//
+// The broker point size is a separate quantity and is still read at the call
+// site, exactly as it was before this change. Hoisting that too is deliberately
+// out of scope here: it would be a behaviour change rather than unit plumbing.
+
+#define XSPARK_XAUUSD_SCORE_POINT_SIZE 0.01
+
+// Broker-reported digits above this are not a quote convention this EA models.
+#define XSPARK_SPEC_MAX_DIGITS 8
+
+// Relative agreement required between SYMBOL_POINT and 10^-SYMBOL_DIGITS.
+#define XSPARK_SPEC_RELATIVE_TOLERANCE 0.000001
 
 // Upper bound on the outward stop/target walk so a pathological point size or
 // stop level can never spin OnTick forever.
 #define XSPARK_MAX_STOP_ADJUST_STEPS 1000
 
-double XSparkCanonicalPointsToPrice(const double canonical_points)
+// Conventional pip size for an instrument specification. Takes the spec as data
+// rather than a symbol so it stays deterministic in a script with no chart,
+// no Market Watch entry and no terminal connection.
+bool XSparkPipSizeForSpec(const int digits, const double point, double &pip, string &reason)
 {
-   return canonical_points * XSPARK_XAU_CANONICAL_POINT_SIZE;
+   pip = 0.0;
+   reason = "";
+
+   if(!MathIsValidNumber(point) || point <= 0.0)
+   {
+      reason = "Instrument point size is not a valid positive number.";
+      return false;
+   }
+
+   if(digits < 0 || digits > XSPARK_SPEC_MAX_DIGITS)
+   {
+      reason = StringFormat("Instrument digits %d is outside the supported range 0-%d.",
+                            digits,
+                            XSPARK_SPEC_MAX_DIGITS);
+      return false;
+   }
+
+   // SYMBOL_POINT and SYMBOL_DIGITS are independent broker-reported fields.
+   // Deriving the threshold size from one while XSparkNormalizePrice rounds
+   // prices with the other is only sound while the two agree, so disagreement
+   // fails closed instead of silently skewing every threshold.
+   const double expected_point = MathPow(10.0, -digits);
+   if(expected_point <= 0.0 || MathAbs(point / expected_point - 1.0) > XSPARK_SPEC_RELATIVE_TOLERANCE)
+   {
+      reason = StringFormat("Instrument point %s disagrees with digits %d (expected %s).",
+                            DoubleToString(point, 10),
+                            digits,
+                            DoubleToString(expected_point, 10));
+      return false;
+   }
+
+   // A 3- or 5-digit quote carries a fractional sub-unit below the conventional
+   // pip; every other digit count quotes the pip directly.
+   pip = (digits == 3 || digits == 5) ? point * 10.0 : point;
+
+   if(!MathIsValidNumber(pip) || pip <= 0.0)
+   {
+      reason = "Derived pip size is not a valid positive number.";
+      return false;
+   }
+
+   return true;
 }
 
-double XSparkPriceToCanonicalPoints(const double price_distance)
+// Reads the live instrument specification and derives the ScoreBot point size
+// from it. Call once at initialisation, never inside a conversion.
+bool XSparkResolveScorePointSize(const string symbol, double &score_point_size, string &reason)
 {
-   return price_distance / XSPARK_XAU_CANONICAL_POINT_SIZE;
+   score_point_size = 0.0;
+   reason = "";
+
+   if(symbol == "")
+   {
+      reason = "Cannot resolve a ScoreBot point size without a symbol.";
+      return false;
+   }
+
+   const double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   const int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+
+   if(!XSparkPipSizeForSpec(digits, point, score_point_size, reason))
+   {
+      score_point_size = 0.0;
+      return false;
+   }
+
+   return true;
+}
+
+double XSparkScorePointsToPrice(const double score_points, const double score_point_size)
+{
+   if(!MathIsValidNumber(score_points) ||
+      !MathIsValidNumber(score_point_size) ||
+      score_point_size <= 0.0)
+   {
+      return 0.0;
+   }
+
+   return score_points * score_point_size;
+}
+
+double XSparkPriceToScorePoints(const double price_distance, const double score_point_size)
+{
+   if(!MathIsValidNumber(price_distance) ||
+      !MathIsValidNumber(score_point_size) ||
+      score_point_size <= 0.0)
+   {
+      return 0.0;
+   }
+
+   return price_distance / score_point_size;
 }
 
 double XSparkPriceDistanceToBrokerPoints(const double price_distance, const double broker_point_size)
 {
-   if(broker_point_size <= 0.0)
+   if(!MathIsValidNumber(price_distance) ||
+      !MathIsValidNumber(broker_point_size) ||
+      broker_point_size <= 0.0)
+   {
+      return 0.0;
+   }
+
+   const double broker_points = price_distance / broker_point_size;
+
+   // A non-finite result must never reach a ulong cast: MQL5 leaves that
+   // conversion undefined, and the consumer is SetDeviationInPoints.
+   if(!MathIsValidNumber(broker_points))
       return 0.0;
 
-   return price_distance / broker_point_size;
+   return broker_points;
 }
 
-double XSparkCanonicalPointsToBrokerPointsForPointSize(const double canonical_points,
-                                                       const double broker_point_size)
+double XSparkScorePointsToBrokerPoints(const double score_points,
+                                       const double score_point_size,
+                                       const double broker_point_size)
 {
-   return XSparkPriceDistanceToBrokerPoints(XSparkCanonicalPointsToPrice(canonical_points),
+   return XSparkPriceDistanceToBrokerPoints(XSparkScorePointsToPrice(score_points, score_point_size),
                                             broker_point_size);
-}
-
-double XSparkCanonicalPointsToBrokerPoints(const string symbol, const double canonical_points)
-{
-   const double broker_point_size = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   return XSparkCanonicalPointsToBrokerPointsForPointSize(canonical_points, broker_point_size);
 }
 
 double XSparkBrokerPointsToPrice(const string symbol, const double broker_points)

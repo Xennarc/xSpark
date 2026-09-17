@@ -62,7 +62,7 @@ Compile and run:
 MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5
 ```
 
-The script checks pattern detection, pattern priority, zero-range safety, zero-body engulfing denominator safety, session weights, dynamic RR, risk-tier boundaries, final score bounds, and canonical XAU point conversion.
+The script checks pattern detection, pattern priority, zero-range safety, zero-body engulfing denominator safety, session weights, dynamic RR, risk-tier boundaries, final score bounds, ScoreBot point conversion, and ScoreBot point size derivation across broker quote conventions.
 
 The script must print explicit `PASS` and `FAIL` lines plus a final count.
 

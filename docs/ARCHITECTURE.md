@@ -55,7 +55,7 @@ Strategies convert market state into signal data. `ScoreBotV3.mqh` implements th
 
 ### SafetyManager
 
-Determines whether new trading is allowed at all. Safety rules override strategy rules. Unknown or ambiguous safety state prevents new entries. ScoreBot_v3 safety gates include disabled-trading mode, terminal/account/EA trade permission checks, spread filtering, stale/invalid quote rejection, max XSpark position count, persisted daily drawdown halt, runtime total drawdown killswitch state, and a state-recovery latch raised when a confirmed entry could not be registered in managed state.
+Determines whether new trading is allowed at all. Safety rules override strategy rules. Unknown or ambiguous safety state prevents new entries. ScoreBot_v3 safety gates include disabled-trading mode, terminal/account/EA trade permission checks, spread filtering, stale/invalid quote rejection, max XSpark position count, persisted daily drawdown halt, runtime total drawdown killswitch state, a state-recovery latch raised when a confirmed entry could not be registered in managed state, and a ScoreBot point size that did not match the declared instrument baseline.
 
 ### RiskManager
 

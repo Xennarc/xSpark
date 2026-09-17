@@ -19,7 +19,8 @@ private:
    bool   m_initialized;
    ulong  m_magic_number;
    string m_order_comment;
-   double m_deviation_canonical_points;
+   double m_deviation_score_points;
+   double m_score_point_size;
    bool   m_use_stop_level_validation;
    bool   m_use_margin_check;
    double m_margin_buffer_pct;
@@ -107,16 +108,16 @@ private:
       }
 
       double drift = 0.0;
-      const double max_drift_price = XSparkCanonicalPointsToPrice(m_deviation_canonical_points);
+      const double max_drift_price = XSparkScorePointsToPrice(m_deviation_score_points, m_score_point_size);
 
       if(!XSparkEntryDriftIsWithinTolerance(plan.entry_reference,
                                             current_entry_reference,
                                             max_drift_price,
                                             drift))
       {
-         reason = StringFormat("Entry moved %.2f canonical points from the planned reference; permitted execution tolerance is %.2f.",
-                               XSparkPriceToCanonicalPoints(drift),
-                               m_deviation_canonical_points);
+         reason = StringFormat("Entry moved %.2f ScoreBot points from the planned reference; permitted execution tolerance is %.2f.",
+                               XSparkPriceToScorePoints(drift, m_score_point_size),
+                               m_deviation_score_points);
          return false;
       }
 
@@ -353,7 +354,8 @@ public:
       m_initialized = false;
       m_magic_number = 0;
       m_order_comment = XSPARK_SCOREBOT_COMMENT_DEFAULT;
-      m_deviation_canonical_points = XSPARK_SCOREBOT_DEVIATION_CANONICAL_POINTS;
+      m_deviation_score_points = XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS;
+      m_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
       m_use_stop_level_validation = true;
       m_use_margin_check = true;
       m_margin_buffer_pct = 20.0;
@@ -366,7 +368,8 @@ public:
 
    bool Initialize(const ulong magic_number,
                    const string order_comment,
-                   const double deviation_canonical_points,
+                   const double deviation_score_points,
+                   const double score_point_size,
                    const bool use_stop_level_validation,
                    const bool use_margin_check,
                    const double margin_buffer_pct,
@@ -380,9 +383,15 @@ public:
          return false;
       }
 
-      if(deviation_canonical_points <= 0.0)
+      if(deviation_score_points <= 0.0)
       {
          m_last_reason = "Execution deviation tolerance must be positive.";
+         return false;
+      }
+
+      if(!MathIsValidNumber(score_point_size) || score_point_size <= 0.0)
+      {
+         m_last_reason = "Execution engine requires a resolved ScoreBot point size.";
          return false;
       }
 
@@ -401,7 +410,8 @@ public:
       m_initialized = true;
       m_magic_number = magic_number;
       m_order_comment = order_comment;
-      m_deviation_canonical_points = deviation_canonical_points;
+      m_deviation_score_points = deviation_score_points;
+      m_score_point_size = score_point_size;
       m_use_stop_level_validation = use_stop_level_validation;
       m_use_margin_check = use_margin_check;
       m_margin_buffer_pct = margin_buffer_pct;
@@ -544,9 +554,17 @@ public:
       m_trade.SetExpertMagicNumber(m_magic_number);
       m_trade.SetTypeFillingBySymbol(plan.symbol);
 
-      const double deviation_broker_points = XSparkCanonicalPointsToBrokerPoints(plan.symbol,
-                                                                                 m_deviation_canonical_points);
-      m_trade.SetDeviationInPoints((ulong)MathRound(deviation_broker_points));
+      const double deviation_broker_points =
+         XSparkScorePointsToBrokerPoints(m_deviation_score_points,
+                                         m_score_point_size,
+                                         SymbolInfoDouble(plan.symbol, SYMBOL_POINT));
+
+      // MQL5 leaves a non-finite-to-ulong conversion undefined, and the consumer
+      // is the slippage tolerance the order is sent with. Anything that is not a
+      // finite positive number leaves CTrade on its own default rather than
+      // handing the broker a garbage tolerance.
+      if(MathIsValidNumber(deviation_broker_points) && deviation_broker_points > 0.0)
+         m_trade.SetDeviationInPoints((ulong)MathRound(deviation_broker_points));
 
       const int digits = SymbolDigits(plan.symbol);
 
@@ -609,7 +627,7 @@ public:
          }
 
          logger.Info("ExecutionEngine",
-                     StringFormat("Attempt %d revalidated planned_entry=%s send_entry=%s planned_SL=%s send_SL=%s planned_TP=%s send_TP=%s planned_lots=%s send_lots=%s risk_distance=%.2f canonical points RR=%.4f risk_pct=%.2f",
+                     StringFormat("Attempt %d revalidated planned_entry=%s send_entry=%s planned_SL=%s send_SL=%s planned_TP=%s send_TP=%s planned_lots=%s send_lots=%s risk_distance=%.2f ScoreBot points RR=%.4f risk_pct=%.2f",
                                   attempt,
                                   DoubleToString(plan.entry_reference, digits),
                                   DoubleToString(current_entry_reference, digits),
@@ -619,7 +637,7 @@ public:
                                   DoubleToString(send_tp, digits),
                                   DoubleToString(plan.volume, 2),
                                   DoubleToString(send_volume, 2),
-                                  XSparkPriceToCanonicalPoints(send_risk_distance),
+                                  XSparkPriceToScorePoints(send_risk_distance, m_score_point_size),
                                   send_rr,
                                   plan.risk_pct));
 

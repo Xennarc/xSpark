@@ -40,6 +40,7 @@ The VPS is production infrastructure, not the primary development environment.
 - Run the relevant MT5 Strategy Tester checks.
 - Confirm account type: demo or live.
 - Confirm symbol list and broker specifications.
+- Confirm no CRITICAL "ScoreBot point size" line was logged at startup, and that the dashboard status is not `POINT SIZE FAULT`. The startup `score_point_size=` value reads `0.01000000` on the failure paths too, because the EA falls back to the declared baseline before that line is emitted, so the absence of the CRITICAL is the check that carries the information.
 - Confirm XSpark Magic Number.
 - Confirm automated trading permissions in MT5.
 - Confirm account-level and EA-level risk limits.
