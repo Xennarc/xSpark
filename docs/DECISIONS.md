@@ -127,3 +127,32 @@ The drawdown limits move with the risk, because they are not independent of it. 
 `XSparkConsecutiveLossesToDrawdown` computes the tolerance and the EA prints it at startup for whatever values are configured, with a WARNING when the killswitch would latch in fewer than six losses. The relationship is logarithmic rather than linear - eight losses at 1% cost 7.73%, not 8% - and getting it wrong by one tells an operator the account survives a loss fewer or more than it does.
 
 This change RAISES risk at the account owner's explicit request. The implication, stated plainly: at these settings a 25% account drawdown is an expected outcome of ordinary variance, not a malfunction, and the killswitch is calibrated to permit it rather than to prevent it. It is not martingale, grid, averaging-down or recovery sizing - risk remains a fixed percentage of balance and is not increased after a loss - so AGENTS.md rule 26 is not engaged. Nothing here establishes that the edge is real; the measured edge remains roughly 0.35 standard errors from zero on fifty trades, and Kelly sizing of an edge that does not exist loses money faster than conservative sizing of the same non-edge.
+
+## ADR-024 - Slippage Tolerances Are Per-Instrument Inputs, And The Entry One Must Prove It Still Bounds Something
+
+Reason: `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS` (30) and `XSPARK_CLOSE_DEVIATION_SCORE_POINTS` (100) were compile-time constants with no input override. Both were chosen for gold. ADR-021 lifted the instrument guard, so from that point the EA would attach to any instrument while carrying two gold-shaped risk numbers it could not be told to change. `DEPLOYMENT.md` recorded the consequence as a known Phase 1 limitation; this closes it.
+
+The entry deviation is not a convenience setting. The order is sized against a reference price, and the stop is placed relative to that same reference, so the deviation is exactly the amount by which a permitted fill can push realised risk past selected risk:
+
+```text
+realised_risk / selected_risk  <=  1 + deviation / risk_distance
+```
+
+One value serves two roles inside the execution engine, as it did when it was a constant, and it is kept as one input because splitting it would be a behaviour change: it is both the plan-staleness gate (reject the send if the market has moved this far from the planned reference since the signal) and the slippage tolerance the accepted order is sent with. Only the second role produces the inequality above, because `RevalidateBeforeSend` re-sizes the volume and re-derives the stop against the refreshed reference before sending - so a stale plan is never sized stale. The residual is the fill slipping away from the reference the order was actually sized against.
+
+What makes the raw number meaningless on its own is that `risk_distance` is instrument-dependent. Its floor is not, however, unknown: the ATR gate refuses to trade below the configured ATR minimum, so the smallest stop a configuration can ever produce is `InpATRMultSL * InpATRMinPoints`. That gives a worst-case overshoot ratio that is decidable from configuration alone, at initialisation, before any trade exists.
+
+At the shipped gold defaults the ratio is `30 / (1.5 * 80)` = 0.25: a permitted fill can realise 125% of selected risk. On an FX major, where a ScoreBot point is a pip and the same 30 stands against a stop near 15 pips, the ratio is 2.0 - the permitted slip is twice the entire stop distance, so a fill can land at or beyond the position it is supposed to protect. The gate stops bounding anything at all.
+
+Two thresholds, chosen on different grounds and deliberately not conflated:
+
+- **FAULT at ratio >= 1.0** is not a preference. At that point the permitted slip equals the whole stop, realised risk is untethered from selected risk, and the control is inert by construction. This latches a SafetyManager veto on new entries, a CRITICAL log line, and a `DRIFT GATE FAULT` dashboard status, mirroring the point-size fault of ADR-020 exactly - and for the same reason, since both are cases where the arithmetic underneath sizing cannot be trusted.
+- **WARN at ratio > 0.20** is a judgement, set against the headroom the EA already declares between selected risk (3.0%) and the per-trade cap (3.5%).
+
+The gold defaults therefore emit a WARNING on every startup. That is intentional and the threshold was not moved to prevent it: 30 points of permitted slip against a 120-point minimum stop really is a 25% realised-risk overshoot, and an operator running live money should be told the number rather than have it tuned out of sight. Nothing about the shipped gold behaviour changes - both inputs default to the former constants, so the values sent to the broker are bit-for-bit what they were.
+
+The fault does NOT use `INIT_FAILED`. Refusing to initialise would abandon any live position to the broker with no XSpark management at all, which is strictly worse than the misconfiguration being caught. New exposure is blocked; protective management of existing positions continues. This is the same reasoning as ADR-020 and follows AGENTS.md rules 9 and 23.
+
+The exit deviation is deliberately NOT subject to the same check, and the asymmetry is the point. On an exit, a tolerance that is too generous costs a slightly worse fill; a tolerance that is too tight gets the close REJECTED and leaves live exposure that XSpark intended to be flat. The failure modes are not symmetric, so an upper bound there would be a risk control pointing the wrong way. Only a non-finite or non-positive value is refused.
+
+This removes no control and weakens none, so AGENTS.md rule 5 is not engaged: two values that could not previously be corrected for the instrument in use can now be corrected, and a configuration in which one of them had silently stopped working now blocks trading instead of proceeding. What it does not do is establish a correct value for any instrument other than gold. Setting these for a new symbol remains an operator decision, and the startup line reports the ratio so that decision can be made against a number rather than a guess.

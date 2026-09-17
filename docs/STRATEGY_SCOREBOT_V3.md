@@ -50,20 +50,14 @@ self-calibrating gates are what resolve them:
   becomes 50 pips, which is far too loose to filter anything. Running a non-gold
   instrument therefore needs the ATR and spread inputs re-entered by hand until
   Phase 2 derives them.
-- **The execution and exit deviations are gold-scaled constants with no input.**
-  `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS` (30) and
-  `XSPARK_CLOSE_DEVIATION_SCORE_POINTS` (100) are `#define`s, not `Inp` inputs,
-  so unlike the ATR and spread thresholds an operator **cannot** retune them.
-  They scale with the resolved point size, so on gold they are $0.30 and $1.00
-  against an ATR stop of $1.20 or more, and on an FX pair they become 30 and 100
-  pips against a stop of roughly 8-25 pips. Two consequences follow. The entry
-  drift gate goes inert, admitting a stale plan that gold would have rejected -
-  bounded, because the volume is re-sized against the refreshed entry at the same
-  risk percentage and the realised reward ratio is re-checked. And the order is
-  sent with a 30-pip slippage tolerance, where a fill inside that tolerance
-  against a 10-pip sized stop can put realised risk several times over the
-  selected risk percentage, with only a WARNING logged. Retuning these needs a
-  code change, which is Phase 2 scope.
+- **The deviation DEFAULTS are gold-scaled, but they are now inputs.**
+  `InpEntryDeviationPoints` (default 30) and `InpExitDeviationPoints` (default
+  100) can be retuned per instrument like the ATR and spread thresholds. They
+  scale with the resolved point size, so on gold they are $0.30 and $1.00
+  against an ATR stop of $1.20 or more, and left unchanged on an FX pair they
+  become 30 and 100 pips against a stop of roughly 8-25 pips. The EA no longer
+  proceeds silently into that state: see the entry drift bound below. See
+  ADR-024.
 
 - **Session weighting degrades on high timeframes.** The session weight is taken
   from the hour of the signal bar. On H4 that hour is only ever 0, 4, 8, 12, 16
@@ -404,7 +398,7 @@ Trade planning happens on the closed-bar evaluation price. The price the broker 
 
 1. Refresh the broker tick and reject a stale or invalid quote.
 2. Take the current entry reference: Ask for BUY, Bid for SELL.
-3. Abort when the entry reference has drifted from the planned reference by more than the configured deviation (30 ScoreBot points). The market is never chased.
+3. Abort when the entry reference has drifted from the planned reference by more than `InpEntryDeviationPoints` (default 30 ScoreBot points). The market is never chased.
 4. Keep the locked ATR stop where the strategy placed it. Abort when price has already moved through it.
 5. Re-run broker stop-level validation against the close-side price (Bid for a long, Ask for a short), which is the side MT5 measures protective levels against.
 6. Recompute the actual stop distance from the current entry reference and the broker-valid stop.
@@ -425,7 +419,7 @@ A same-direction match is only a documented fail-safe fallback. It is used solel
 
 A confirmed retcode means the order was accepted, not that the broker applied the stop that was sent with it. After a confirmed entry the EA reads the live `POSITION_SL`. If it is missing, the submitted stop is applied immediately, the condition is logged CRITICAL, and registration is reported as failed until a stop exists. Every management pass re-attempts protection repair for any XSpark position found without a broker stop, and new entries stay blocked while any XSpark exposure is unprotected.
 
-Exit operations use a wider deviation (100 ScoreBot points) than entries. Closing at a slightly worse price is always preferable to failing to close.
+Exit operations use a wider deviation, `InpExitDeviationPoints` (default 100 ScoreBot points), than entries. Closing at a slightly worse price is always preferable to failing to close, so this one is deliberately NOT bounded from above: a tolerance too small to fill leaves live exposure XSpark meant to be flat.
 
 ### Weekend Close Entry Block
 
@@ -433,7 +427,23 @@ When `InpUseWeekendClose` is enabled, new entries are refused inside the weekend
 
 ### Residual Execution Slippage
 
-The configured deviation is accepted execution tolerance, so a market order can still fill up to 30 ScoreBot points away from the price the volume was sized from. With a fixed absolute stop this makes the realised entry-to-stop distance, and therefore the realised monetary risk, slightly larger than the sized figure. The EA does not pre-shrink the volume for this, because that would change tested position sizing; instead it computes the realised distance from the actual fill and logs a WARNING whenever realised risk exceeds the sized risk. Reduce `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS` if this residual is unacceptable for a given account.
+The configured deviation is accepted execution tolerance, so a market order can still fill up to `InpEntryDeviationPoints` away from the price the volume was sized from. With a fixed absolute stop this makes the realised entry-to-stop distance, and therefore the realised monetary risk, larger than the sized figure. The EA does not pre-shrink the volume for this, because that would change tested position sizing; instead it computes the realised distance from the actual fill and logs a WARNING whenever realised risk exceeds the sized risk. Reduce `InpEntryDeviationPoints` if this residual is unacceptable for a given account.
+
+**The entry drift bound.** How large that residual can get is decidable before any trade exists. The stop is placed relative to the same reference the volume was sized against, so
+
+```text
+realised_risk / selected_risk  <=  1 + InpEntryDeviationPoints / risk_distance
+```
+
+and the smallest risk distance the configuration can ever produce is fixed by the ATR gate at `InpATRMultSL * InpATRMinPoints`. `OnInit` computes that ratio and reports it:
+
+| Configuration | Min stop | Ratio | Outcome |
+|---|---|---|---|
+| Gold defaults: 30, 1.5, 80 | 120 pts | 0.25 | WARN - a fill can realise 125% of selected risk |
+| FX pair left on gold values: 30, 1.5, 10 | 15 pips | 2.00 | **FAULT** - permitted slip is twice the whole stop |
+| FX set for the instrument: 2, 1.5, 10 | 15 pips | 0.13 | OK |
+
+A ratio at or above 1.0 means a permitted fill can land at or beyond the position's own stop, so the gate bounds nothing. That is a `DRIFT GATE FAULT`: a CRITICAL log line and a SafetyManager veto on new entries, with protective management of existing positions unaffected. Above 0.20 it warns. The gold defaults therefore warn on every startup, and the threshold is deliberately not set to hide that - the 25% overshoot is real and an operator should see the number.
 
 ### State Recovery
 

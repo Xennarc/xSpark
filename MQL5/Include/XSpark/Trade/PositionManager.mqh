@@ -18,7 +18,12 @@
 
 // Exits must not fail on price movement. Closing an XSpark position at a
 // slightly worse price is always better than failing to close it, so exit
-// operations use a wider tolerance than the 30-point entry deviation.
+// operations use a wider tolerance than the entry deviation.
+//
+// DEFAULT for InpExitDeviationPoints, not a fixed constant. Unlike the entry
+// deviation this one has no upper sanity check, because being too GENEROUS
+// here is protective and being too tight is what causes harm: a rejected close
+// leaves live exposure XSpark intended to be flat. See ADR-024.
 #define XSPARK_CLOSE_DEVIATION_SCORE_POINTS 100.0
 
 class CXSparkPositionManager
@@ -29,6 +34,7 @@ private:
    string m_symbol;
    bool   m_use_stop_level_validation;
    double m_score_point_size;
+   double m_exit_deviation_score_points;
    int    m_managed_position_count;
    int    m_unmanaged_position_count;
    string m_last_reason;
@@ -72,7 +78,7 @@ private:
       m_trade.SetTypeFillingBySymbol(m_symbol);
 
       const double deviation_broker_points =
-         XSparkScorePointsToBrokerPoints(XSPARK_CLOSE_DEVIATION_SCORE_POINTS,
+         XSparkScorePointsToBrokerPoints(m_exit_deviation_score_points,
                                          m_score_point_size,
                                          SymbolInfoDouble(m_symbol, SYMBOL_POINT));
 
@@ -973,6 +979,7 @@ public:
       m_symbol = "";
       m_use_stop_level_validation = true;
       m_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+      m_exit_deviation_score_points = XSPARK_CLOSE_DEVIATION_SCORE_POINTS;
       m_managed_position_count = 0;
       m_unmanaged_position_count = 0;
       m_last_reason = "Position manager is not initialized.";
@@ -985,6 +992,7 @@ public:
    bool Initialize(const string symbol,
                    const ulong magic_number,
                    const double score_point_size,
+                   const double exit_deviation_score_points,
                    const bool use_stop_level_validation = true)
    {
       if(symbol == "" || magic_number == 0)
@@ -999,11 +1007,21 @@ public:
          return false;
       }
 
+      // An exit slippage tolerance that is too small gets closes REJECTED and
+      // leaves exposure XSpark meant to be flat, so only an unusable value is
+      // refused here. There is deliberately no upper bound: see ADR-024.
+      if(!MathIsValidNumber(exit_deviation_score_points) || exit_deviation_score_points <= 0.0)
+      {
+         m_last_reason = "PositionManager requires a finite positive exit deviation in ScoreBot points.";
+         return false;
+      }
+
       m_initialized = true;
       m_symbol = symbol;
       m_magic_number = magic_number;
       m_use_stop_level_validation = use_stop_level_validation;
       m_score_point_size = score_point_size;
+      m_exit_deviation_score_points = exit_deviation_score_points;
       m_managed_position_count = 0;
       m_unmanaged_position_count = 0;
       m_last_registration_bound_state = false;

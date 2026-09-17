@@ -554,6 +554,99 @@ void TestExcursionTracking()
          NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, excursion_infinity, 6.00), 0.0));
 }
 
+// The entry deviation is the amount by which a permitted fill can push realised
+// risk past selected risk. Whether that is a BOUND depends on the smallest stop
+// the configuration can produce, which is set by the ATR floor and the stop
+// multiple - so the same deviation is a control on one instrument and inert on
+// another. These cases pin both ends of that.
+void TestEntryDriftBound()
+{
+   double min_stop = 0.0;
+   double ratio = 0.0;
+   string reason = "";
+
+   // The shipped gold configuration: 30 points against a stop that the ATR
+   // floor guarantees is at least 1.5 x 80 = 120 points. A permitted fill can
+   // realise up to 125% of selected risk. That is a real cost an operator
+   // should see, so it WARNS rather than passing silently - the threshold is
+   // NOT set to hide the shipped defaults.
+   Check("gold defaults warn rather than fault",
+         XSparkEntryDriftBound(XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS, 1.5, 80.0,
+                               min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_WARN);
+   Check("gold defaults imply a 120 point minimum stop", NearlyEqual(min_stop, 120.0));
+   Check("gold defaults overshoot by a quarter", NearlyEqual(ratio, 0.25));
+   Check("gold warning states the realised risk", StringFind(reason, "125%") >= 0);
+
+   // The exact defect DEPLOYMENT.md recorded: the gold deviation left in place
+   // on an FX pair, where a ScoreBot point is a pip and the stop is an order of
+   // magnitude smaller. 30 pips of permitted slip against a 15 pip stop means a
+   // fill can land at or past its own stop.
+   Check("gold deviation on an FX pair faults",
+         XSparkEntryDriftBound(30.0, 1.5, 10.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("FX misconfiguration overshoots by 200%", NearlyEqual(ratio, 2.0));
+   Check("FX fault names the untethered risk", StringFind(reason, "untethered") >= 0);
+
+   // The same instrument once the deviation is set FOR it.
+   Check("FX deviation set for the instrument passes",
+         XSparkEntryDriftBound(2.0, 1.5, 10.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_OK);
+   Check("configured FX minimum stop is 15 pips", NearlyEqual(min_stop, 15.0));
+
+   // Boundaries. 24/120 and 120/120 are both exact in binary64, so these pin
+   // the comparison operators and not a rounding accident.
+   Check("ratio exactly at the warn threshold does not warn",
+         XSparkEntryDriftBound(24.0, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_OK);
+   Check("warn threshold boundary ratio is exact", NearlyEqual(ratio, XSPARK_DRIFT_RATIO_WARN));
+   Check("just above the warn threshold warns",
+         XSparkEntryDriftBound(24.1, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_WARN);
+   Check("deviation equal to the whole stop faults",
+         XSparkEntryDriftBound(120.0, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("fault threshold boundary ratio is exact", NearlyEqual(ratio, XSPARK_DRIFT_RATIO_FAULT));
+   Check("just below the whole stop still only warns",
+         XSparkEntryDriftBound(119.0, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_WARN);
+
+   // Fails CLOSED. An unusable configuration number is the state in which the
+   // caller must NOT assume the gate is working, so every one of these is a
+   // fault and none is a pass.
+   Check("zero deviation faults",
+         XSparkEntryDriftBound(0.0, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("negative deviation faults",
+         XSparkEntryDriftBound(-30.0, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("zero stop multiple faults",
+         XSparkEntryDriftBound(30.0, 0.0, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("negative stop multiple faults",
+         XSparkEntryDriftBound(30.0, -1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("zero ATR floor faults",
+         XSparkEntryDriftBound(30.0, 1.5, 0.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("negative ATR floor faults",
+         XSparkEntryDriftBound(30.0, 1.5, -80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+
+   const double drift_infinity = MathPow(10.0, 400.0);
+   const double drift_nan = drift_infinity - drift_infinity;
+
+   Check("non-finite deviation faults",
+         XSparkEntryDriftBound(drift_nan, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("infinite deviation faults",
+         XSparkEntryDriftBound(drift_infinity, 1.5, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("non-finite stop multiple faults",
+         XSparkEntryDriftBound(30.0, drift_nan, 80.0, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("non-finite ATR floor faults",
+         XSparkEntryDriftBound(30.0, 1.5, drift_nan, min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+
+   // Both inputs here are FINITE and positive, so the earlier guards pass and
+   // the product itself is what overflows. This is the branch that catches it;
+   // using an infinite input instead would have been caught upstream and would
+   // have tested nothing.
+   Check("overflowing minimum stop faults",
+         XSparkEntryDriftBound(30.0, 1.0e200, 1.0e200,
+                               min_stop, ratio, reason) == XSPARK_DRIFT_BOUND_FAULT);
+   Check("overflowing minimum stop names the stop distance",
+         StringFind(reason, "Minimum stop distance") >= 0);
+
+   // Every fault path must leave a reason; a silent fault is a fault an
+   // operator cannot act on.
+   Check("faults always carry a reason", StringLen(reason) > 0);
+}
+
 void OnStart()
 {
    Print("Starting XSpark execution/state hardening tests");
@@ -567,5 +660,6 @@ void OnStart()
    TestExecutionResultState();
    TestClosureAccumulation();
    TestExcursionTracking();
+   TestEntryDriftBound();
    PrintFormat("XSpark execution/state hardening tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }
