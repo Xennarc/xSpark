@@ -380,6 +380,46 @@ void XSparkUpdateDashboard()
                       dashboard_reason);
 }
 
+// Machine-greppable record of a signal that did NOT become a trade.
+//
+// Without this, the journal cannot distinguish a strategy that found no setups
+// from one that found them and could not fund them - which is the difference
+// between "the market was quiet" and "the account is too small for the ATR band
+// this gate admits". Both look like silence. It carries the score components so
+// a rejected population can be compared against the taken one offline, and the
+// balance so that comparison survives across account sizes.
+//
+// Emitted at most once per evaluated bar, so it cannot flood.
+void XSparkLogSignalRejection(const string stage,
+                              const string reason,
+                              XSparkScoreBotReport &report)
+{
+   g_logger.Info("Rejected",
+                 StringFormat("stage=%s bar=%s pattern=%s dir=%s raw=%.4f final=%.4f threshold=%.4f "
+                              "session_w=%.2f pat=%.2f atr=%.2f trend=%.2f rsi=%.2f sr=%.2f vol=%.2f mtf=%.2f "
+                              "atr14_pts=%.2f atr50_pts=%.2f rr=%.4f balance=%s reason=%s",
+                              stage,
+                              TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES),
+                              report.pattern_name,
+                              XSparkDirectionName(report.direction),
+                              report.components.raw,
+                              report.components.final_score,
+                              report.effective_threshold,
+                              report.components.session_weight,
+                              report.components.pattern,
+                              report.components.atr,
+                              report.components.trend,
+                              report.components.rsi,
+                              report.components.sr,
+                              report.components.volume,
+                              report.components.mtf,
+                              report.atr_points,
+                              report.atr50_points,
+                              report.dynamic_rr,
+                              DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
+                              reason));
+}
+
 void XSparkVerboseBlock(const string component, const string reason)
 {
    if(InpVerboseLog)
@@ -750,6 +790,13 @@ void XSparkEvaluateNewBar()
    {
       g_status = report.status;
       g_last_block_reason = report.block_reason;
+
+      // Only bars where a pattern actually formed are recorded. A bar with no
+      // pattern is not a rejected signal, it is the absence of one, and logging
+      // every quiet bar would bury the population that matters.
+      if(report.has_pattern)
+         XSparkLogSignalRejection("strategy", g_last_block_reason, report);
+
       if(StringFind(g_last_block_reason, "Unexpected ScoreBot score") >= 0)
          g_logger.Error("ScoreBotV3", g_last_block_reason);
       else
@@ -781,6 +828,8 @@ void XSparkEvaluateNewBar()
       // frozen is worth seeing in the journal without verbose logging, and a
       // skewed host clock shows up here first. Evaluations are once per base
       // bar, so this cannot flood.
+      XSparkLogSignalRejection("safety", g_last_block_reason, report);
+
       if(g_status == "STALE QUOTE")
          g_logger.Warn("SafetyManager", g_last_block_reason);
       else
@@ -794,6 +843,7 @@ void XSparkEvaluateNewBar()
    {
       g_status = "SCANNING";
       g_last_block_reason = g_risk_manager.LastReason();
+      XSparkLogSignalRejection("risk", g_last_block_reason, report);
       XSparkVerboseBlock("RiskManager", g_last_block_reason);
       return;
    }
@@ -804,6 +854,13 @@ void XSparkEvaluateNewBar()
    if(!XSparkPrepareTradePlan(signal, risk_pct, plan))
    {
       g_status = "SCANNING";
+
+      // The most consequential rejection class on a small account: the signal
+      // passed every gate and then could not be funded, because normalising the
+      // volume down landed below the broker minimum and the sizer aborts rather
+      // than round up past the risk budget. In the journal this is otherwise
+      // indistinguishable from the market being quiet.
+      XSparkLogSignalRejection("plan", g_last_block_reason, report);
       XSparkVerboseBlock("TradePlan", g_last_block_reason);
       return;
    }

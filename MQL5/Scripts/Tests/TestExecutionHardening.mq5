@@ -483,6 +483,77 @@ void TestClosureAccumulation()
    Check("totals remain finite after a poisoned deal", MathIsValidNumber(guarded.exit_price));
 }
 
+// Maximum favourable and adverse excursion. The invariant that matters is
+// mfe_r >= mae_r for any consistent pair, in both directions.
+void TestExcursionTracking()
+{
+   // LONG: favourable is a higher Bid, adverse is a lower Bid.
+   double mfe = 0.0;
+   double mae = 0.0;
+
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, 2600.00, mfe, mae);
+   Check("first long sample seeds both extremes", NearlyEqual(mfe, 2600.00) && NearlyEqual(mae, 2600.00));
+
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, 2612.00, mfe, mae);
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, 2594.00, mfe, mae);
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, 2605.00, mfe, mae);
+   Check("long MFE keeps the highest exit-side price", NearlyEqual(mfe, 2612.00));
+   Check("long MAE keeps the lowest exit-side price", NearlyEqual(mae, 2594.00));
+
+   // Entry 2600, risk 6.00 -> MFE +2R, MAE -1R.
+   Check("long MFE in R", NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, mfe, 6.00), 2.0));
+   Check("long MAE in R", NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, mae, 6.00), -1.0));
+
+   // SHORT: favourable is a LOWER Ask, adverse is a higher Ask. The direction
+   // inversion is the easiest thing to get backwards here.
+   double s_mfe = 0.0;
+   double s_mae = 0.0;
+
+   XSparkUpdateExcursion(XSPARK_SIGNAL_SELL, 2600.00, s_mfe, s_mae);
+   XSparkUpdateExcursion(XSPARK_SIGNAL_SELL, 2588.00, s_mfe, s_mae);
+   XSparkUpdateExcursion(XSPARK_SIGNAL_SELL, 2606.00, s_mfe, s_mae);
+   Check("short MFE keeps the LOWEST exit-side price", NearlyEqual(s_mfe, 2588.00));
+   Check("short MAE keeps the HIGHEST exit-side price", NearlyEqual(s_mae, 2606.00));
+   Check("short MFE in R", NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_SELL, 2600.00, s_mfe, 6.00), 2.0));
+   Check("short MAE in R", NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_SELL, 2600.00, s_mae, 6.00), -1.0));
+
+   // The Stage 2 gate, asserted for both directions.
+   Check("long invariant MFE_R >= MAE_R",
+         XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, mfe, 6.00) >=
+         XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, mae, 6.00));
+   Check("short invariant MFE_R >= MAE_R",
+         XSparkExcursionR(XSPARK_SIGNAL_SELL, 2600.00, s_mfe, 6.00) >=
+         XSparkExcursionR(XSPARK_SIGNAL_SELL, 2600.00, s_mae, 6.00));
+
+   // A position that never moves reports zero both ways, not an unset sentinel.
+   double f_mfe = 2600.00;
+   double f_mae = 2600.00;
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, 2600.00, f_mfe, f_mae);
+   Check("a flat position reports zero MFE", NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, f_mfe, 6.00), 0.0));
+   Check("a flat position reports zero MAE", NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, f_mae, 6.00), 0.0));
+
+   // Unusable samples must not move the extremes.
+   const double excursion_infinity = MathPow(10.0, 400.0);
+   double g_mfe = 2600.00;
+   double g_mae = 2600.00;
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, 0.0, g_mfe, g_mae);
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, -1.0, g_mfe, g_mae);
+   XSparkUpdateExcursion(XSPARK_SIGNAL_BUY, excursion_infinity - excursion_infinity, g_mfe, g_mae);
+   Check("invalid samples leave MFE untouched", NearlyEqual(g_mfe, 2600.00));
+   Check("invalid samples leave MAE untouched", NearlyEqual(g_mae, 2600.00));
+   XSparkUpdateExcursion(XSPARK_SIGNAL_NONE, 2700.00, g_mfe, g_mae);
+   Check("a NONE direction does not move MFE", NearlyEqual(g_mfe, 2600.00));
+   Check("a NONE direction does not move MAE", NearlyEqual(g_mae, 2600.00));
+
+   // No original risk distance means no fabricated R. An adopted position has none.
+   Check("no risk distance yields no R",
+         NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, 2612.00, 0.0), 0.0));
+   Check("negative risk distance yields no R",
+         NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, 2612.00, -6.00), 0.0));
+   Check("non-finite excursion yields no R",
+         NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, excursion_infinity, 6.00), 0.0));
+}
+
 void OnStart()
 {
    Print("Starting XSpark execution/state hardening tests");
@@ -495,5 +566,6 @@ void OnStart()
    TestStaleQuoteCalculations();
    TestExecutionResultState();
    TestClosureAccumulation();
+   TestExcursionTracking();
    PrintFormat("XSpark execution/state hardening tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }

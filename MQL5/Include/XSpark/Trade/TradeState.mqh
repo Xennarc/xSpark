@@ -87,6 +87,73 @@ void XSparkAccumulateClosureDeal(XSparkClosureTotals &totals,
    }
 }
 
+// Maximum favourable and adverse excursion, tracked on the EXIT-side price.
+//
+// The exit side is the price the position could actually have been closed at -
+// the Bid for a long, the Ask for a short - which is the same side the 2.5R
+// partial trigger already measures against. Tracking the entry side instead
+// would report an excursion that was never realisable.
+//
+// Today every winner closes at its take-profit by construction, so the right
+// tail of the favourable distribution is completely unobserved. This is what
+// makes it observable, and therefore what makes the optimal reward ratio, the
+// break-even arm and the partial level choosable from data rather than guessed.
+void XSparkUpdateExcursion(const EXSparkSignalDirection direction,
+                           const double exit_side_price,
+                           double &mfe_price,
+                           double &mae_price)
+{
+   if(!MathIsValidNumber(exit_side_price) || exit_side_price <= 0.0)
+      return;
+
+   if(mfe_price <= 0.0 || !MathIsValidNumber(mfe_price))
+      mfe_price = exit_side_price;
+
+   if(mae_price <= 0.0 || !MathIsValidNumber(mae_price))
+      mae_price = exit_side_price;
+
+   if(direction == XSPARK_SIGNAL_BUY)
+   {
+      if(exit_side_price > mfe_price)
+         mfe_price = exit_side_price;
+      if(exit_side_price < mae_price)
+         mae_price = exit_side_price;
+   }
+   else if(direction == XSPARK_SIGNAL_SELL)
+   {
+      if(exit_side_price < mfe_price)
+         mfe_price = exit_side_price;
+      if(exit_side_price > mae_price)
+         mae_price = exit_side_price;
+   }
+}
+
+// Converts an excursion price into R multiples of the ORIGINAL entry risk.
+// Favourable excursions are positive and adverse ones negative for both
+// directions, so mfe_r >= mae_r always holds for a consistent pair.
+//
+// Returns 0.0 when the original risk distance is unavailable, which is the case
+// for a position adopted without persisted state (ADR-018). A fabricated R
+// there would be worse than none.
+double XSparkExcursionR(const EXSparkSignalDirection direction,
+                        const double entry,
+                        const double excursion_price,
+                        const double risk_distance)
+{
+   if(!MathIsValidNumber(entry) || !MathIsValidNumber(excursion_price) ||
+      !MathIsValidNumber(risk_distance) || risk_distance <= 0.0 ||
+      entry <= 0.0 || excursion_price <= 0.0)
+   {
+      return 0.0;
+   }
+
+   const double move = direction == XSPARK_SIGNAL_BUY
+                       ? excursion_price - entry
+                       : entry - excursion_price;
+
+   return move / risk_distance;
+}
+
 struct XSparkTradeState
 {
    ulong                  ticket;
@@ -104,6 +171,8 @@ struct XSparkTradeState
    EXSparkScoreBotPatternId pattern_id;
    string                 pattern_name;
    double                 initial_risk_distance;
+   double                 mfe_price;              // best exit-side price seen while open
+   double                 mae_price;              // worst exit-side price seen while open
    bool                   partial_block_logged;   // RAM-only: throttles the "no legal partial" warning
 };
 
@@ -124,6 +193,8 @@ void XSparkResetTradeState(XSparkTradeState &state)
    state.pattern_id = XSPARK_PATTERN_NONE;
    state.pattern_name = "NO PATTERN";
    state.initial_risk_distance = 0.0;
+   state.mfe_price = 0.0;
+   state.mae_price = 0.0;
    state.partial_block_logged = false;
 }
 
