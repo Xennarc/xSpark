@@ -56,6 +56,121 @@ int XSparkConsecutiveLossesToDrawdown(const double risk_pct, const double drawdo
    return (int)MathCeil(exact - 0.0000001);
 }
 
+// Money at risk on one open position, in account currency.
+//
+// AGENTS.md rule 27 says no strategy may bypass maximum account-level risk
+// limits, and the codebase could not enforce it: InpMaxRiskPct is a PER-TRADE
+// label, not a property of the account. One instance at 3% is 3% at risk. Three
+// instances on three symbols, each obeying its own 3% cap, is 9% - and nothing
+// anywhere could see that, because each instance only ever looked at its own
+// Magic Number.
+//
+// This measures exposure the way an account experiences it: every open position,
+// whatever symbol, whatever Magic Number, whether XSpark opened it or not. A
+// manual trade left open is still money that can be lost.
+//
+// Returns false when the risk is UNKNOWABLE rather than zero. A position with no
+// stop loss has unbounded downside, and treating that as zero risk would let it
+// pass a cap silently - the one arithmetic mistake that turns a risk cap into
+// decoration.
+bool XSparkPositionRiskCash(const double entry,
+                            const double stop,
+                            const double volume,
+                            const double tick_size,
+                            const double tick_value,
+                            double &risk_cash,
+                            string &reason)
+{
+   risk_cash = 0.0;
+   reason = "";
+
+   if(!MathIsValidNumber(entry) || !MathIsValidNumber(volume) ||
+      entry <= 0.0 || volume <= 0.0)
+   {
+      reason = "Position entry or volume is unusable.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(stop) || stop <= 0.0)
+   {
+      reason = "Position has no stop loss, so its risk is unbounded rather than zero.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(tick_size) || !MathIsValidNumber(tick_value) ||
+      tick_size <= 0.0 || tick_value <= 0.0)
+   {
+      reason = "Instrument tick specification is unavailable.";
+      return false;
+   }
+
+   const double distance = MathAbs(entry - stop);
+   risk_cash = distance * volume * (tick_value / tick_size);
+
+   if(!MathIsValidNumber(risk_cash) || risk_cash < 0.0)
+   {
+      risk_cash = 0.0;
+      reason = "Computed position risk is not a usable number.";
+      return false;
+   }
+
+   return true;
+}
+
+// Whether adding one more position's risk would keep total open risk inside the
+// account-level cap. Balance-relative, because that is the denominator every
+// per-trade percentage already uses.
+bool XSparkAccountRiskWithinCap(const double open_risk_cash,
+                                const double prospective_risk_cash,
+                                const double balance,
+                                const double max_account_risk_pct,
+                                double &projected_pct,
+                                string &reason)
+{
+   projected_pct = 0.0;
+   reason = "";
+
+   if(!MathIsValidNumber(balance) || balance <= 0.0)
+   {
+      reason = "Account balance is unavailable, so account risk cannot be bounded.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(max_account_risk_pct) || max_account_risk_pct <= 0.0)
+   {
+      reason = "Account risk cap is not configured.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(open_risk_cash) || !MathIsValidNumber(prospective_risk_cash) ||
+      open_risk_cash < 0.0 || prospective_risk_cash < 0.0)
+   {
+      reason = "Open or prospective risk is not a usable number.";
+      return false;
+   }
+
+   projected_pct = ((open_risk_cash + prospective_risk_cash) / balance) * 100.0;
+
+   if(!MathIsValidNumber(projected_pct))
+   {
+      projected_pct = 0.0;
+      reason = "Projected account risk is not a usable number.";
+      return false;
+   }
+
+   if(projected_pct > max_account_risk_pct)
+   {
+      reason = StringFormat("Projected account risk %.2f%% would exceed the %.2f%% cap "
+                            "(%.2f already at risk across all open positions).",
+                            projected_pct,
+                            max_account_risk_pct,
+                            open_risk_cash);
+      return false;
+   }
+
+   return true;
+}
+
 class CXSparkRiskManager
 {
 private:

@@ -58,6 +58,12 @@ input double InpRiskPctTier2 = 3.0;
 input double InpRiskPctTier3 = 3.0;
 input double InpMaxRiskPct = 3.5;
 input double InpMaxDailyDDPct = 15.0;
+// Account-level cap on total money at risk across ALL open positions, on every
+// symbol and every Magic Number. InpMaxRiskPct is a per-TRADE label and cannot
+// enforce AGENTS.md rule 27 on its own: three instances on three symbols, each
+// obeying 3%, is 9% at risk with nothing able to see it. Set this to the total
+// drawdown you are willing to have live at one moment.
+input double InpMaxAccountRiskPct = 6.0;
 
 input group "Sessions"
 input bool InpAllowAsianReduced = true;
@@ -267,6 +273,20 @@ bool XSparkValidateInputs()
 
    // A daily limit at or above the total limit can never bind, which would
    // silently remove the shorter-horizon brake entirely.
+   // The account cap must leave room for at least one trade at the per-trade
+   // ceiling, or no entry could ever pass it and the EA would scan forever.
+   if(InpMaxAccountRiskPct <= 0.0 || InpMaxAccountRiskPct > XSPARK_MAX_ALLOWED_RISK_PCT * 3.0 ||
+      InpMaxAccountRiskPct < InpMaxRiskPct)
+   {
+      g_logger.Critical("EA",
+                        StringFormat("InpMaxAccountRiskPct %.2f%% is invalid: it must be positive, at or above "
+                                     "the per-trade ceiling of %.2f%%, and no more than %.1f%%.",
+                                     InpMaxAccountRiskPct,
+                                     InpMaxRiskPct,
+                                     XSPARK_MAX_ALLOWED_RISK_PCT * 3.0));
+      return false;
+   }
+
    if(InpMaxTotalDDPct >= 100.0 || InpMaxDailyDDPct >= 100.0 ||
       InpMaxDailyDDPct >= InpMaxTotalDDPct)
    {
@@ -418,6 +438,60 @@ void XSparkLogSignalRejection(const string stage,
                               report.dynamic_rr,
                               DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
                               reason));
+}
+
+// Total money at risk across EVERY open position on the account, in account
+// currency.
+//
+// Deliberately not filtered by symbol or Magic Number. AGENTS.md rule 27 is
+// about the ACCOUNT, and the account does not care which EA or which hand
+// opened a position. Filtering to XSpark's own magic would reproduce exactly the
+// blindness this exists to remove: three instances on three symbols, each
+// obeying its own per-trade cap, each unable to see the other two.
+//
+// Fails closed. A position with no stop loss has unbounded downside, so total
+// risk becomes unknowable rather than large, and an unknowable total must not
+// be allowed to pass a cap.
+bool XSparkOpenAccountRiskCash(double &open_risk_cash, string &reason)
+{
+   open_risk_cash = 0.0;
+   reason = "";
+
+   const int total = PositionsTotal();
+
+   for(int index = 0; index < total; index++)
+   {
+      const ulong ticket = PositionGetTicket(index);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+      {
+         reason = "An open position could not be read; account risk is unknown.";
+         return false;
+      }
+
+      const string position_symbol = PositionGetString(POSITION_SYMBOL);
+      double position_risk = 0.0;
+      string position_reason = "";
+
+      double tick_value = SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+      if(tick_value <= 0.0)
+         tick_value = SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_VALUE);
+
+      if(!XSparkPositionRiskCash(PositionGetDouble(POSITION_PRICE_OPEN),
+                                 PositionGetDouble(POSITION_SL),
+                                 PositionGetDouble(POSITION_VOLUME),
+                                 SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_SIZE),
+                                 tick_value,
+                                 position_risk,
+                                 position_reason))
+      {
+         reason = StringFormat("Position %I64u on %s: %s", ticket, position_symbol, position_reason);
+         return false;
+      }
+
+      open_risk_cash += position_risk;
+   }
+
+   return true;
 }
 
 void XSparkVerboseBlock(const string component, const string reason)
@@ -863,6 +937,57 @@ void XSparkEvaluateNewBar()
       XSparkLogSignalRejection("plan", g_last_block_reason, report);
       XSparkVerboseBlock("TradePlan", g_last_block_reason);
       return;
+   }
+
+   // Account-level risk cap. Checked here rather than in the earlier safety gate
+   // because the prospective risk is only knowable once the plan has a volume
+   // and a broker-valid stop, and a cap checked against an estimate is not a cap.
+   {
+      double open_risk_cash = 0.0;
+      string account_risk_reason = "";
+
+      double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+      if(tick_value <= 0.0)
+         tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+
+      double prospective_risk_cash = 0.0;
+      string prospective_reason = "";
+      const bool prospective_known = XSparkPositionRiskCash(plan.entry_reference,
+                                                            plan.final_sl,
+                                                            plan.volume,
+                                                            SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE),
+                                                            tick_value,
+                                                            prospective_risk_cash,
+                                                            prospective_reason);
+
+      double projected_pct = 0.0;
+      string cap_reason = "";
+
+      if(!prospective_known ||
+         !XSparkOpenAccountRiskCash(open_risk_cash, account_risk_reason) ||
+         !XSparkAccountRiskWithinCap(open_risk_cash,
+                                     prospective_risk_cash,
+                                     AccountInfoDouble(ACCOUNT_BALANCE),
+                                     InpMaxAccountRiskPct,
+                                     projected_pct,
+                                     cap_reason))
+      {
+         g_status = "ACCOUNT RISK";
+         g_last_block_reason = !prospective_known ? prospective_reason
+                               : (account_risk_reason != "" ? account_risk_reason : cap_reason);
+
+         XSparkLogSignalRejection("account_risk", g_last_block_reason, report);
+         g_logger.Warn("RiskManager",
+                       StringFormat("Entry refused by the account risk cap: %s", g_last_block_reason));
+         return;
+      }
+
+      g_logger.Info("RiskManager",
+                    StringFormat("Account risk check passed: open=%s prospective=%s projected=%.2f%% cap=%.2f%%",
+                                 DoubleToString(open_risk_cash, 2),
+                                 DoubleToString(prospective_risk_cash, 2),
+                                 projected_pct,
+                                 InpMaxAccountRiskPct));
    }
 
    if(InpUseMarginCheck)
