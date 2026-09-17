@@ -449,6 +449,82 @@ void TestLossStreakTolerance()
    Check("tolerance decreases monotonically as risk rises", monotone);
 }
 
+// Account-level risk cap. The property that makes it a cap rather than
+// decoration is that unknowable risk must never read as zero.
+void TestAccountRiskCap()
+{
+   double risk = 0.0;
+   string reason = "";
+
+   // XAUUSD-shaped: tick 0.01, loss per tick per lot 1.00 -> $100 per $1 per lot.
+   // 0.10 lots with a $6.00 stop risks 6.00 * 0.10 * 100 = $60.
+   Check("position risk is distance x volume x tick ratio",
+         XSparkPositionRiskCash(2600.00, 2594.00, 0.10, 0.01, 1.00, risk, reason));
+   Check("position risk value", NearlyEqual(risk, 60.0));
+
+   Check("a short position's risk uses the same absolute distance",
+         XSparkPositionRiskCash(2594.00, 2600.00, 0.10, 0.01, 1.00, risk, reason));
+   Check("short position risk value", NearlyEqual(risk, 60.0));
+
+   // THE PROPERTY THAT MATTERS. A position with no stop has unbounded downside.
+   // Reporting zero would let it slip under any cap, which is the single
+   // arithmetic mistake that turns a risk cap into decoration.
+   Check("a position with no stop is refused, not scored zero",
+         !XSparkPositionRiskCash(2600.00, 0.0, 0.10, 0.01, 1.00, risk, reason));
+   Check("no-stop refusal explains itself", StringFind(reason, "unbounded") >= 0);
+   Check("a position with a negative stop is refused",
+         !XSparkPositionRiskCash(2600.00, -1.0, 0.10, 0.01, 1.00, risk, reason));
+   Check("unusable volume is refused",
+         !XSparkPositionRiskCash(2600.00, 2594.00, 0.0, 0.01, 1.00, risk, reason));
+   Check("unusable tick specification is refused",
+         !XSparkPositionRiskCash(2600.00, 2594.00, 0.10, 0.0, 1.00, risk, reason));
+
+   const double risk_infinity = MathPow(10.0, 400.0);
+   Check("non-finite stop is refused",
+         !XSparkPositionRiskCash(2600.00, risk_infinity, 0.10, 0.01, 1.00, risk, reason));
+
+   // The cap itself, against a $1000 balance.
+   double projected = 0.0;
+   string cap_reason = "";
+
+   Check("one trade inside the cap passes",
+         XSparkAccountRiskWithinCap(0.0, 30.0, 1000.0, 6.0, projected, cap_reason));
+   Check("projected percentage is reported", NearlyEqual(projected, 3.0));
+
+   Check("a second trade still inside the cap passes",
+         XSparkAccountRiskWithinCap(30.0, 30.0, 1000.0, 6.0, projected, cap_reason));
+   Check("two trades project to the cap exactly", NearlyEqual(projected, 6.0));
+
+   // THE MULTI-INSTANCE CASE. Three instances each obeying a 3% per-trade cap
+   // is 9% at risk. Per-trade limits cannot see this; the account cap must.
+   Check("a third trade breaches the cap",
+         !XSparkAccountRiskWithinCap(60.0, 30.0, 1000.0, 6.0, projected, cap_reason));
+   Check("the breach projects to 9%", NearlyEqual(projected, 9.0));
+   Check("the breach names the cap and the open risk",
+         StringFind(cap_reason, "9.00") >= 0 && StringFind(cap_reason, "6.00") >= 0);
+
+   // Exactly at the cap is allowed; a fraction over is not.
+   Check("risk exactly at the cap is allowed",
+         XSparkAccountRiskWithinCap(59.0, 1.0, 1000.0, 6.0, projected, cap_reason));
+   Check("risk a fraction over the cap is refused",
+         !XSparkAccountRiskWithinCap(60.0, 0.10, 1000.0, 6.0, projected, cap_reason));
+
+   // Fail closed on inputs that cannot bound anything.
+   Check("no balance means no bound",
+         !XSparkAccountRiskWithinCap(0.0, 30.0, 0.0, 6.0, projected, cap_reason));
+   Check("no cap configured means no bound",
+         !XSparkAccountRiskWithinCap(0.0, 30.0, 1000.0, 0.0, projected, cap_reason));
+   Check("non-finite open risk is refused",
+         !XSparkAccountRiskWithinCap(risk_infinity, 30.0, 1000.0, 6.0, projected, cap_reason));
+
+   // A larger balance carries the same cash risk at a smaller percentage, which
+   // is what lets the cap scale with the account as it grows.
+   Check("the same cash risk passes on a larger balance",
+         XSparkAccountRiskWithinCap(60.0, 30.0, 10000.0, 6.0, projected, cap_reason));
+   Check("the same cash is a smaller percentage of a larger balance",
+         NearlyEqual(projected, 0.9));
+}
+
 void OnStart()
 {
    Print("Starting ScoreBot_v3 deterministic logic tests");
@@ -458,5 +534,6 @@ void OnStart()
    TestTimeframePairing();
    TestOperatingPointSizeSelection();
    TestLossStreakTolerance();
+   TestAccountRiskCap();
    PrintFormat("ScoreBot_v3 logic tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }
