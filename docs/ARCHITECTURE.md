@@ -89,6 +89,16 @@ Flattening keeps retrying until no XSpark exposure remains and never touches ano
 
 `Core/ExecutionMath.mqh` holds the pure, broker-independent predicates shared by the execution boundary, the position-identity boundary, and the stale-quote gate: duplicate signal-bar protection, entry-drift tolerance, protective-stop side checks, risk distance, target from risk distance, realized RR, RR bounds, position identity matching, fail-safe fallback acceptance, and quote-age evaluation. Keeping them pure is what makes them testable without a trade server.
 
+### Dashboard
+
+`UI/Dashboard.mqh` draws the chart panel and the per-entry chart annotations. It is display only: it reads state and never writes any, and nothing it does can permit, block or size a trade.
+
+The panel paints its own opaque background rather than inheriting the chart's, so it stays legible on a light chart, a dark chart and the Strategy Tester alike. Placement is an input - a corner plus margins - resolved into left-upper space on every refresh, so every object anchors identically and the panel stays put when the chart window is resized.
+
+Presentation rules that can be decided without a chart live in `UI/DashboardLayout.mqh` and are tested there: status-to-severity mapping, bar fill in pixels, the session tag, panel placement, and reason trimming. Two contracts in that file are deliberate and load-bearing. A bar whose value cannot be computed renders EMPTY, never full, so an unreadable reading can never look like a maximum. And severity treats green as a closed set of `SCANNING` and `MANAGING`, with everything unrecognised mapping to FAULT - the inverse of what shipped, where an unmapped status fell through to green and a status added elsewhere in the EA would render as healthy until someone remembered to edit the panel. See ADR-025.
+
+`AnnotateEntry` runs only at fill time, which is why `Deinitialize` takes a flag: a de-init that will be followed by a re-init on the same chart must not delete the entry, stop and target markers of positions that are still open.
+
 ## State Recovery
 
 Broker execution is authoritative. When an entry is confirmed but XSpark cannot bind the resulting position exactly, the EA logs CRITICAL, latches SafetyManager, reconciles against MT5, and verifies that managed state represents every live XSpark position.
