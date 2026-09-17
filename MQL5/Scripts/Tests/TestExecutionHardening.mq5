@@ -554,6 +554,114 @@ void TestExcursionTracking()
          NearlyEqual(XSparkExcursionR(XSPARK_SIGNAL_BUY, 2600.00, excursion_infinity, 6.00), 0.0));
 }
 
+// The optimisation fitness. The property that matters most is the one the plan
+// warns about: the fitness must NOT reward trading more at identical evidence.
+void TestRLedgerFitness()
+{
+   XSparkRLedger ledger;
+   XSparkResetRLedger(ledger);
+
+   Check("empty ledger counts zero", ledger.count == 0);
+   Check("empty ledger means zero", NearlyEqual(XSparkRLedgerMean(ledger), 0.0));
+   Check("empty ledger has no dispersion", NearlyEqual(XSparkRLedgerStdDev(ledger), 0.0));
+   Check("empty ledger returns the sentinel",
+         NearlyEqual(XSparkRLedgerFitness(ledger, 1.0, 30), XSPARK_FITNESS_SENTINEL));
+
+   // Four trades: +2, -1, -1, +2 -> mean 0.5.
+   XSparkRLedgerAdd(ledger, 2.0);
+   XSparkRLedgerAdd(ledger, -1.0);
+   XSparkRLedgerAdd(ledger, -1.0);
+   XSparkRLedgerAdd(ledger, 2.0);
+
+   Check("count accumulates", ledger.count == 4);
+   Check("mean R is correct", NearlyEqual(XSparkRLedgerMean(ledger), 0.5));
+   Check("min R is tracked", NearlyEqual(ledger.min_r, -1.0));
+   Check("max R is tracked", NearlyEqual(ledger.max_r, 2.0));
+
+   // Sample stdev of {2,-1,-1,2}: deviations 1.5,-1.5,-1.5,1.5 -> sum sq 9 -> /3 = 3 -> sqrt = 1.7320508
+   Check("sample stdev uses n-1", NearlyEqual(XSparkRLedgerStdDev(ledger), MathSqrt(3.0)));
+
+   // Below the minimum trade count the pass must not compete with real results.
+   Check("a short pass returns the sentinel",
+         NearlyEqual(XSparkRLedgerFitness(ledger, 1.0, 30), XSPARK_FITNESS_SENTINEL));
+
+   // At the minimum, fitness = mean - k * stdev / sqrt(n).
+   const double expected = 0.5 - 1.0 * MathSqrt(3.0) / MathSqrt(4.0);
+   Check("fitness is the mean penalised by its standard error",
+         NearlyEqual(XSparkRLedgerFitness(ledger, 1.0, 4), expected));
+   Check("k scales the penalty",
+         NearlyEqual(XSparkRLedgerFitness(ledger, 2.0, 4), 0.5 - 2.0 * MathSqrt(3.0) / 2.0));
+   Check("k of zero leaves the bare mean",
+         NearlyEqual(XSparkRLedgerFitness(ledger, 0.0, 4), 0.5));
+
+   // THE PROPERTY THAT MATTERS. Two passes with identical mean and dispersion,
+   // one trading four times as often. The rejected form n*mean - k*stdev*sqrt(n)
+   // factors as sd*sqrt(n)*(t-k) and RISES with n at fixed t, so it would prefer
+   // the busier pass and push every sweep toward the loosest possible gate. The
+   // form used here must prefer the pass with MORE EVIDENCE, not more activity -
+   // so at an identical mean, more trades is better only because the standard
+   // error shrinks, and never merely because the count is larger.
+   XSparkRLedger small;
+   XSparkRLedger large;
+   XSparkResetRLedger(small);
+   XSparkResetRLedger(large);
+
+   for(int i = 0; i < 4; i++)
+   {
+      XSparkRLedgerAdd(small, 2.0);
+      XSparkRLedgerAdd(small, -1.0);
+   }
+   for(int j = 0; j < 16; j++)
+   {
+      XSparkRLedgerAdd(large, 2.0);
+      XSparkRLedgerAdd(large, -1.0);
+   }
+
+   Check("both passes share a mean", NearlyEqual(XSparkRLedgerMean(small), XSparkRLedgerMean(large)));
+   // Not identical: the n-1 correction makes the smaller sample's dispersion
+   // slightly larger (1.6036 vs 1.5240), converging as n grows. Close enough
+   // that the fitness difference below is driven by the standard error, not by
+   // a dispersion gap.
+   Check("both passes share a dispersion to within the n-1 correction",
+         NearlyEqual(XSparkRLedgerStdDev(small), XSparkRLedgerStdDev(large), 0.1));
+   Check("the larger sample scores higher only via its smaller standard error",
+         XSparkRLedgerFitness(large, 1.0, 4) > XSparkRLedgerFitness(small, 1.0, 4));
+
+   // A losing pass must score below a winning one regardless of trade count, or
+   // the fitness would reward activity over profitability.
+   XSparkRLedger losing;
+   XSparkResetRLedger(losing);
+   for(int m = 0; m < 200; m++)
+      XSparkRLedgerAdd(losing, -0.1);
+   Check("a busy losing pass scores below a quiet winning one",
+         XSparkRLedgerFitness(losing, 1.0, 4) < XSparkRLedgerFitness(small, 1.0, 4));
+
+   // Degenerate and hostile inputs.
+   XSparkRLedger single;
+   XSparkResetRLedger(single);
+   XSparkRLedgerAdd(single, 1.5);
+   Check("one observation has no sample dispersion", NearlyEqual(XSparkRLedgerStdDev(single), 0.0));
+   Check("one observation degrades to the bare mean",
+         NearlyEqual(XSparkRLedgerFitness(single, 1.0, 1), 1.5));
+
+   XSparkRLedger constant;
+   XSparkResetRLedger(constant);
+   for(int c = 0; c < 10; c++)
+      XSparkRLedgerAdd(constant, 0.75);
+   Check("zero dispersion leaves the mean unpenalised",
+         NearlyEqual(XSparkRLedgerFitness(constant, 1.0, 4), 0.75));
+
+   const double ledger_infinity = MathPow(10.0, 400.0);
+   XSparkRLedger guarded;
+   XSparkResetRLedger(guarded);
+   XSparkRLedgerAdd(guarded, 1.0);
+   XSparkRLedgerAdd(guarded, ledger_infinity);
+   XSparkRLedgerAdd(guarded, ledger_infinity - ledger_infinity);
+   Check("non-finite R multiples are rejected", guarded.count == 1);
+   Check("the ledger stays finite after hostile input",
+         MathIsValidNumber(XSparkRLedgerMean(guarded)));
+}
+
 void OnStart()
 {
    Print("Starting XSpark execution/state hardening tests");
@@ -567,5 +675,6 @@ void OnStart()
    TestExecutionResultState();
    TestClosureAccumulation();
    TestExcursionTracking();
+   TestRLedgerFitness();
    PrintFormat("XSpark execution/state hardening tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }

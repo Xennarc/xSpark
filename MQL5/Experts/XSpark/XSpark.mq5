@@ -58,6 +58,12 @@ input double InpRiskPctTier2 = 3.0;
 input double InpRiskPctTier3 = 3.0;
 input double InpMaxRiskPct = 3.5;
 input double InpMaxDailyDDPct = 15.0;
+// Account-level cap on total money at risk across ALL open positions, on every
+// symbol and every Magic Number. InpMaxRiskPct is a per-TRADE label and cannot
+// enforce AGENTS.md rule 27 on its own: three instances on three symbols, each
+// obeying 3%, is 9% at risk with nothing able to see it. Set this to the total
+// drawdown you are willing to have live at one moment.
+input double InpMaxAccountRiskPct = 6.0;
 
 input group "Sessions"
 input bool InpAllowAsianReduced = true;
@@ -112,6 +118,10 @@ ENUM_TIMEFRAMES g_higher_timeframe = XSPARK_SCOREBOT_TESTED_HIGHER_TIMEFRAME;
 double g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
 bool   g_score_point_size_conforms = false;
 string g_score_point_size_reason = "ScoreBot point size has not been resolved.";
+
+// Increments in OnTester and OnDeinit so a single run proves which ran first,
+// rather than the ordering being assumed from documentation.
+int g_tester_sequence = 0;
 
 datetime g_current_base_bar_time = 0;
 datetime g_last_evaluated_signal_bar_time = 0;
@@ -273,6 +283,20 @@ bool XSparkValidateInputs()
 
    // A daily limit at or above the total limit can never bind, which would
    // silently remove the shorter-horizon brake entirely.
+   // The account cap must leave room for at least one trade at the per-trade
+   // ceiling, or no entry could ever pass it and the EA would scan forever.
+   if(InpMaxAccountRiskPct <= 0.0 || InpMaxAccountRiskPct > XSPARK_MAX_ALLOWED_RISK_PCT * 3.0 ||
+      InpMaxAccountRiskPct < InpMaxRiskPct)
+   {
+      g_logger.Critical("EA",
+                        StringFormat("InpMaxAccountRiskPct %.2f%% is invalid: it must be positive, at or above "
+                                     "the per-trade ceiling of %.2f%%, and no more than %.1f%%.",
+                                     InpMaxAccountRiskPct,
+                                     InpMaxRiskPct,
+                                     XSPARK_MAX_ALLOWED_RISK_PCT * 3.0));
+      return false;
+   }
+
    if(InpMaxTotalDDPct >= 100.0 || InpMaxDailyDDPct >= 100.0 ||
       InpMaxDailyDDPct >= InpMaxTotalDDPct)
    {
@@ -425,6 +449,60 @@ void XSparkLogSignalRejection(const string stage,
                               report.dynamic_rr,
                               DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
                               reason));
+}
+
+// Total money at risk across EVERY open position on the account, in account
+// currency.
+//
+// Deliberately not filtered by symbol or Magic Number. AGENTS.md rule 27 is
+// about the ACCOUNT, and the account does not care which EA or which hand
+// opened a position. Filtering to XSpark's own magic would reproduce exactly the
+// blindness this exists to remove: three instances on three symbols, each
+// obeying its own per-trade cap, each unable to see the other two.
+//
+// Fails closed. A position with no stop loss has unbounded downside, so total
+// risk becomes unknowable rather than large, and an unknowable total must not
+// be allowed to pass a cap.
+bool XSparkOpenAccountRiskCash(double &open_risk_cash, string &reason)
+{
+   open_risk_cash = 0.0;
+   reason = "";
+
+   const int total = PositionsTotal();
+
+   for(int index = 0; index < total; index++)
+   {
+      const ulong ticket = PositionGetTicket(index);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+      {
+         reason = "An open position could not be read; account risk is unknown.";
+         return false;
+      }
+
+      const string position_symbol = PositionGetString(POSITION_SYMBOL);
+      double position_risk = 0.0;
+      string position_reason = "";
+
+      double tick_value = SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+      if(tick_value <= 0.0)
+         tick_value = SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_VALUE);
+
+      if(!XSparkPositionRiskCash(PositionGetDouble(POSITION_PRICE_OPEN),
+                                 PositionGetDouble(POSITION_SL),
+                                 PositionGetDouble(POSITION_VOLUME),
+                                 SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_SIZE),
+                                 tick_value,
+                                 position_risk,
+                                 position_reason))
+      {
+         reason = StringFormat("Position %I64u on %s: %s", ticket, position_symbol, position_reason);
+         return false;
+      }
+
+      open_risk_cash += position_risk;
+   }
+
+   return true;
 }
 
 void XSparkVerboseBlock(const string component, const string reason)
@@ -872,6 +950,57 @@ void XSparkEvaluateNewBar()
       return;
    }
 
+   // Account-level risk cap. Checked here rather than in the earlier safety gate
+   // because the prospective risk is only knowable once the plan has a volume
+   // and a broker-valid stop, and a cap checked against an estimate is not a cap.
+   {
+      double open_risk_cash = 0.0;
+      string account_risk_reason = "";
+
+      double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+      if(tick_value <= 0.0)
+         tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+
+      double prospective_risk_cash = 0.0;
+      string prospective_reason = "";
+      const bool prospective_known = XSparkPositionRiskCash(plan.entry_reference,
+                                                            plan.final_sl,
+                                                            plan.volume,
+                                                            SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE),
+                                                            tick_value,
+                                                            prospective_risk_cash,
+                                                            prospective_reason);
+
+      double projected_pct = 0.0;
+      string cap_reason = "";
+
+      if(!prospective_known ||
+         !XSparkOpenAccountRiskCash(open_risk_cash, account_risk_reason) ||
+         !XSparkAccountRiskWithinCap(open_risk_cash,
+                                     prospective_risk_cash,
+                                     AccountInfoDouble(ACCOUNT_BALANCE),
+                                     InpMaxAccountRiskPct,
+                                     projected_pct,
+                                     cap_reason))
+      {
+         g_status = "ACCOUNT RISK";
+         g_last_block_reason = !prospective_known ? prospective_reason
+                               : (account_risk_reason != "" ? account_risk_reason : cap_reason);
+
+         XSparkLogSignalRejection("account_risk", g_last_block_reason, report);
+         g_logger.Warn("RiskManager",
+                       StringFormat("Entry refused by the account risk cap: %s", g_last_block_reason));
+         return;
+      }
+
+      g_logger.Info("RiskManager",
+                    StringFormat("Account risk check passed: open=%s prospective=%s projected=%.2f%% cap=%.2f%%",
+                                 DoubleToString(open_risk_cash, 2),
+                                 DoubleToString(prospective_risk_cash, 2),
+                                 projected_pct,
+                                 InpMaxAccountRiskPct));
+   }
+
    if(InpUseMarginCheck)
    {
       double required_margin = 0.0;
@@ -1138,8 +1267,53 @@ int OnInit()
    return INIT_SUCCEEDED;
 }
 
+// Strategy Tester optimisation fitness, in R.
+//
+// ORDERING: OnTester() runs BEFORE OnDeinit(). The flush of trades that closed
+// but have not yet been detected must therefore happen here, as the first
+// statement, and not in OnDeinit - otherwise every pass scores a trade count
+// lower than the one it actually produced, and the under-count is silent.
+// The claim is not taken on faith: both handlers log their sequence position,
+// so a single run confirms the order empirically.
+double OnTester()
+{
+   // First statement. Reconcile detects positions that have closed and routes
+   // them through the closure path, which is what feeds the ledger.
+   g_position_manager.Reconcile(g_logger);
+
+   g_tester_sequence++;
+   g_logger.Info("Tester", StringFormat("OnTester ran at sequence position %d.", g_tester_sequence));
+
+   const int trades = g_position_manager.RecordedTradeCount();
+   const int live_at_end = g_position_manager.LiveManagedCount();
+   const double fitness = g_position_manager.RecordedFitness(XSPARK_FITNESS_PENALTY_K,
+                                                             XSPARK_FITNESS_MIN_TRADES);
+
+   // The journal's trade count should equal the tester's, or differ by exactly
+   // the live-at-end count. Reporting both is what makes that a check rather
+   // than an assumption.
+   g_logger.Info("Tester",
+                 StringFormat("Pass result: recorded_trades=%d live_at_end=%d mean_R=%.4f stdev_R=%.4f "
+                              "min_R=%.4f max_R=%.4f fitness=%.6f%s",
+                              trades,
+                              live_at_end,
+                              g_position_manager.RecordedMeanR(),
+                              g_position_manager.RecordedStdDevR(),
+                              g_position_manager.RecordedMinR(),
+                              g_position_manager.RecordedMaxR(),
+                              fitness,
+                              fitness <= XSPARK_FITNESS_SENTINEL + 1.0
+                                 ? StringFormat(" (SENTINEL: below the %d-trade minimum)", XSPARK_FITNESS_MIN_TRADES)
+                                 : ""));
+
+   return fitness;
+}
+
 void OnDeinit(const int reason)
 {
+   g_tester_sequence++;
+   g_logger.Info("Tester", StringFormat("OnDeinit ran at sequence position %d.", g_tester_sequence));
+
    EventKillTimer();
    g_indicator_cache.Deinitialize();
    g_strategy.Deinitialize();
