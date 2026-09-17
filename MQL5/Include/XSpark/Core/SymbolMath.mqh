@@ -12,9 +12,11 @@
 // specified its thresholds in US cents of gold, so for XAUUSD one ScoreBot
 // point is 0.01 price units.
 //
-// The size is now resolved from the instrument specification rather than
-// hardcoded, and asserted against the declared XAUUSD baseline below while the
-// EA remains XAUUSD-only. On XAUUSD the resolved and declared values are
+// The size is resolved from the instrument specification rather than hardcoded.
+// On XAUUSD it is additionally checked against the declared baseline below,
+// which is the Phase 0 regression assertion; other instruments have no declared
+// baseline and use the derivation directly (see XSparkSelectOperatingPointSize
+// and ADR-021). On XAUUSD the resolved and declared values are
 // bitwise identical at both quote conventions a broker may use for gold
 // (2 digits: point 0.01; 3 digits: 0.001 * 10, an exact binary64 product), so
 // the change is behaviour-neutral on gold by construction rather than by

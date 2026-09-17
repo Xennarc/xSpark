@@ -266,26 +266,55 @@ void TestTimeframePairing()
    Check("H4 is supported", XSparkHigherTimeframeFor(PERIOD_H4, higher, reason));
    Check("H4 pairs with D1", higher == PERIOD_D1);
 
-   // The partner must always be strictly longer, which is what IndicatorCache
-   // validates on initialisation.
-   Check("every supported pair is strictly increasing",
-         PeriodSeconds(PERIOD_M5) > PeriodSeconds(PERIOD_M1) &&
-         PeriodSeconds(PERIOD_M30) > PeriodSeconds(PERIOD_M5) &&
-         PeriodSeconds(PERIOD_H1) > PeriodSeconds(PERIOD_M15) &&
-         PeriodSeconds(PERIOD_H2) > PeriodSeconds(PERIOD_M30) &&
-         PeriodSeconds(PERIOD_H4) > PeriodSeconds(PERIOD_H1) &&
-         PeriodSeconds(PERIOD_H8) > PeriodSeconds(PERIOD_H2) &&
-         PeriodSeconds(PERIOD_D1) > PeriodSeconds(PERIOD_H4));
+   // Every partner the TABLE returns must be strictly longer than its base,
+   // which is what IndicatorCache validates on initialisation. Reading the
+   // table here rather than restating the pairs means this fails if the table
+   // changes; comparing platform constants directly would always pass.
+   ENUM_TIMEFRAMES supported[7];
+   supported[0] = PERIOD_M1;  supported[1] = PERIOD_M5;  supported[2] = PERIOD_M15;
+   supported[3] = PERIOD_M30; supported[4] = PERIOD_H1;  supported[5] = PERIOD_H2;
+   supported[6] = PERIOD_H4;
+
+   bool all_increasing = true;
+   for(int i = 0; i < 7; i++)
+   {
+      ENUM_TIMEFRAMES partner = PERIOD_CURRENT;
+      if(!XSparkHigherTimeframeFor(supported[i], partner, reason) ||
+         PeriodSeconds(partner) <= PeriodSeconds(supported[i]))
+      {
+         all_increasing = false;
+      }
+   }
+   Check("every table pair resolves and is strictly increasing", all_increasing);
 
    // Periods with no sane partner are refused rather than given an absurd ratio.
+   // Each refusal asserts its own out-param. A single check after the last call
+   // could only ever observe that call's reset and would prove nothing about
+   // the others.
+   higher = PERIOD_H1;
    Check("H8 is refused", !XSparkHigherTimeframeFor(PERIOD_H8, higher, reason));
+   Check("H8 refusal clears the partner", higher == PERIOD_CURRENT);
    Check("refusal states a reason", reason != "");
+
+   higher = PERIOD_H1;
    Check("H12 is refused", !XSparkHigherTimeframeFor(PERIOD_H12, higher, reason));
+   Check("H12 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
    Check("D1 is refused", !XSparkHigherTimeframeFor(PERIOD_D1, higher, reason));
+   Check("D1 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
    Check("W1 is refused", !XSparkHigherTimeframeFor(PERIOD_W1, higher, reason));
+   Check("W1 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
    Check("MN1 is refused", !XSparkHigherTimeframeFor(PERIOD_MN1, higher, reason));
+   Check("MN1 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
    Check("PERIOD_CURRENT is refused", !XSparkHigherTimeframeFor(PERIOD_CURRENT, higher, reason));
-   Check("a refused period yields no partner", higher == PERIOD_CURRENT);
+   Check("PERIOD_CURRENT refusal clears the partner", higher == PERIOD_CURRENT);
 }
 
 void TestOperatingPointSizeSelection()
@@ -340,6 +369,26 @@ void TestOperatingPointSizeSelection()
          !XSparkSelectOperatingPointSize(false, false, 0.0, 0.0, size, conforms, reason));
    Check("unusable broker point yields no denominator", NearlyEqual(size, 0.0));
    Check("unusable broker point is not trusted", !conforms);
+
+   // Non-finite inputs. A resolver that returned infinity or NaN must never be
+   // trusted, on either branch, and must not become the operating denominator.
+   const double selector_infinity = MathPow(10.0, 400.0);
+   const double selector_nan = selector_infinity - selector_infinity;
+
+   Check("non-finite resolved size is refused on gold",
+         !XSparkSelectOperatingPointSize(true, true, selector_infinity, 0.01, size, conforms, reason));
+   Check("non-finite gold falls back to the baseline", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+   Check("nan resolved size is refused on gold",
+         !XSparkSelectOperatingPointSize(true, true, selector_nan, 0.01, size, conforms, reason));
+   Check("non-finite resolved size is refused off gold",
+         !XSparkSelectOperatingPointSize(false, true, selector_infinity, 0.0001, size, conforms, reason));
+   Check("non-finite off gold is not trusted", !conforms);
+   Check("non-finite off gold falls back to the broker point", NearlyEqual(size, 0.0001));
+   Check("non-finite broker point yields no denominator",
+         !XSparkSelectOperatingPointSize(false, false, 0.0, selector_infinity, size, conforms, reason));
+   Check("non-finite broker point is not a usable fallback", NearlyEqual(size, 0.0));
+   Check("negative resolved size is refused off gold",
+         !XSparkSelectOperatingPointSize(false, true, -0.0001, 0.0001, size, conforms, reason));
 }
 
 void OnStart()

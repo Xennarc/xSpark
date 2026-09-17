@@ -50,6 +50,21 @@ self-calibrating gates are what resolve them:
   becomes 50 pips, which is far too loose to filter anything. Running a non-gold
   instrument therefore needs the ATR and spread inputs re-entered by hand until
   Phase 2 derives them.
+- **The execution and exit deviations are gold-scaled constants with no input.**
+  `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS` (30) and
+  `XSPARK_CLOSE_DEVIATION_SCORE_POINTS` (100) are `#define`s, not `Inp` inputs,
+  so unlike the ATR and spread thresholds an operator **cannot** retune them.
+  They scale with the resolved point size, so on gold they are $0.30 and $1.00
+  against an ATR stop of $1.20 or more, and on an FX pair they become 30 and 100
+  pips against a stop of roughly 8-25 pips. Two consequences follow. The entry
+  drift gate goes inert, admitting a stale plan that gold would have rejected -
+  bounded, because the volume is re-sized against the refreshed entry at the same
+  risk percentage and the realised reward ratio is re-checked. And the order is
+  sent with a 30-pip slippage tolerance, where a fill inside that tolerance
+  against a 10-pip sized stop can put realised risk several times over the
+  selected risk percentage, with only a WARNING logged. Retuning these needs a
+  code change, which is Phase 2 scope.
+
 - **Session weighting degrades on high timeframes.** The session weight is taken
   from the hour of the signal bar. On H4 that hour is only ever 0, 4, 8, 12, 16
   or 20, and on D1 it is always the session open hour, so the London/New York
@@ -71,11 +86,16 @@ ScoreBot point is 0.01 price units.
 ```
 
 The size of a ScoreBot point is resolved from the instrument specification at
-initialization rather than hardcoded, and asserted against the declared XAUUSD
-baseline `XSPARK_XAUUSD_SCORE_POINT_SIZE` while the EA remains XAUUSD-only. On
-XAUUSD the resolved and declared values are identical at both quote conventions
-a broker may use for gold - 2 digits with point 0.01, and 3 digits with point
-0.001 - so the resolution changes no threshold on gold. See ADR-020.
+initialization rather than hardcoded. On XAUUSD it is additionally checked
+against the declared baseline `XSPARK_XAUUSD_SCORE_POINT_SIZE`, and the baseline
+constant is what operates: that check is the Phase 0 regression assertion and it
+survives Phase 1 unchanged. The resolved and declared values are identical at
+both quote conventions a broker may use for gold - 2 digits with point 0.01, and
+3 digits with point 0.001 - so the resolution changes no threshold on gold.
+
+Other instruments have no declared baseline to check against, so the
+spec-validated derivation is the operating size directly. See ADR-020 for the
+derivation and ADR-021 for the per-instrument branch.
 
 Resolution happens once, in `OnInit`, and the resolved size is passed to the
 strategy, SafetyManager, ExecutionEngine and PositionManager, so no conversion
@@ -135,15 +155,15 @@ H1:
 - EMA 50
 - RSI 14
 
-The EA uses true H1 indicator handles. It does not approximate H1 values from M15 indicators.
+The EA uses true higher-timeframe indicator handles. It does not approximate higher-timeframe values from base-timeframe indicators.
 
 ### Bar Evaluation
 
-Signals are evaluated once per newly opened M15 bar, using the just-closed M15 bar as signal bar 1. On initialization, the EA records the current M15 bar and waits for the next genuine new bar before evaluating a signal.
+Signals are evaluated once per newly opened base-timeframe bar, using the just-closed bar as signal bar 1. On initialization, the EA records the current bar and waits for the next genuine new bar before evaluating a signal.
 
 ### Patterns
 
-Patterns operate on closed M15 candles.
+Patterns operate on closed base-timeframe candles.
 
 Pattern priority:
 
@@ -214,7 +234,7 @@ Components:
 - RSI: 1.0 when direction-specific RSI range passes
 - S/R: 1.0 when Close1 is within 0.5 ATR of a qualifying swing
 - Volume: capped score from bar1 volume versus mean volume of bars 2-10
-- MTF: 0.5 when H1 and M15 RSI direction conditions pass
+- MTF: 0.5 when higher-timeframe and base-timeframe RSI direction conditions pass
 
 ### Effective Threshold
 
@@ -254,7 +274,7 @@ Known tested quirk: when dynamic RR is below 2.5, hard TP occurs before the part
 Trailing:
 
 - Active only after partial is done
-- Uses latest cached closed M15 ATR14
+- Uses latest cached closed base-timeframe ATR14
 - Distance: `2.0 * ATR14`
 - Only tightens SL
 - Never modifies TP
@@ -422,11 +442,11 @@ Per-position state is keyed by account, symbol, Magic Number and `POSITION_IDENT
 
 ### Assumption SBV3-001
 
-S/R price is implemented as M15 bar1 close because the strategy is closed-bar deterministic.
+S/R price is implemented as base-timeframe bar1 close because the strategy is closed-bar deterministic.
 
 ### Assumption SBV3-002
 
-Session classification uses the timestamp/hour of M15 bar1.
+Session classification uses the timestamp/hour of base-timeframe bar1. Above H1 this stops discriminating; see the Phase 1 limitations.
 
 ### Assumption SBV3-003
 
