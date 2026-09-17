@@ -13,6 +13,36 @@
 #define XSPARK_FALLBACK_OPEN_TIME_TOLERANCE_SECONDS 2
 #define XSPARK_MAX_FUTURE_QUOTE_SKEW_SECONDS 5
 
+// The entry drift gate rejects a fill whose price has moved more than the
+// entry deviation away from the price the order was sized against. Because the
+// stop is placed relative to that same reference, the deviation is also the
+// amount by which a permitted fill can push realised risk past selected risk:
+//
+//    realised_risk / selected_risk  <=  1 + deviation / risk_distance
+//
+// The SMALLEST risk distance the strategy can ever produce is fixed by the ATR
+// gate, which refuses to trade below the configured ATR floor:
+//
+//    min_risk_distance = atr_mult_sl * atr_min_score_points
+//
+// so deviation / min_risk_distance is the worst-case fractional overshoot at
+// the current configuration. That ratio, not the raw deviation, is the number
+// that has to be sane - and it is instrument-dependent, which is exactly why a
+// single compile-time constant was wrong.
+//
+// FAULT at 1.0 is not a preference. At that ratio the permitted slip equals the
+// whole stop distance, so a fill may land at or beyond the position's own stop:
+// the gate no longer bounds anything and realised risk is untethered from
+// selected risk. WARN at 0.20 is a judgement, set against the headroom the EA
+// already declares between selected risk and the per-trade risk cap.
+#define XSPARK_DRIFT_RATIO_WARN 0.20
+#define XSPARK_DRIFT_RATIO_FAULT 1.0
+
+#define XSPARK_DRIFT_BOUND_OK 0
+#define XSPARK_DRIFT_BOUND_WARN 1
+#define XSPARK_DRIFT_BOUND_FAULT 2
+
+
 bool XSparkSignalBarIsSubmittable(const datetime last_submitted_signal_bar_time,
                                   const datetime candidate_signal_bar_time,
                                   string &reason)
@@ -220,6 +250,86 @@ bool XSparkQuoteAgeIsAcceptable(const datetime quote_time,
    }
 
    return true;
+}
+
+// Reports whether the entry deviation still bounds realised risk at the
+// configured ATR floor and stop multiple. Pure: every input is a configuration
+// number, so this is decidable at initialisation, before any trade exists.
+//
+// Fails CLOSED. A non-finite or non-positive input is a fault, not a pass,
+// because an unusable ratio is exactly the state in which the caller must not
+// assume the gate is working.
+int XSparkEntryDriftBound(const double deviation_score_points,
+                          const double atr_mult_sl,
+                          const double atr_min_score_points,
+                          double &min_risk_distance_score_points,
+                          double &overshoot_ratio,
+                          string &reason)
+{
+   min_risk_distance_score_points = 0.0;
+   overshoot_ratio = 0.0;
+   reason = "";
+
+   if(!MathIsValidNumber(deviation_score_points) || deviation_score_points <= 0.0)
+   {
+      reason = "Entry deviation is not a finite positive number of ScoreBot points.";
+      return XSPARK_DRIFT_BOUND_FAULT;
+   }
+
+   if(!MathIsValidNumber(atr_mult_sl) || atr_mult_sl <= 0.0)
+   {
+      reason = "ATR stop multiple is not a finite positive number.";
+      return XSPARK_DRIFT_BOUND_FAULT;
+   }
+
+   if(!MathIsValidNumber(atr_min_score_points) || atr_min_score_points <= 0.0)
+   {
+      reason = "Minimum ATR is not a finite positive number of ScoreBot points.";
+      return XSPARK_DRIFT_BOUND_FAULT;
+   }
+
+   min_risk_distance_score_points = atr_mult_sl * atr_min_score_points;
+
+   if(!MathIsValidNumber(min_risk_distance_score_points) || min_risk_distance_score_points <= 0.0)
+   {
+      reason = "Minimum stop distance implied by the ATR floor is not usable.";
+      return XSPARK_DRIFT_BOUND_FAULT;
+   }
+
+   overshoot_ratio = deviation_score_points / min_risk_distance_score_points;
+
+   if(!MathIsValidNumber(overshoot_ratio))
+   {
+      reason = "Worst-case realised-risk overshoot ratio is not a finite number.";
+      return XSPARK_DRIFT_BOUND_FAULT;
+   }
+
+   if(overshoot_ratio >= XSPARK_DRIFT_RATIO_FAULT)
+   {
+      reason = StringFormat("Entry deviation %.2f ScoreBot points is %.0f%% of the smallest stop this configuration can produce (%.2f points = %.2f x %.2f ATR floor). A permitted fill can land at or beyond its own stop, so the drift gate bounds nothing and realised risk is untethered from selected risk.",
+                            deviation_score_points,
+                            overshoot_ratio * 100.0,
+                            min_risk_distance_score_points,
+                            atr_mult_sl,
+                            atr_min_score_points);
+      return XSPARK_DRIFT_BOUND_FAULT;
+   }
+
+   if(overshoot_ratio > XSPARK_DRIFT_RATIO_WARN)
+   {
+      reason = StringFormat("Entry deviation %.2f ScoreBot points is %.0f%% of the smallest stop this configuration can produce (%.2f points). A permitted fill can realise up to %.0f%% of selected risk.",
+                            deviation_score_points,
+                            overshoot_ratio * 100.0,
+                            min_risk_distance_score_points,
+                            (1.0 + overshoot_ratio) * 100.0);
+      return XSPARK_DRIFT_BOUND_WARN;
+   }
+
+   reason = StringFormat("Entry deviation %.2f ScoreBot points is %.0f%% of the smallest stop this configuration can produce (%.2f points).",
+                         deviation_score_points,
+                         overshoot_ratio * 100.0,
+                         min_risk_distance_score_points);
+   return XSPARK_DRIFT_BOUND_OK;
 }
 
 #endif

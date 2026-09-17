@@ -44,6 +44,10 @@ bool XSparkHigherTimeframeFor(const ENUM_TIMEFRAMES base,
 #define XSPARK_SCOREBOT_MAX_SCORE 9.0
 #define XSPARK_SCOREBOT_TIER3_THRESHOLD 5.5
 #define XSPARK_SCOREBOT_TIER2_THRESHOLD 4.5
+// DEFAULT for InpEntryDeviationPoints, not a fixed constant. It is the gold
+// value that shipped through Phase 1, kept here so the default is bit-for-bit
+// what it was; on any other instrument it must be set for that instrument.
+// The startup drift-bound check reports whether it still bounds anything.
 #define XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS 30.0
 
 // Hard ceiling on risk per trade. Not a preference: with the edge measured in

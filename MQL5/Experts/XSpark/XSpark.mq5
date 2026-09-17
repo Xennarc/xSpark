@@ -87,6 +87,28 @@ input bool   InpUseStopLevelValidation = true;
 input bool   InpUseMarginCheck = true;
 input double InpMarginBufferPct = 20.0;
 input int    InpMaxQuoteAgeSeconds = 15;
+// Slippage tolerances, in ScoreBot points (the pip of the instrument: 0.01 on
+// gold, 0.0001 on a 5-digit FX major, 0.01 on a 3-digit JPY cross). These were
+// compile-time constants tuned for gold, which made them silently wrong on
+// every other instrument - 30 points against a gold stop of at least 120 is a
+// bound, the same 30 pips against a 15-pip FX stop is not. See ADR-024.
+//
+// Entry: how far the fill may drift from the price the order was SIZED
+// against. Because the stop is placed relative to that same price, this is
+// also the amount by which a permitted fill can push realised risk past
+// selected risk. Smaller is tighter risk control at the cost of more rejected
+// entries. The startup drift-bound line reports what the current value is
+// worth as a percentage, and a value that no longer bounds anything is a
+// DRIFT GATE FAULT.
+input double InpEntryDeviationPoints = XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS;
+
+// Exit: deliberately NOT subject to the same check, and deliberately larger.
+// A tolerance that is too small on an exit gets the close REJECTED, which
+// leaves live exposure that XSpark intended to be flat - the opposite of a
+// risk control. Generosity here is protective, so only a non-positive value is
+// refused.
+input double InpExitDeviationPoints = XSPARK_CLOSE_DEVIATION_SCORE_POINTS;
+
 // Chart panel placement. The panel paints its own opaque background, so it is
 // legible on any chart colour scheme; these only move it out of the way.
 input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER;
@@ -118,6 +140,12 @@ ENUM_TIMEFRAMES g_higher_timeframe = XSPARK_SCOREBOT_TESTED_HIGHER_TIMEFRAME;
 double g_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
 bool   g_score_point_size_conforms = false;
 string g_score_point_size_reason = "ScoreBot point size has not been resolved.";
+
+// Whether the entry deviation still bounds realised risk at the configured ATR
+// floor and stop multiple. Decidable from configuration alone, so it is settled
+// once at initialisation rather than re-derived per signal.
+bool   g_entry_drift_bound_usable = false;
+string g_entry_drift_bound_reason = "Entry drift bound has not been evaluated.";
 
 // Increments in OnTester and OnDeinit so a single run proves which ran first,
 // rather than the ordering being assumed from documentation.
@@ -338,6 +366,48 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   // The entry deviation is a risk control, and until Phase 2 it was a
+   // compile-time constant tuned for gold. Whether it still bounds anything is
+   // a property of the WHOLE configuration - deviation, ATR floor and stop
+   // multiple together - so it is checked here rather than trusted. ADR-024.
+   double min_stop_points = 0.0;
+   double overshoot_ratio = 0.0;
+   string drift_reason = "";
+   const int drift_bound = XSparkEntryDriftBound(InpEntryDeviationPoints,
+                                                 InpATRMultSL,
+                                                 InpATRMinPoints,
+                                                 min_stop_points,
+                                                 overshoot_ratio,
+                                                 drift_reason);
+
+   g_entry_drift_bound_usable = drift_bound != XSPARK_DRIFT_BOUND_FAULT;
+   g_entry_drift_bound_reason = drift_reason;
+
+   if(drift_bound == XSPARK_DRIFT_BOUND_FAULT)
+   {
+      // Deliberately NOT INIT_FAILED. Refusing to initialise would abandon any
+      // live position to the broker with no XSpark management at all, which is
+      // worse than the misconfiguration. The SafetyManager veto stops NEW
+      // exposure while protective management of existing positions continues,
+      // exactly as the point-size fault does. AGENTS.md rules 9 and 23.
+      g_logger.Critical("EA", "Entry drift gate is inert: " + drift_reason +
+                              " New entries are blocked until the entry deviation, the ATR floor or the stop multiple is corrected for this instrument.");
+   }
+   else if(drift_bound == XSPARK_DRIFT_BOUND_WARN)
+   {
+      g_logger.Warn("EA", drift_reason);
+   }
+   else
+   {
+      g_logger.Info("EA", drift_reason);
+   }
+
+   if(!MathIsValidNumber(InpExitDeviationPoints) || InpExitDeviationPoints <= 0.0)
+   {
+      g_logger.Critical("EA", "InpExitDeviationPoints must be a finite positive number of ScoreBot points.");
+      return false;
+   }
+
    if(InpWeekendCloseHour < 0 || InpWeekendCloseHour > 23 ||
       InpWeekendCloseMinute < 0 || InpWeekendCloseMinute > 59)
    {
@@ -361,6 +431,12 @@ string XSparkStatusFromSafety()
    // green SCANNING, which is the one reading an operator must never get.
    if(!g_safety_manager.ScorePointSizeConforms())
       return "POINT SIZE FAULT";
+
+   // Same reasoning as the point-size fault: a configuration in which the
+   // entry deviation no longer bounds realised risk blocks every new entry,
+   // and must not render as a healthy green SCANNING.
+   if(!g_safety_manager.EntryDriftBoundUsable())
+      return "DRIFT GATE FAULT";
 
    if(g_safety_manager.DailyHaltLatched())
       return "DD HALT";
@@ -1181,6 +1257,8 @@ int OnInit()
                                    g_score_point_size,
                                    g_score_point_size_conforms,
                                    g_score_point_size_reason,
+                                   g_entry_drift_bound_usable,
+                                   g_entry_drift_bound_reason,
                                    g_logger))
    {
       g_logger.Critical("SafetyManager", g_safety_manager.LastReason());
@@ -1204,7 +1282,7 @@ int OnInit()
 
    if(!g_execution_engine.Initialize(InpMagicNumber,
                                      InpOrderComment,
-                                     XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS,
+                                     InpEntryDeviationPoints,
                                      g_score_point_size,
                                      InpUseStopLevelValidation,
                                      InpUseMarginCheck,
@@ -1220,6 +1298,7 @@ int OnInit()
    if(!g_position_manager.Initialize(_Symbol,
                                      InpMagicNumber,
                                      g_score_point_size,
+                                     InpExitDeviationPoints,
                                      InpUseStopLevelValidation))
    {
       g_logger.Critical("PositionManager", g_position_manager.LastReason());
@@ -1246,6 +1325,11 @@ int OnInit()
                                     DoubleToString(g_market_state.PointSize(), g_market_state.Digits()),
                                     DoubleToString(g_score_point_size, 8),
                                     XSparkPriceToScorePoints(g_market_state.SpreadPrice(), g_score_point_size)));
+
+   g_logger.Info("EA", StringFormat("Deviations entry=%.2f exit=%.2f ScoreBot points | entry drift bound %s",
+                                    InpEntryDeviationPoints,
+                                    InpExitDeviationPoints,
+                                    g_entry_drift_bound_usable ? "usable" : "INERT"));
 
    g_logger.Info("EA", StringFormat("Account login=%s server=%s company=%s trade_allowed=%s",
                                     IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN)),

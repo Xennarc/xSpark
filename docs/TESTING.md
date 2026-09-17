@@ -74,7 +74,7 @@ Compile and run:
 MQL5/Scripts/Tests/TestExecutionHardening.mq5
 ```
 
-The script checks duplicate signal-bar protection, entry-drift tolerance against the configured deviation, protective-stop geometry, risk distance from the execution price, target derivation from the actual risk distance and locked RR, RR bounds, volume recalculation from risk inputs, the price-movement risk revalidation contract, position-identity matching, fail-safe fallback acceptance rules, stale-quote calculations, and execution-result state reset.
+The script checks duplicate signal-bar protection, entry-drift tolerance against the configured deviation, protective-stop geometry, risk distance from the execution price, target derivation from the actual risk distance and locked RR, RR bounds, volume recalculation from risk inputs, the price-movement risk revalidation contract, position-identity matching, fail-safe fallback acceptance rules, stale-quote calculations, execution-result state reset, and the entry drift bound (that the gold defaults warn rather than fault, that the gold deviation on an FX pair faults, and that every unusable configuration number fails closed).
 
 It exercises pure helpers only. It does not and cannot simulate broker behaviour: order sends, deal history lookup, live position binding, margin rejection, and flattening retries must be validated in the Strategy Tester and on a demo account.
 
