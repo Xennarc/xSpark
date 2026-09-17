@@ -81,6 +81,12 @@ input bool   InpUseStopLevelValidation = true;
 input bool   InpUseMarginCheck = true;
 input double InpMarginBufferPct = 20.0;
 input int    InpMaxQuoteAgeSeconds = 15;
+// Chart panel placement. The panel paints its own opaque background, so it is
+// legible on any chart colour scheme; these only move it out of the way.
+input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER;
+input int    InpDashboardMarginX = 12;
+input int    InpDashboardMarginY = 18;
+
 input bool   InpUseWeekendClose = false;
 input int    InpWeekendCloseHour = 20;
 input int    InpWeekendCloseMinute = 0;
@@ -375,6 +381,7 @@ void XSparkUpdateDashboard()
                       g_position_manager.TradesLast24Hours(),
                       g_position_manager.ManagedPositionCount(),
                       InpMaxOpenTrades,
+                      XSparkPriceToScorePoints(g_market_state.SpreadPrice(), g_score_point_size),
                       mode,
                       dashboard_status,
                       dashboard_reason);
@@ -1101,6 +1108,7 @@ int OnInit()
 
    g_current_base_bar_time = iTime(_Symbol, g_base_timeframe, 0);
    EventSetTimer(5);
+   g_dashboard.Configure(InpDashboardCorner, InpDashboardMarginX, InpDashboardMarginY);
    g_dashboard.Initialize();
 
    g_logger.Info("EA", StringFormat("Symbol=%s digits=%d point=%s score_point_size=%s spread_score_points=%.2f",
