@@ -706,6 +706,23 @@ public:
       return false;
    }
 
+   // Replaces the entry deviation after auto-tune derives it for this symbol.
+   // A setter rather than a re-Initialize: re-initialising would also reset the
+   // duplicate signal-bar guard, which must survive for the life of the run.
+   bool SetEntryDeviationScorePoints(const double deviation_score_points)
+   {
+      if(!MathIsValidNumber(deviation_score_points) || deviation_score_points <= 0.0)
+         return false;
+
+      m_deviation_score_points = deviation_score_points;
+      return true;
+   }
+
+   double EntryDeviationScorePoints()
+   {
+      return m_deviation_score_points;
+   }
+
    ulong MagicNumber()
    {
       return m_magic_number;
