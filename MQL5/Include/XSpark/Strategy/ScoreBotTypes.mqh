@@ -5,7 +5,42 @@
 
 #define XSPARK_SCOREBOT_MAGIC_DEFAULT 770331
 #define XSPARK_SCOREBOT_COMMENT_DEFAULT "ScoreBot_v3"
-#define XSPARK_SCOREBOT_PRIMARY_TIMEFRAME PERIOD_M15
+// The timeframe pair the strategy was tested on. The EA now runs on any
+// supported base timeframe, but this pair remains the reference configuration.
+#define XSPARK_SCOREBOT_TESTED_BASE_TIMEFRAME PERIOD_M15
+#define XSPARK_SCOREBOT_TESTED_HIGHER_TIMEFRAME PERIOD_H1
+
+// Multi-timeframe partner for a base timeframe.
+//
+// An explicit table rather than arithmetic. PeriodSeconds(base) * 4 followed by
+// a nearest-greater-or-equal search is elegant and gives the right answer in the
+// middle of the range, but it degenerates at the edges: H8 has no 4x partner so
+// it lands on W1 (a 21x jump), H12 lands on W1 (14x), and MN1 has nothing above
+// it at all. A table states what is supported, is auditable against the tested
+// M15 -> H1 relationship, and makes an unsupported chart period a refusal rather
+// than a silently absurd ratio.
+bool XSparkHigherTimeframeFor(const ENUM_TIMEFRAMES base,
+                              ENUM_TIMEFRAMES &higher,
+                              string &reason)
+{
+   higher = PERIOD_CURRENT;
+   reason = "";
+
+   switch(base)
+   {
+      case PERIOD_M1:  higher = PERIOD_M5;  return true;
+      case PERIOD_M5:  higher = PERIOD_M30; return true;
+      case PERIOD_M15: higher = PERIOD_H1;  return true;   // the tested pair
+      case PERIOD_M30: higher = PERIOD_H2;  return true;
+      case PERIOD_H1:  higher = PERIOD_H4;  return true;
+      case PERIOD_H2:  higher = PERIOD_H8;  return true;
+      case PERIOD_H4:  higher = PERIOD_D1;  return true;
+      default:         break;
+   }
+
+   reason = "Chart period is not a supported XSpark base timeframe. Supported: M1, M5, M15, M30, H1, H2, H4.";
+   return false;
+}
 #define XSPARK_SCOREBOT_MAX_SCORE 9.0
 #define XSPARK_SCOREBOT_TIER3_THRESHOLD 5.5
 #define XSPARK_SCOREBOT_TIER2_THRESHOLD 4.5
@@ -72,11 +107,11 @@ struct XSparkScoreBotReport
    double                 atr50;
    double                 atr_points;
    double                 atr50_points;
-   double                 rsi_m15;
-   double                 rsi_h1;
-   double                 ema21_m15;
-   double                 ema50_m15;
-   double                 ema50_h1;
+   double                 rsi_base;
+   double                 rsi_higher;
+   double                 ema21_base;
+   double                 ema50_base;
+   double                 ema50_higher;
    double                 selected_risk_pct;
    XSparkScoreComponents  components;
 };
@@ -207,11 +242,11 @@ void XSparkResetScoreBotReport(XSparkScoreBotReport &report)
    report.atr50 = 0.0;
    report.atr_points = 0.0;
    report.atr50_points = 0.0;
-   report.rsi_m15 = 0.0;
-   report.rsi_h1 = 0.0;
-   report.ema21_m15 = 0.0;
-   report.ema50_m15 = 0.0;
-   report.ema50_h1 = 0.0;
+   report.rsi_base = 0.0;
+   report.rsi_higher = 0.0;
+   report.ema21_base = 0.0;
+   report.ema50_base = 0.0;
+   report.ema50_higher = 0.0;
    report.selected_risk_pct = 0.0;
    XSparkResetScoreComponents(report.components);
 }

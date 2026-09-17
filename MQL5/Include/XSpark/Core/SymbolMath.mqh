@@ -12,9 +12,11 @@
 // specified its thresholds in US cents of gold, so for XAUUSD one ScoreBot
 // point is 0.01 price units.
 //
-// The size is now resolved from the instrument specification rather than
-// hardcoded, and asserted against the declared XAUUSD baseline below while the
-// EA remains XAUUSD-only. On XAUUSD the resolved and declared values are
+// The size is resolved from the instrument specification rather than hardcoded.
+// On XAUUSD it is additionally checked against the declared baseline below,
+// which is the Phase 0 regression assertion; other instruments have no declared
+// baseline and use the derivation directly (see XSparkSelectOperatingPointSize
+// and ADR-021). On XAUUSD the resolved and declared values are
 // bitwise identical at both quote conventions a broker may use for gold
 // (2 digits: point 0.01; 3 digits: 0.001 * 10, an exact binary64 product), so
 // the change is behaviour-neutral on gold by construction rather than by
@@ -113,6 +115,86 @@ bool XSparkResolveScorePointSize(const string symbol, double &score_point_size, 
       return false;
    }
 
+   return true;
+}
+
+// Chooses the ScoreBot point size the session will operate on, and says whether
+// that size can be trusted for opening new exposure.
+//
+// XAUUSD keeps the Phase 0 regression assertion unchanged: the resolved size
+// must agree with the declared baseline, and the baseline constant itself is
+// what gets used. That is the proof that the unit migration changed nothing on
+// gold, and lifting the instrument guard must not dilute it.
+//
+// Every other instrument has no declared baseline to compare against - there is
+// no tested ScoreBot unit for EURUSD - so the spec-validated derivation IS the
+// answer, and it is trusted when the specification validated cleanly.
+//
+// When resolution fails there is still a denominator to supply, because the exit
+// deviation is converted on the killswitch flatten path and a zero there would
+// drop CTrade to its 10-point default, which is the ADR-014 hazard. The fallback
+// is the declared gold baseline on XAUUSD, and the raw broker point elsewhere
+// when it is at least a valid positive number. Either way the size is NOT
+// trusted and new exposure stays blocked.
+bool XSparkSelectOperatingPointSize(const bool is_xauusd,
+                                    const bool resolve_ok,
+                                    const double resolved,
+                                    const double broker_point,
+                                    double &operating_size,
+                                    bool &conforms,
+                                    string &reason)
+{
+   operating_size = 0.0;
+   conforms = false;
+   reason = "";
+
+   if(is_xauusd)
+   {
+      if(!resolve_ok)
+      {
+         operating_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+         reason = "XAUUSD point size could not be resolved; using the declared baseline and blocking new entries.";
+         return false;
+      }
+
+      if(!MathIsValidNumber(resolved) || resolved <= 0.0 ||
+         MathAbs(resolved / XSPARK_XAUUSD_SCORE_POINT_SIZE - 1.0) > XSPARK_SPEC_RELATIVE_TOLERANCE)
+      {
+         operating_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+         reason = StringFormat("Resolved XAUUSD size %s does not match the declared baseline %s; "
+                               "using the baseline and blocking new entries.",
+                               DoubleToString(resolved, 10),
+                               DoubleToString(XSPARK_XAUUSD_SCORE_POINT_SIZE, 10));
+         return false;
+      }
+
+      // The baseline constant, not the broker double: the neutrality guarantee
+      // is then structural rather than contingent on an exactly representable
+      // broker point.
+      operating_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
+      conforms = true;
+      reason = "XAUUSD point size matches the declared baseline.";
+      return true;
+   }
+
+   if(!resolve_ok || !MathIsValidNumber(resolved) || resolved <= 0.0)
+   {
+      if(MathIsValidNumber(broker_point) && broker_point > 0.0)
+      {
+         operating_size = broker_point;
+         reason = "Instrument point size could not be resolved; falling back to the broker point and blocking new entries.";
+      }
+      else
+      {
+         reason = "Instrument point size could not be resolved and the broker point is unusable; blocking new entries.";
+      }
+
+      return false;
+   }
+
+   operating_size = resolved;
+   conforms = true;
+   reason = "Instrument point size derived from the broker specification.";
    return true;
 }
 

@@ -40,7 +40,7 @@ private:
       for(int shift = 2; shift <= 10; shift++)
       {
          XSparkCandle bar;
-         if(!cache.M15Bar(shift, bar))
+         if(!cache.BaseBar(shift, bar))
             return 0.0;
 
          total += bar.tick_volume;
@@ -62,11 +62,11 @@ private:
          XSparkCandle older1;
          XSparkCandle older2;
 
-         if(!cache.M15Bar(shift, candidate) ||
-            !cache.M15Bar(shift - 1, newer1) ||
-            !cache.M15Bar(shift - 2, newer2) ||
-            !cache.M15Bar(shift + 1, older1) ||
-            !cache.M15Bar(shift + 2, older2))
+         if(!cache.BaseBar(shift, candidate) ||
+            !cache.BaseBar(shift - 1, newer1) ||
+            !cache.BaseBar(shift - 2, newer2) ||
+            !cache.BaseBar(shift + 1, older1) ||
+            !cache.BaseBar(shift + 2, older2))
          {
             return false;
          }
@@ -186,24 +186,24 @@ public:
       XSparkCandle bar2;
       XSparkCandle bar3;
 
-      if(!cache.M15Bar(1, bar1) || !cache.M15Bar(2, bar2) || !cache.M15Bar(3, bar3))
+      if(!cache.BaseBar(1, bar1) || !cache.BaseBar(2, bar2) || !cache.BaseBar(3, bar3))
       {
          report.status = "SCANNING";
-         report.block_reason = "Closed M15 bars are unavailable.";
+         report.block_reason = "Closed base timeframe bars are unavailable.";
          m_last_reason = report.block_reason;
          return false;
       }
 
       report.signal_bar_time = bar1.time;
-      report.atr14 = cache.ATR14M15();
-      report.atr50 = cache.ATR50M15();
+      report.atr14 = cache.ATR14Base();
+      report.atr50 = cache.ATR50Base();
       report.atr_points = XSparkPriceToScorePoints(report.atr14, m_score_point_size);
       report.atr50_points = XSparkPriceToScorePoints(report.atr50, m_score_point_size);
-      report.rsi_m15 = cache.RSI14M15();
-      report.rsi_h1 = cache.RSI14H1();
-      report.ema21_m15 = cache.EMA21M15();
-      report.ema50_m15 = cache.EMA50M15();
-      report.ema50_h1 = cache.EMA50H1();
+      report.rsi_base = cache.RSI14Base();
+      report.rsi_higher = cache.RSI14Higher();
+      report.ema21_base = cache.EMA21Base();
+      report.ema50_base = cache.EMA50Base();
+      report.ema50_higher = cache.EMA50Higher();
 
       XSparkPatternResult pattern;
       if(!XSparkDetectScoreBotPattern(bar1, bar2, bar3, m_drop_ibr, pattern))
@@ -244,30 +244,30 @@ public:
 
       if(pattern.direction == XSPARK_SIGNAL_BUY)
       {
-         if(report.ema21_m15 > report.ema50_m15 && bar1.close > report.ema50_h1)
+         if(report.ema21_base > report.ema50_base && bar1.close > report.ema50_higher)
             report.components.trend = 1.0;
 
-         if(report.rsi_m15 >= (double)m_rsi_long_min && report.rsi_m15 <= (double)m_rsi_long_max)
+         if(report.rsi_base >= (double)m_rsi_long_min && report.rsi_base <= (double)m_rsi_long_max)
             report.components.rsi = 1.0;
 
          if(HasSupportResistance(cache, pattern.direction, bar1.close, report.atr14))
             report.components.sr = 1.0;
 
-         if(report.rsi_h1 > 50.0 && report.rsi_m15 > report.rsi_h1)
+         if(report.rsi_higher > 50.0 && report.rsi_base > report.rsi_higher)
             report.components.mtf = 0.5;
       }
       else if(pattern.direction == XSPARK_SIGNAL_SELL)
       {
-         if(report.ema21_m15 < report.ema50_m15 && bar1.close < report.ema50_h1)
+         if(report.ema21_base < report.ema50_base && bar1.close < report.ema50_higher)
             report.components.trend = 1.0;
 
-         if(report.rsi_m15 >= (double)m_rsi_short_min && report.rsi_m15 <= (double)m_rsi_short_max)
+         if(report.rsi_base >= (double)m_rsi_short_min && report.rsi_base <= (double)m_rsi_short_max)
             report.components.rsi = 1.0;
 
          if(HasSupportResistance(cache, pattern.direction, bar1.close, report.atr14))
             report.components.sr = 1.0;
 
-         if(report.rsi_h1 < 50.0 && report.rsi_m15 < report.rsi_h1)
+         if(report.rsi_higher < 50.0 && report.rsi_base < report.rsi_higher)
             report.components.mtf = 0.5;
       }
 

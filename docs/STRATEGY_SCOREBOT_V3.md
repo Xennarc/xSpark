@@ -1,6 +1,6 @@
 # ScoreBot_v3 Strategy
 
-ScoreBot_v3 is the first XSpark strategy implementation. It targets XAUUSD on M15 and runs inside the native MT5 Expert Advisor. This document separates the locked tested strategy logic from production safety additions added for live-risk control.
+ScoreBot_v3 is the first XSpark strategy implementation. It was developed and tested on XAUUSD M15, and since Phase 1 it will run on any symbol and any supported base timeframe. It runs inside the native MT5 Expert Advisor. This document separates the locked tested strategy logic from production safety additions added for live-risk control.
 
 The default configuration is MAX_SHARPE. Reference Python backtest results are unvalidated priors only, not expected returns.
 
@@ -9,11 +9,67 @@ The default configuration is MAX_SHARPE. Reference Python backtest results are u
 - Strategy ID: `ScoreBot_v3`
 - Default Magic Number: `770331`
 - Default order comment: `ScoreBot_v3`
-- Primary symbol: XAUUSD, including broker suffixes/prefixes containing `XAUUSD`
-- Primary timeframe: M15
+- Tested symbol: XAUUSD, including broker suffixes/prefixes containing `XAUUSD`
+- Tested timeframe pair: M15 base, H1 higher
 - Production runtime: native MQL5
 
-The EA refuses initialization on non-XAUUSD symbols or non-M15 chart timeframes.
+The instrument guard is lifted. The EA initializes on any symbol whose broker
+specification validates, and on any supported base timeframe.
+
+### Supported timeframes
+
+The base timeframe is the chart period. The multi-timeframe partner comes from
+an explicit table rather than arithmetic, because a computed `base x 4` produces
+absurd ratios at the edges of the period list (H8 would pair with W1, a 21x
+jump) and has no answer at all above D1.
+
+| Base | Higher |
+|---|---|
+| M1 | M5 |
+| M5 | M30 |
+| M15 | **H1** (the tested pair) |
+| M30 | H2 |
+| H1 | H4 |
+| H2 | H8 |
+| H4 | D1 |
+
+Any other chart period is refused at initialization. That is the same posture
+the old M15 guard had: a chart the strategy cannot be evaluated on at all is
+refused up front. It is not the runtime-fault case ADR-020 deliberately keeps
+out of `OnInit`.
+
+### Phase 1 limitations
+
+Phase 1 makes the EA *run* anywhere. It does not make the tested thresholds
+*correct* anywhere. Two consequences are expected, not bugs, and Phase 2's
+self-calibrating gates are what resolve them:
+
+- **Thresholds are still absolute.** `InpATRMinPoints = 80` now means 80 pips
+  on an FX pair. EURUSD M15 ATR is roughly 5-15 pips, so the ATR gate rejects
+  every bar and the dashboard reads `ATR BLOCKED`. `InpMaxSpreadPoints = 50`
+  becomes 50 pips, which is far too loose to filter anything. Running a non-gold
+  instrument therefore needs the ATR and spread inputs re-entered by hand until
+  Phase 2 derives them.
+- **The execution and exit deviations are gold-scaled constants with no input.**
+  `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS` (30) and
+  `XSPARK_CLOSE_DEVIATION_SCORE_POINTS` (100) are `#define`s, not `Inp` inputs,
+  so unlike the ATR and spread thresholds an operator **cannot** retune them.
+  They scale with the resolved point size, so on gold they are $0.30 and $1.00
+  against an ATR stop of $1.20 or more, and on an FX pair they become 30 and 100
+  pips against a stop of roughly 8-25 pips. Two consequences follow. The entry
+  drift gate goes inert, admitting a stale plan that gold would have rejected -
+  bounded, because the volume is re-sized against the refreshed entry at the same
+  risk percentage and the realised reward ratio is re-checked. And the order is
+  sent with a 30-pip slippage tolerance, where a fill inside that tolerance
+  against a 10-pip sized stop can put realised risk several times over the
+  selected risk percentage, with only a WARNING logged. Retuning these needs a
+  code change, which is Phase 2 scope.
+
+- **Session weighting degrades on high timeframes.** The session weight is taken
+  from the hour of the signal bar. On H4 that hour is only ever 0, 4, 8, 12, 16
+  or 20, and on D1 it is always the session open hour, so the London/New York
+  windows stop discriminating. Above H1 the weighting should be treated as
+  meaningless. Phase 2's learned hourly activity profile replaces it.
 
 ## ScoreBot Point Normalization
 
@@ -30,11 +86,16 @@ ScoreBot point is 0.01 price units.
 ```
 
 The size of a ScoreBot point is resolved from the instrument specification at
-initialization rather than hardcoded, and asserted against the declared XAUUSD
-baseline `XSPARK_XAUUSD_SCORE_POINT_SIZE` while the EA remains XAUUSD-only. On
-XAUUSD the resolved and declared values are identical at both quote conventions
-a broker may use for gold - 2 digits with point 0.01, and 3 digits with point
-0.001 - so the resolution changes no threshold on gold. See ADR-020.
+initialization rather than hardcoded. On XAUUSD it is additionally checked
+against the declared baseline `XSPARK_XAUUSD_SCORE_POINT_SIZE`, and the baseline
+constant is what operates: that check is the Phase 0 regression assertion and it
+survives Phase 1 unchanged. The resolved and declared values are identical at
+both quote conventions a broker may use for gold - 2 digits with point 0.01, and
+3 digits with point 0.001 - so the resolution changes no threshold on gold.
+
+Other instruments have no declared baseline to check against, so the
+spec-validated derivation is the operating size directly. See ADR-020 for the
+derivation and ADR-021 for the per-instrument branch.
 
 Resolution happens once, in `OnInit`, and the resolved size is passed to the
 strategy, SafetyManager, ExecutionEngine and PositionManager, so no conversion
@@ -94,15 +155,15 @@ H1:
 - EMA 50
 - RSI 14
 
-The EA uses true H1 indicator handles. It does not approximate H1 values from M15 indicators.
+The EA uses true higher-timeframe indicator handles. It does not approximate higher-timeframe values from base-timeframe indicators.
 
 ### Bar Evaluation
 
-Signals are evaluated once per newly opened M15 bar, using the just-closed M15 bar as signal bar 1. On initialization, the EA records the current M15 bar and waits for the next genuine new bar before evaluating a signal.
+Signals are evaluated once per newly opened base-timeframe bar, using the just-closed bar as signal bar 1. On initialization, the EA records the current bar and waits for the next genuine new bar before evaluating a signal.
 
 ### Patterns
 
-Patterns operate on closed M15 candles.
+Patterns operate on closed base-timeframe candles.
 
 Pattern priority:
 
@@ -173,7 +234,7 @@ Components:
 - RSI: 1.0 when direction-specific RSI range passes
 - S/R: 1.0 when Close1 is within 0.5 ATR of a qualifying swing
 - Volume: capped score from bar1 volume versus mean volume of bars 2-10
-- MTF: 0.5 when H1 and M15 RSI direction conditions pass
+- MTF: 0.5 when higher-timeframe and base-timeframe RSI direction conditions pass
 
 ### Effective Threshold
 
@@ -213,7 +274,7 @@ Known tested quirk: when dynamic RR is below 2.5, hard TP occurs before the part
 Trailing:
 
 - Active only after partial is done
-- Uses latest cached closed M15 ATR14
+- Uses latest cached closed base-timeframe ATR14
 - Distance: `2.0 * ATR14`
 - Only tightens SL
 - Never modifies TP
@@ -381,11 +442,11 @@ Per-position state is keyed by account, symbol, Magic Number and `POSITION_IDENT
 
 ### Assumption SBV3-001
 
-S/R price is implemented as M15 bar1 close because the strategy is closed-bar deterministic.
+S/R price is implemented as base-timeframe bar1 close because the strategy is closed-bar deterministic.
 
 ### Assumption SBV3-002
 
-Session classification uses the timestamp/hour of M15 bar1.
+Session classification uses the timestamp/hour of base-timeframe bar1. Above H1 this stops discriminating; see the Phase 1 limitations.
 
 ### Assumption SBV3-003
 

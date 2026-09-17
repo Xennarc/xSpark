@@ -242,11 +242,162 @@ void TestScorePointSizeDerivation()
                         XSPARK_XAUUSD_SCORE_POINT_SIZE), 800.0));
 }
 
+// Phase 1: the base/higher timeframe table and the operating point size
+// decision. Both are pure and take their inputs as data, so they run from a
+// script on any chart.
+void TestTimeframePairing()
+{
+   ENUM_TIMEFRAMES higher = PERIOD_CURRENT;
+   string reason = "";
+
+   Check("M15 is supported", XSparkHigherTimeframeFor(PERIOD_M15, higher, reason));
+   Check("M15 pairs with H1 (the tested pair)", higher == PERIOD_H1);
+
+   Check("M1 is supported", XSparkHigherTimeframeFor(PERIOD_M1, higher, reason));
+   Check("M1 pairs with M5", higher == PERIOD_M5);
+   Check("M5 is supported", XSparkHigherTimeframeFor(PERIOD_M5, higher, reason));
+   Check("M5 pairs with M30", higher == PERIOD_M30);
+   Check("M30 is supported", XSparkHigherTimeframeFor(PERIOD_M30, higher, reason));
+   Check("M30 pairs with H2", higher == PERIOD_H2);
+   Check("H1 is supported", XSparkHigherTimeframeFor(PERIOD_H1, higher, reason));
+   Check("H1 pairs with H4", higher == PERIOD_H4);
+   Check("H2 is supported", XSparkHigherTimeframeFor(PERIOD_H2, higher, reason));
+   Check("H2 pairs with H8", higher == PERIOD_H8);
+   Check("H4 is supported", XSparkHigherTimeframeFor(PERIOD_H4, higher, reason));
+   Check("H4 pairs with D1", higher == PERIOD_D1);
+
+   // Every partner the TABLE returns must be strictly longer than its base,
+   // which is what IndicatorCache validates on initialisation. Reading the
+   // table here rather than restating the pairs means this fails if the table
+   // changes; comparing platform constants directly would always pass.
+   ENUM_TIMEFRAMES supported[7];
+   supported[0] = PERIOD_M1;  supported[1] = PERIOD_M5;  supported[2] = PERIOD_M15;
+   supported[3] = PERIOD_M30; supported[4] = PERIOD_H1;  supported[5] = PERIOD_H2;
+   supported[6] = PERIOD_H4;
+
+   bool all_increasing = true;
+   for(int i = 0; i < 7; i++)
+   {
+      ENUM_TIMEFRAMES partner = PERIOD_CURRENT;
+      if(!XSparkHigherTimeframeFor(supported[i], partner, reason) ||
+         PeriodSeconds(partner) <= PeriodSeconds(supported[i]))
+      {
+         all_increasing = false;
+      }
+   }
+   Check("every table pair resolves and is strictly increasing", all_increasing);
+
+   // Periods with no sane partner are refused rather than given an absurd ratio.
+   // Each refusal asserts its own out-param. A single check after the last call
+   // could only ever observe that call's reset and would prove nothing about
+   // the others.
+   higher = PERIOD_H1;
+   Check("H8 is refused", !XSparkHigherTimeframeFor(PERIOD_H8, higher, reason));
+   Check("H8 refusal clears the partner", higher == PERIOD_CURRENT);
+   Check("refusal states a reason", reason != "");
+
+   higher = PERIOD_H1;
+   Check("H12 is refused", !XSparkHigherTimeframeFor(PERIOD_H12, higher, reason));
+   Check("H12 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
+   Check("D1 is refused", !XSparkHigherTimeframeFor(PERIOD_D1, higher, reason));
+   Check("D1 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
+   Check("W1 is refused", !XSparkHigherTimeframeFor(PERIOD_W1, higher, reason));
+   Check("W1 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
+   Check("MN1 is refused", !XSparkHigherTimeframeFor(PERIOD_MN1, higher, reason));
+   Check("MN1 refusal clears the partner", higher == PERIOD_CURRENT);
+
+   higher = PERIOD_H1;
+   Check("PERIOD_CURRENT is refused", !XSparkHigherTimeframeFor(PERIOD_CURRENT, higher, reason));
+   Check("PERIOD_CURRENT refusal clears the partner", higher == PERIOD_CURRENT);
+}
+
+void TestOperatingPointSizeSelection()
+{
+   double size = 0.0;
+   bool conforms = false;
+   string reason = "";
+
+   // XAUUSD keeps the Phase 0 regression assertion: the baseline constant is
+   // what operates, not the broker double.
+   Check("gold with a conforming resolve is trusted",
+         XSparkSelectOperatingPointSize(true, true, 0.01, 0.01, size, conforms, reason));
+   Check("gold operates on the declared baseline exactly", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+   Check("gold conforming sets the trusted flag", conforms);
+
+   Check("gold on a 3-digit feed is trusted",
+         XSparkSelectOperatingPointSize(true, true, 0.001 * 10.0, 0.001, size, conforms, reason));
+   Check("gold 3-digit still operates on the baseline", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+
+   // A rescaled gold feed must never be trusted, and must still leave a usable
+   // denominator so the exit deviation cannot collapse to CTrade's default.
+   Check("rescaled gold is refused",
+         !XSparkSelectOperatingPointSize(true, true, 0.0001, 0.0001, size, conforms, reason));
+   Check("rescaled gold is not trusted", !conforms);
+   Check("rescaled gold still yields the baseline denominator", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+   Check("unresolvable gold is refused",
+         !XSparkSelectOperatingPointSize(true, false, 0.0, 0.0, size, conforms, reason));
+   Check("unresolvable gold still yields the baseline denominator",
+         size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+
+   // Non-gold instruments have no declared baseline, so the spec-validated
+   // derivation is the answer and is trusted.
+   Check("EURUSD derivation is trusted",
+         XSparkSelectOperatingPointSize(false, true, 0.0001, 0.00001, size, conforms, reason));
+   Check("EURUSD operates on the derived pip", NearlyEqual(size, 0.0001));
+   Check("EURUSD is trusted", conforms);
+
+   Check("USDJPY derivation is trusted",
+         XSparkSelectOperatingPointSize(false, true, 0.01, 0.001, size, conforms, reason));
+   Check("USDJPY operates on the derived pip", NearlyEqual(size, 0.01));
+
+   // A non-gold instrument whose spec did not validate falls back to the raw
+   // broker point, still untrusted. Zero here would drop CTrade to its 10-point
+   // default on exits, which is the ADR-014 hazard.
+   Check("unresolvable EURUSD is refused",
+         !XSparkSelectOperatingPointSize(false, false, 0.0, 0.00001, size, conforms, reason));
+   Check("unresolvable EURUSD is not trusted", !conforms);
+   Check("unresolvable EURUSD falls back to the broker point", NearlyEqual(size, 0.00001));
+   Check("fallback states a reason", reason != "");
+
+   Check("unusable broker point is refused",
+         !XSparkSelectOperatingPointSize(false, false, 0.0, 0.0, size, conforms, reason));
+   Check("unusable broker point yields no denominator", NearlyEqual(size, 0.0));
+   Check("unusable broker point is not trusted", !conforms);
+
+   // Non-finite inputs. A resolver that returned infinity or NaN must never be
+   // trusted, on either branch, and must not become the operating denominator.
+   const double selector_infinity = MathPow(10.0, 400.0);
+   const double selector_nan = selector_infinity - selector_infinity;
+
+   Check("non-finite resolved size is refused on gold",
+         !XSparkSelectOperatingPointSize(true, true, selector_infinity, 0.01, size, conforms, reason));
+   Check("non-finite gold falls back to the baseline", size == XSPARK_XAUUSD_SCORE_POINT_SIZE);
+   Check("nan resolved size is refused on gold",
+         !XSparkSelectOperatingPointSize(true, true, selector_nan, 0.01, size, conforms, reason));
+   Check("non-finite resolved size is refused off gold",
+         !XSparkSelectOperatingPointSize(false, true, selector_infinity, 0.0001, size, conforms, reason));
+   Check("non-finite off gold is not trusted", !conforms);
+   Check("non-finite off gold falls back to the broker point", NearlyEqual(size, 0.0001));
+   Check("non-finite broker point yields no denominator",
+         !XSparkSelectOperatingPointSize(false, false, 0.0, selector_infinity, size, conforms, reason));
+   Check("non-finite broker point is not a usable fallback", NearlyEqual(size, 0.0));
+   Check("negative resolved size is refused off gold",
+         !XSparkSelectOperatingPointSize(false, true, -0.0001, 0.0001, size, conforms, reason));
+}
+
 void OnStart()
 {
    Print("Starting ScoreBot_v3 deterministic logic tests");
    TestPatterns();
    TestPureCalculations();
    TestScorePointSizeDerivation();
+   TestTimeframePairing();
+   TestOperatingPointSizeSelection();
    PrintFormat("ScoreBot_v3 logic tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }
