@@ -391,6 +391,64 @@ void TestOperatingPointSizeSelection()
          !XSparkSelectOperatingPointSize(false, true, -0.0001, 0.0001, size, conforms, reason));
 }
 
+// The consecutive-loss tolerance printed at startup. Risk compounds down, so
+// the relationship is logarithmic, not linear, and the boundary cases are the
+// point: k-1 losses must sit strictly below the limit and k must reach it.
+void TestLossStreakTolerance()
+{
+   // Shipped defaults: 3.5% max risk against a 25% killswitch and 15% daily halt.
+   Check("3.5% risk reaches a 25% killswitch on the 9th loss",
+         XSparkConsecutiveLossesToDrawdown(3.5, 25.0) == 9);
+   Check("3.5% risk reaches a 15% daily halt on the 5th loss",
+         XSparkConsecutiveLossesToDrawdown(3.5, 15.0) == 5);
+   Check("3.0% risk reaches a 25% killswitch on the 10th loss",
+         XSparkConsecutiveLossesToDrawdown(3.0, 25.0) == 10);
+
+   // The pre-ADR-022 configuration, which latched on ordinary variance.
+   Check("1% risk reaches an 8% killswitch on the 9th loss",
+         XSparkConsecutiveLossesToDrawdown(1.0, 8.0) == 9);
+   Check("2% risk reaches an 8% killswitch on the 5th loss",
+         XSparkConsecutiveLossesToDrawdown(2.0, 8.0) == 5);
+
+   // A single loss larger than the limit must report 1, not 0.
+   Check("10% risk reaches an 8% killswitch on the first loss",
+         XSparkConsecutiveLossesToDrawdown(10.0, 8.0) == 1);
+
+   // Compounding, not linear subtraction: 8 losses at 1% is 7.73%, NOT 8%, so
+   // the 8th loss does not reach an 8% limit. An off-by-one here would tell an
+   // operator the account survives one loss fewer than it does.
+   Check("eight 1% losses do not reach 8%",
+         XSparkConsecutiveLossesToDrawdown(1.0, 8.0) > 8);
+   Check("small risk against a wide limit takes many losses",
+         XSparkConsecutiveLossesToDrawdown(0.5, 25.0) == 58);
+
+   // Fail closed on anything unanswerable rather than returning a plausible number.
+   Check("zero risk yields no answer", XSparkConsecutiveLossesToDrawdown(0.0, 25.0) == 0);
+   Check("negative risk yields no answer", XSparkConsecutiveLossesToDrawdown(-1.0, 25.0) == 0);
+   Check("risk at 100% yields no answer", XSparkConsecutiveLossesToDrawdown(100.0, 25.0) == 0);
+   Check("zero limit yields no answer", XSparkConsecutiveLossesToDrawdown(3.0, 0.0) == 0);
+   Check("limit at 100% yields no answer", XSparkConsecutiveLossesToDrawdown(3.0, 100.0) == 0);
+
+   const double streak_infinity = MathPow(10.0, 400.0);
+   Check("non-finite risk yields no answer",
+         XSparkConsecutiveLossesToDrawdown(streak_infinity, 25.0) == 0);
+   Check("non-finite limit yields no answer",
+         XSparkConsecutiveLossesToDrawdown(3.0, streak_infinity) == 0);
+
+   // Monotonicity: more risk never survives more losses.
+   bool monotone = true;
+   double previous = 100000.0;
+   for(int i = 1; i <= 20; i++)
+   {
+      const double risk = (double)i * 0.5;
+      const int k = XSparkConsecutiveLossesToDrawdown(risk, 25.0);
+      if(k <= 0 || (double)k > previous)
+         monotone = false;
+      previous = (double)k;
+   }
+   Check("tolerance decreases monotonically as risk rises", monotone);
+}
+
 void OnStart()
 {
    Print("Starting ScoreBot_v3 deterministic logic tests");
@@ -399,5 +457,6 @@ void OnStart()
    TestScorePointSizeDerivation();
    TestTimeframePairing();
    TestOperatingPointSizeSelection();
+   TestLossStreakTolerance();
    PrintFormat("ScoreBot_v3 logic tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }

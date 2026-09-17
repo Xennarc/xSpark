@@ -31,6 +31,7 @@ private:
 
    bool   m_state_recovery_latched;
    string m_state_recovery_reason;
+   bool   m_clear_killswitch_latch;
    double m_score_point_size;
    bool   m_score_point_size_conforms;
    string m_score_point_size_reason;
@@ -163,6 +164,7 @@ public:
       m_daily_dd_pct = 0.0;
       m_daily_day_id = 0;
       m_drawdown_state_valid = false;
+      m_clear_killswitch_latch = false;
       m_score_point_size = XSPARK_XAUUSD_SCORE_POINT_SIZE;
       m_score_point_size_conforms = false;
       m_score_point_size_reason = "ScoreBot point size has not been resolved.";
@@ -179,6 +181,7 @@ public:
                    const double max_total_dd_pct,
                    const double max_daily_dd_pct,
                    const int max_quote_age_seconds,
+                   const bool clear_killswitch_latch,
                    const double score_point_size,
                    const bool score_point_size_conforms,
                    const string score_point_size_reason,
@@ -220,11 +223,63 @@ public:
       m_score_point_size = score_point_size;
       m_score_point_size_conforms = score_point_size_conforms;
       m_score_point_size_reason = score_point_size_reason;
-      m_runtime_high_water_equity = AccountInfoDouble(ACCOUNT_EQUITY);
-      m_total_dd_killswitch_latched = false;
+      m_clear_killswitch_latch = clear_killswitch_latch;
       m_total_dd_pct = 0.0;
 
       m_store.Initialize((long)AccountInfoInteger(ACCOUNT_LOGIN), m_symbol, m_magic_number);
+
+      // The total-drawdown high-water mark and its latch are PERSISTED, like the
+      // daily state beside them. Seeding the peak from live equity on every
+      // OnInit - which MT5 reruns on any input change, recompile, reattach or
+      // terminal restart - re-anchored the ruin stop to the bottom of whatever
+      // hole the account was in, and cleared the latch at the same time. That
+      // made the one control standing between a losing streak and the account
+      // the easiest thing in the system to erase, and it erased itself on the
+      // exact action an operator takes when a latched EA has stopped trading.
+      const double live_equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      const double stored_peak = m_store.Get("tP", 0.0);
+      const bool stored_latch = m_store.Get("tL", 0.0) >= 0.5;
+
+      if(clear_killswitch_latch)
+      {
+         // Deliberate operator reset. A dedicated input rather than a side
+         // effect of restarting, so it cannot happen by accident, and it
+         // re-anchors the peak on purpose with a CRITICAL record of doing so.
+         m_runtime_high_water_equity = live_equity;
+         m_total_dd_killswitch_latched = false;
+         m_store.Set("tP", live_equity);
+         m_store.Set("tL", 0.0);
+         logger.Critical("SafetyManager",
+                         StringFormat("Total DD killswitch latch CLEARED by operator input. High-water equity "
+                                      "re-anchored to %.2f. Set InpClearKillswitchLatch back to false before "
+                                      "leaving the EA running.",
+                                      live_equity));
+      }
+      else if(stored_peak > 0.0)
+      {
+         m_runtime_high_water_equity = stored_peak;
+         m_total_dd_killswitch_latched = stored_latch;
+
+         if(stored_latch)
+            logger.Critical("SafetyManager",
+                            StringFormat("Total DD killswitch latch RESTORED from persisted state (peak %.2f, "
+                                         "equity %.2f). New entries stay blocked until the latch is cleared "
+                                         "explicitly via InpClearKillswitchLatch.",
+                                         stored_peak,
+                                         live_equity));
+         else
+            logger.Info("SafetyManager",
+                        StringFormat("Total DD high-water equity restored from persisted state: %.2f (live %.2f).",
+                                     stored_peak,
+                                     live_equity));
+      }
+      else
+      {
+         m_runtime_high_water_equity = live_equity;
+         m_total_dd_killswitch_latched = false;
+         m_store.Set("tP", live_equity);
+         m_store.Set("tL", 0.0);
+      }
 
       const datetime server_time = TimeTradeServer() == 0 ? TimeCurrent() : TimeTradeServer();
       const double equity = AccountInfoDouble(ACCOUNT_EQUITY);
@@ -259,7 +314,11 @@ public:
       }
 
       if(m_runtime_high_water_equity <= 0.0 || current_equity > m_runtime_high_water_equity)
+      {
          m_runtime_high_water_equity = current_equity;
+         if(!m_store.Set("tP", m_runtime_high_water_equity))
+            m_drawdown_state_valid = false;
+      }
 
       if(m_runtime_high_water_equity > 0.0)
          m_total_dd_pct = ((m_runtime_high_water_equity - current_equity) / m_runtime_high_water_equity) * 100.0;
@@ -269,8 +328,13 @@ public:
          m_total_dd_pct >= m_max_total_dd_pct)
       {
          m_total_dd_killswitch_latched = true;
-         m_last_reason = StringFormat("Total DD killswitch latched at %.2f%% drawdown from runtime high-water equity.",
-                                      m_total_dd_pct);
+         if(!m_store.Set("tL", 1.0))
+            m_drawdown_state_valid = false;
+
+         m_last_reason = StringFormat("Total DD killswitch latched at %.2f%% drawdown from persisted high-water equity %.2f. "
+                                      "The latch survives restarts; clear it deliberately with InpClearKillswitchLatch.",
+                                      m_total_dd_pct,
+                                      m_runtime_high_water_equity);
          logger.Critical("SafetyManager", m_last_reason);
       }
 

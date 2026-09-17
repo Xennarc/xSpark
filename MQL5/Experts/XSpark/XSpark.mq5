@@ -43,11 +43,21 @@ input double InpPartialClosePct = 50.0;
 input double InpATRMultTrail = 2.0;
 
 input group "Risk"
-input double InpRiskPctTier1 = 1.0;
-input double InpRiskPctTier2 = 1.5;
-input double InpRiskPctTier3 = 2.0;
-input double InpMaxRiskPct = 2.0;
-input double InpMaxDailyDDPct = 5.0;
+// Defaults are the growth-optimal region for the edge measured in
+// docs/IMPROVEMENT_PLAN.md (36% win rate, 1.974 payoff, +0.0706 R per trade),
+// which puts the Kelly fraction at 3.58%. Growth per trade PEAKS there and
+// falls away above it: 10% risk turns a genuinely positive edge into a
+// decaying account, because compounding is multiplicative. See ADR-022.
+//
+// The tiers are flat by default. Tier selection reads the session-weighted
+// score, so identical evidence would otherwise size differently purely by the
+// hour of day, and at a larger risk figure that distortion is amplified. The
+// inputs remain separate so tiering can be reinstated deliberately.
+input double InpRiskPctTier1 = 3.0;
+input double InpRiskPctTier2 = 3.0;
+input double InpRiskPctTier3 = 3.0;
+input double InpMaxRiskPct = 3.5;
+input double InpMaxDailyDDPct = 15.0;
 
 input group "Sessions"
 input bool InpAllowAsianReduced = true;
@@ -57,7 +67,16 @@ input bool   InpUseSpreadFilter = true;
 input double InpMaxSpreadPoints = 50.0;
 input double InpMaxSpreadATRPct = 10.0;
 input bool   InpUseTotalDDKillSwitch = true;
-input double InpMaxTotalDDPct = 8.0;
+// Sized to survive an ordinary losing streak at the configured risk rather than
+// to feel small. At 3% risk, eight consecutive full-stop losses - the streak
+// the baseline run already produced - cost 21.6%. An 8% limit would latch on
+// the third loss and stop the account permanently on routine variance. The
+// startup log prints the exact tolerance for whatever values are set.
+input double InpMaxTotalDDPct = 25.0;
+// Clears a PERSISTED killswitch latch. The latch now survives restarts, so
+// this is the only way to resume after one. Set it true, attach, confirm the
+// CRITICAL line, then set it back to false.
+input bool   InpClearKillswitchLatch = false;
 input bool   InpUseStopLevelValidation = true;
 input bool   InpUseMarginCheck = true;
 input double InpMarginBufferPct = 20.0;
@@ -216,6 +235,8 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   // Risk inputs were previously checked only for positivity, so a fat-fingered
+   // 30.0 was accepted in silence. Every one now carries an upper bound.
    if(InpRiskPctTier1 <= 0.0 || InpRiskPctTier2 <= 0.0 ||
       InpRiskPctTier3 <= 0.0 || InpMaxRiskPct <= 0.0 ||
       InpMaxDailyDDPct <= 0.0)
@@ -224,11 +245,61 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   if(InpRiskPctTier1 > XSPARK_MAX_ALLOWED_RISK_PCT ||
+      InpRiskPctTier2 > XSPARK_MAX_ALLOWED_RISK_PCT ||
+      InpRiskPctTier3 > XSPARK_MAX_ALLOWED_RISK_PCT ||
+      InpMaxRiskPct > XSPARK_MAX_ALLOWED_RISK_PCT)
+   {
+      g_logger.Critical("EA",
+                        StringFormat("Risk per trade above %.1f%% is refused. Growth per trade peaks near the Kelly "
+                                     "fraction and turns negative well below this ceiling, so a larger figure trades "
+                                     "faster toward ruin, not toward profit. See ADR-022.",
+                                     XSPARK_MAX_ALLOWED_RISK_PCT));
+      return false;
+   }
+
    if(InpMaxSpreadPoints <= 0.0 || InpMaxSpreadATRPct <= 0.0 ||
       InpMaxTotalDDPct <= 0.0 || InpMarginBufferPct < 0.0)
    {
       g_logger.Critical("EA", "Production-control inputs are invalid.");
       return false;
+   }
+
+   // A daily limit at or above the total limit can never bind, which would
+   // silently remove the shorter-horizon brake entirely.
+   if(InpMaxTotalDDPct >= 100.0 || InpMaxDailyDDPct >= 100.0 ||
+      InpMaxDailyDDPct >= InpMaxTotalDDPct)
+   {
+      g_logger.Critical("EA",
+                        "Drawdown limits are invalid: both must be below 100% and the daily limit must be "
+                        "strictly below the total limit, or the daily halt can never fire.");
+      return false;
+   }
+
+   // The killswitch must survive an ordinary losing streak at the configured
+   // risk, or it converts routine variance into a permanent stop. Refusing is
+   // wrong here - the operator may want a tight limit deliberately - but it
+   // must never be a surprise, so it is stated loudly at startup.
+   const int losses_to_killswitch = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxTotalDDPct);
+   const int losses_to_daily_halt = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxDailyDDPct);
+
+   g_logger.Info("EA",
+                 StringFormat("Risk tolerance at max %.2f%% per trade: %d consecutive full-stop losses latch the "
+                              "%.1f%% killswitch, %d latch the %.1f%% daily halt.",
+                              InpMaxRiskPct,
+                              losses_to_killswitch,
+                              InpMaxTotalDDPct,
+                              losses_to_daily_halt,
+                              InpMaxDailyDDPct));
+
+   if(losses_to_killswitch > 0 && losses_to_killswitch < XSPARK_MIN_LOSS_STREAK_TOLERANCE)
+   {
+      g_logger.Warn("EA",
+                    StringFormat("The killswitch latches after only %d consecutive losses. The reference run in "
+                                 "docs/IMPROVEMENT_PLAN.md contained an 8-loss streak, which at a 64%% loss rate is "
+                                 "roughly the MEDIAN longest run over 50 trades rather than a tail event. Expect the "
+                                 "killswitch to fire on ordinary variance at these settings.",
+                                 losses_to_killswitch));
    }
 
    if(InpMaxQuoteAgeSeconds <= 0)
@@ -913,6 +984,7 @@ int OnInit()
                                    InpMaxTotalDDPct,
                                    InpMaxDailyDDPct,
                                    InpMaxQuoteAgeSeconds,
+                                   InpClearKillswitchLatch,
                                    g_score_point_size,
                                    g_score_point_size_conforms,
                                    g_score_point_size_reason,

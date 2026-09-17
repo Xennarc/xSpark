@@ -289,10 +289,22 @@ Risk tiers use the final session-weighted score:
 
 Defaults:
 
-- Tier 1: 1.0%
-- Tier 2: 1.5%
-- Tier 3: 2.0%
-- Hard cap: 2.0%
+- Tier 1: 3.0%
+- Tier 2: 3.0%
+- Tier 3: 3.0%
+- Hard cap: 3.5%
+- Absolute ceiling refused at initialization: 10.0%
+
+The tiers are flat by default. Tier selection reads the session-weighted score,
+so identical evidence would size differently purely by the hour of day, and a
+larger risk figure amplifies that distortion. The inputs remain separate so
+tiering can be reinstated deliberately.
+
+3.58% is the growth-optimal (Kelly) fraction for the edge measured in
+`IMPROVEMENT_PLAN.md`. Growth per trade peaks there and falls away above it,
+crossing zero near 7.2% - above which a genuinely positive edge still shrinks
+the account, because compounding is multiplicative. Sizing larger trades faster
+toward ruin, not toward profit. See ADR-022.
 
 Position sizing uses account balance, selected risk percentage, actual final stop distance, and dynamic symbol specifications:
 
@@ -324,7 +336,7 @@ This is an execution gate, not a score component.
 
 ### Daily Drawdown Halt
 
-Tracks server trading day. At 5% decline from that day high-water equity:
+Tracks server trading day. At 15% decline from that day high-water equity:
 
 - New entries are blocked.
 - Halt remains latched until next server day.
@@ -333,13 +345,30 @@ Tracks server trading day. At 5% decline from that day high-water equity:
 
 ### Total Drawdown Killswitch
 
-Tracks runtime high-water equity. At 8% decline:
+Tracks **persisted** high-water equity. At 25% decline:
 
 - Killswitch latches.
 - XSpark-owned positions for this symbol and Magic Number are closed.
 - XSpark-owned pending orders for this symbol and Magic Number are cancelled.
-- New entries remain blocked until EA restart/reinitialization.
 - Manual trades and other Magic Numbers are not touched.
+
+The high-water mark and the latch are persisted to the same state store as the
+daily halt, under keys `tP` and `tL`. They survive a restart, a recompile, an
+input change and a VPS reboot. Previously both were RAM-only, so `OnInit`
+re-anchored the peak to live equity and cleared the latch - meaning the ruin
+stop reset itself on exactly the action an operator takes when a latched EA has
+stopped trading.
+
+Clearing a latch is therefore deliberate and separate from restarting: set
+`InpClearKillswitchLatch = true`, attach, confirm the CRITICAL line that records
+the reset, then set it back to false.
+
+The limit is sized against the configured risk rather than chosen to feel small.
+At 3.5% per trade, nine consecutive full-stop losses reach 25%. The former 8%
+limit would have latched on the fifth, and the reference run already contained
+an eight-loss streak - roughly the median longest run over fifty trades at a 64%
+loss rate, not a tail event. The startup log prints the exact tolerance for
+whatever values are configured, and warns when it falls below six losses.
 
 ### Stop-Level Validation
 
