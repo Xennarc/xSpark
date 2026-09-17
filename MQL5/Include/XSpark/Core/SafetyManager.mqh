@@ -593,6 +593,23 @@ public:
       return m_total_dd_killswitch_latched;
    }
 
+   // Read-only limits, exposed so the dashboard can render drawdown against the
+   // budget it is actually spending rather than as a bare percentage.
+   double MaxTotalDDPct()
+   {
+      return m_max_total_dd_pct;
+   }
+
+   double MaxDailyDDPct()
+   {
+      return m_max_daily_dd_pct;
+   }
+
+   bool TotalDDKillSwitchEnabled()
+   {
+      return m_use_total_dd_killswitch;
+   }
+
    double DailyDDPct()
    {
       return m_daily_dd_pct;

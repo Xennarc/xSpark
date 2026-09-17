@@ -121,5 +121,11 @@ The following cannot be proven outside MT5 and must be checked in the Strategy T
 - Killswitch flattening retries, pacing, remaining-exposure reporting, and the single completion log line.
 - Broker protection verification: a broker that accepts a market order but does not apply the stop, and the protection-repair retry loop.
 - Exit deviation: that XSpark-owned closes and modifications fill at the wider tolerance.
+
+## Dashboard Layout Script
+
+`MQL5/Scripts/Tests/TestDashboardLayout.mq5` covers the chart panel's pure presentation rules: status-to-severity mapping (including that an unmapped status renders as a FAULT rather than as healthy), bar fill in pixels against each component's own maximum, the session tag, panel placement for all four corners including a window smaller than the panel, and reason trimming.
+
+Rendering itself - object creation, fonts, colours, paint order - is NOT covered and must be checked visually on a chart. In particular, confirm on first attach that the panel does not overlap the price scale, that no text is clipped at the panel edge, and that the panel background paints over candles rather than behind them.
 - The weekend-close entry block.
 - Stale-quote rejection against a real feed, including weekend and rollover behaviour.
