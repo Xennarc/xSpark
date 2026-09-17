@@ -89,6 +89,12 @@ Flattening keeps retrying until no XSpark exposure remains and never touches ano
 
 `Core/ExecutionMath.mqh` holds the pure, broker-independent predicates shared by the execution boundary, the position-identity boundary, and the stale-quote gate: duplicate signal-bar protection, entry-drift tolerance, protective-stop side checks, risk distance, target from risk distance, realized RR, RR bounds, position identity matching, fail-safe fallback acceptance, and quote-age evaluation. Keeping them pure is what makes them testable without a trade server.
 
+### AutoTune
+
+`Core/AutoTune.mqh` derives the instrument-scaled thresholds - the volatility band, the absolute spread cap, and both slippage allowances - from the instrument's own median ATR, so a value chosen for gold is never applied to an FX pair as though a pip were a gold cent. It is pure: no symbol, no terminal, no indicator handle, so the whole derivation is testable.
+
+The EA calls it at the first bar where enough history exists rather than in `OnInit`, and retries every bar until it succeeds. Until it does, the entry drift-bound flag stays false and the SafetyManager vetoes new entries, so the pre-calibration window fails closed. Derived values reach their components through checked setters rather than a re-`Initialize`, because re-initialising would discard live per-position state. See ADR-026.
+
 ### Dashboard
 
 `UI/Dashboard.mqh` draws the chart panel and the per-entry chart annotations. It is display only: it reads state and never writes any, and nothing it does can permit, block or size a trade.

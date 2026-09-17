@@ -44,12 +44,16 @@ Phase 1 makes the EA *run* anywhere. It does not make the tested thresholds
 *correct* anywhere. Two consequences are expected, not bugs, and Phase 2's
 self-calibrating gates are what resolve them:
 
-- **Thresholds are still absolute.** `InpATRMinPoints = 80` now means 80 pips
-  on an FX pair. EURUSD M15 ATR is roughly 5-15 pips, so the ATR gate rejects
-  every bar and the dashboard reads `ATR BLOCKED`. `InpMaxSpreadPoints = 50`
-  becomes 50 pips, which is far too loose to filter anything. Running a non-gold
-  instrument therefore needs the ATR and spread inputs re-entered by hand until
-  Phase 2 derives them.
+- **Absolute thresholds are now derived, not typed.** This limitation was
+  real and it bit: a EURUSD M15 run took zero trades because `InpATRMinPoints
+  = 80` meant 80 PIPS against an ATR of roughly 5-15, so the gate rejected
+  every bar exactly as predicted here. With **Adapt thresholds to this market**
+  on (the default), the volatility band, the absolute spread cap and both
+  slippage allowances are derived from the instrument's own median ATR, and the
+  four `Manual:` inputs are ignored. See ADR-026. Turning Adapt off restores
+  the manual values, and then this limitation applies again in full - including
+  that the ATR floor, the stop multiple and the entry slippage are not
+  independent (ADR-024).
 - **The deviation DEFAULTS are gold-scaled, but they are now inputs.**
   `InpEntryDeviationPoints` (default 30) and `InpExitDeviationPoints` (default
   100) can be retuned per instrument like the ATR and spread thresholds. They
