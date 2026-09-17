@@ -252,6 +252,22 @@ public:
       return m_valid ? m_atr14_base[0] : 0.0;
    }
 
+   // Copies a history window of the SAME ATR14 the gate compares against, for
+   // the market calibration. It reads this cache's own handle rather than
+   // opening another: a second handle would carry a second definition to keep
+   // in step, and - because a freshly created handle has not calculated yet -
+   // one created and released per attempt could never warm up between retries.
+   //
+   // Returns the number of values copied, or -1. Bar 0 is still forming, so the
+   // window starts at the first CLOSED bar.
+   int CopyATR14BaseHistory(const int count, double &destination[])
+   {
+      if(!m_valid || m_atr14_base_handle == INVALID_HANDLE || count <= 0)
+         return -1;
+
+      return CopyBuffer(m_atr14_base_handle, 0, 1, count, destination);
+   }
+
    double ATR50Base()
    {
       return m_valid ? m_atr50_base[0] : 0.0;

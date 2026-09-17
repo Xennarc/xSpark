@@ -985,18 +985,12 @@ bool XSparkCalibrateForSymbol()
    if(!InpAutoTuneForSymbol || g_auto_tune_complete)
       return true;
 
-   const int handle = iATR(_Symbol, g_base_timeframe, 14);
-   if(handle == INVALID_HANDLE)
-   {
-      g_last_block_reason = "Unable to open an ATR handle to calibrate this market.";
-      return false;
-   }
-
+   // Sampled from the indicator cache's own ATR14 handle, which this caller has
+   // already refreshed successfully. Opening a second handle here would measure
+   // the market with one ATR and gate it with another, and a handle created and
+   // released on each retry could never warm up between attempts.
    double samples[];
-   ArraySetAsSeries(samples, false);
-   // Bar 0 is still forming, so the sample starts at the first CLOSED bar.
-   const int copied = CopyBuffer(handle, 0, 1, XSPARK_AUTOTUNE_SAMPLE_BARS, samples);
-   IndicatorRelease(handle);
+   const int copied = g_indicator_cache.CopyATR14BaseHistory(XSPARK_AUTOTUNE_SAMPLE_BARS, samples);
 
    if(copied <= 0)
    {
