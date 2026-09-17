@@ -128,6 +128,20 @@ The drawdown limits move with the risk, because they are not independent of it. 
 
 This change RAISES risk at the account owner's explicit request. The implication, stated plainly: at these settings a 25% account drawdown is an expected outcome of ordinary variance, not a malfunction, and the killswitch is calibrated to permit it rather than to prevent it. It is not martingale, grid, averaging-down or recovery sizing - risk remains a fixed percentage of balance and is not increased after a loss - so AGENTS.md rule 26 is not engaged. Nothing here establishes that the edge is real; the measured edge remains roughly 0.35 standard errors from zero on fifty trades, and Kelly sizing of an edge that does not exist loses money faster than conservative sizing of the same non-edge.
 
+## ADR-023 - Risk Is Capped At The Account, Not Only Per Trade
+
+Reason: AGENTS.md rule 27 says no strategy may bypass maximum account-level risk limits, and the codebase could not enforce it. `InpMaxRiskPct` is a per-TRADE label. One instance at 3% risks 3%. Three instances on three symbols, each correctly obeying its own 3% cap, risks 9% simultaneously, and nothing anywhere could see that: every exposure check filtered by symbol and Magic Number, so each instance was structurally blind to the other two. Phase 1 made multi-symbol operation possible and ADR-022 raised per-trade risk, which turned a latent gap into a reachable one.
+
+`XSparkPositionRiskCash` measures the money at risk on one position, and `XSparkAccountRiskWithinCap` decides whether one more would breach `InpMaxAccountRiskPct`. The scan is deliberately NOT filtered by symbol or Magic Number. The account does not care which Expert Advisor or which hand opened a position; a manual trade left open is still money that can be lost, and filtering to XSpark's own magic would reproduce exactly the blindness the cap exists to remove.
+
+The cap fails closed on unknowable risk rather than treating it as zero. A position with no stop loss has unbounded downside, so total account risk becomes unknown, not small. Scoring it zero would let it slip under any cap - the single arithmetic mistake that turns a risk cap into decoration - so an unreadable position or one without a stop blocks new entries until it is resolved.
+
+It is checked after the trade plan is built rather than in the earlier safety gate, because the prospective risk is only knowable once the plan has a volume and a broker-valid stop. A cap checked against an estimate is not a cap. The cost is that the check runs later in the entry path, after sizing work that may be discarded; that is the correct trade, because the alternative is a number that does not mean what it says.
+
+Validation requires the account cap to be at or above the per-trade ceiling. Below it, no entry could ever pass and the EA would scan forever while appearing healthy.
+
+The default is 6%, which permits two concurrent trades at the 3% per-trade default. That is a starting value, not a derived one: it is the total drawdown the operator is willing to have live at one moment, and it should be set deliberately rather than inherited.
+
 ## ADR-024 - Slippage Tolerances Are Per-Instrument Inputs, And The Entry One Must Prove It Still Bounds Something
 
 Reason: `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS` (30) and `XSPARK_CLOSE_DEVIATION_SCORE_POINTS` (100) were compile-time constants with no input override. Both were chosen for gold. ADR-021 lifted the instrument guard, so from that point the EA would attach to any instrument while carrying two gold-shaped risk numbers it could not be told to change. `DEPLOYMENT.md` recorded the consequence as a known Phase 1 limitation; this closes it.

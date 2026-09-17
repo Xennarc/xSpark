@@ -64,6 +64,13 @@ bool XSparkHigherTimeframeFor(const ENUM_TIMEFRAMES base,
 // contained an 8-loss streak.
 #define XSPARK_MIN_LOSS_STREAK_TOLERANCE 6
 
+// Optimisation fitness parameters. k is how many standard errors of penalty the
+// mean carries, so a pass must show evidence rather than a lucky mean. The
+// minimum trade count exists because a mean over a handful of trades is noise
+// with a number attached; below it the pass returns the sentinel.
+#define XSPARK_FITNESS_PENALTY_K 1.0
+#define XSPARK_FITNESS_MIN_TRADES 30
+
 enum EXSparkScoreBotPatternId
 {
    XSPARK_PATTERN_NONE = 0,
