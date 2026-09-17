@@ -154,6 +154,98 @@ double XSparkExcursionR(const EXSparkSignalDirection direction,
    return move / risk_distance;
 }
 
+// Sentinel returned by the optimisation fitness for a pass with too few trades.
+// Large and negative so any such pass sorts below every real result, rather than
+// competing with them on a mean computed from a handful of trades.
+#define XSPARK_FITNESS_SENTINEL -1000000.0
+
+// Running record of realised R multiples, for the Strategy Tester fitness.
+// Streaming sums rather than an array: a pass can produce thousands of trades
+// and the only quantities needed are the count, mean and dispersion.
+struct XSparkRLedger
+{
+   int    count;
+   double sum_r;
+   double sum_r_squared;
+   double min_r;
+   double max_r;
+};
+
+void XSparkResetRLedger(XSparkRLedger &ledger)
+{
+   ledger.count = 0;
+   ledger.sum_r = 0.0;
+   ledger.sum_r_squared = 0.0;
+   ledger.min_r = 0.0;
+   ledger.max_r = 0.0;
+}
+
+void XSparkRLedgerAdd(XSparkRLedger &ledger, const double r)
+{
+   if(!MathIsValidNumber(r))
+      return;
+
+   if(ledger.count == 0 || r < ledger.min_r)
+      ledger.min_r = r;
+
+   if(ledger.count == 0 || r > ledger.max_r)
+      ledger.max_r = r;
+
+   ledger.count++;
+   ledger.sum_r += r;
+   ledger.sum_r_squared += r * r;
+}
+
+double XSparkRLedgerMean(XSparkRLedger &ledger)
+{
+   if(ledger.count <= 0)
+      return 0.0;
+
+   return ledger.sum_r / (double)ledger.count;
+}
+
+// Sample standard deviation, n-1. Undefined below two observations, where zero
+// is returned so the fitness degrades to the mean rather than to a NaN.
+double XSparkRLedgerStdDev(XSparkRLedger &ledger)
+{
+   if(ledger.count < 2)
+      return 0.0;
+
+   const double n = (double)ledger.count;
+   const double variance = (ledger.sum_r_squared - (ledger.sum_r * ledger.sum_r) / n) / (n - 1.0);
+
+   if(!MathIsValidNumber(variance) || variance <= 0.0)
+      return 0.0;
+
+   return MathSqrt(variance);
+}
+
+// Optimisation fitness: mean_R - k * stdev_R / sqrt(n).
+//
+// NOT n * mean_R - k * stdev_R * sqrt(n). That alternative factors as
+// sd * sqrt(n) * (t - k), which INCREASES with n at a fixed t statistic, so it
+// prefers whichever pass trades more at identical statistical evidence. It is a
+// trade-count maximiser, and it would push every future sweep toward the loosest
+// possible gate and toward paying more of the one cost known with confidence to
+// be negative.
+//
+// The form used here is the mean penalised by its own standard error, so a pass
+// is rewarded for evidence rather than for activity.
+double XSparkRLedgerFitness(XSparkRLedger &ledger, const double k, const int min_trades)
+{
+   if(ledger.count < min_trades || ledger.count <= 0)
+      return XSPARK_FITNESS_SENTINEL;
+
+   const double mean = XSparkRLedgerMean(ledger);
+   const double standard_error = XSparkRLedgerStdDev(ledger) / MathSqrt((double)ledger.count);
+   const double fitness = mean - k * standard_error;
+
+   if(!MathIsValidNumber(fitness))
+      return XSPARK_FITNESS_SENTINEL;
+
+   return fitness;
+}
+
 struct XSparkTradeState
 {
    ulong                  ticket;
