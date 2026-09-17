@@ -9,6 +9,7 @@
 #include <XSpark/Core/SymbolMath.mqh>
 #include <XSpark/Risk/PositionSizer.mqh>
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
+#include <XSpark/Trade/TradeState.mqh>
 
 int g_passed = 0;
 int g_failed = 0;
@@ -401,6 +402,87 @@ void TestExecutionResultState()
    Check("reset clears actual RR", NearlyEqual(result.actual_rr, 0.0));
 }
 
+// The shared closure accumulator. Both defects it replaces are asserted against
+// directly, so a regression to either is a test failure rather than a silently
+// wrong number in a log line.
+void TestClosureAccumulation()
+{
+   XSparkClosureTotals totals;
+   XSparkResetClosureTotals(totals);
+
+   Check("reset clears net profit", NearlyEqual(totals.net_profit, 0.0));
+   Check("reset clears exit price", NearlyEqual(totals.exit_price, 0.0));
+   Check("reset clears deal count", totals.deal_count == 0);
+
+   // A position closed in two deals, which is what every partial close produces.
+   XSparkAccumulateClosureDeal(totals, 10.00, -0.70, -0.20, 0.02, 2650.00, 1000);
+   XSparkAccumulateClosureDeal(totals,  8.00, -0.35,  0.00, 0.01, 2680.00, 2000);
+
+   Check("gross profit sums DEAL_PROFIT", NearlyEqual(totals.gross_profit, 18.00));
+   Check("commission is accumulated", NearlyEqual(totals.commission, -1.05));
+   Check("swap is accumulated", NearlyEqual(totals.swap, -0.20));
+
+   // DEFECT 1: the old code summed DEAL_PROFIT alone and called it profit, so a
+   // commission-charging account reported a figure that never reached the
+   // balance. Net must differ from gross by exactly the costs.
+   Check("net profit includes commission and swap", NearlyEqual(totals.net_profit, 16.75));
+   Check("net profit differs from gross by the costs",
+         NearlyEqual(totals.gross_profit - totals.net_profit, 1.25));
+
+   // DEFECT 2: the old code ASSIGNED the exit price per deal, so it reported
+   // whichever deal the loop saw last. The volume-weighted average is 2660.00
+   // while the last deal's price is 2680.00, so a regression is unambiguous.
+   Check("exit price is volume weighted", NearlyEqual(totals.exit_price, 2660.00));
+   Check("exit price is NOT the last deal's price", !NearlyEqual(totals.exit_price, 2680.00));
+
+   Check("volume is accumulated", NearlyEqual(totals.volume, 0.03));
+   Check("deal count is accumulated", totals.deal_count == 2);
+   Check("exit time is the latest deal", totals.exit_time == 2000);
+
+   // Order must not matter to any accumulated quantity.
+   XSparkClosureTotals reversed;
+   XSparkResetClosureTotals(reversed);
+   XSparkAccumulateClosureDeal(reversed,  8.00, -0.35,  0.00, 0.01, 2680.00, 2000);
+   XSparkAccumulateClosureDeal(reversed, 10.00, -0.70, -0.20, 0.02, 2650.00, 1000);
+   Check("accumulation is order independent for price", NearlyEqual(reversed.exit_price, 2660.00));
+   Check("accumulation is order independent for net", NearlyEqual(reversed.net_profit, 16.75));
+   Check("exit time takes the latest regardless of order", reversed.exit_time == 2000);
+
+   // A single deal weights to its own price.
+   XSparkClosureTotals single;
+   XSparkResetClosureTotals(single);
+   XSparkAccumulateClosureDeal(single, -5.00, -0.35, 0.0, 0.01, 2600.00, 500);
+   Check("single deal exit price is its own", NearlyEqual(single.exit_price, 2600.00));
+   Check("single losing deal nets the costs", NearlyEqual(single.net_profit, -5.35));
+
+   // A deal with no usable volume still moved money, so its cash must count even
+   // though it cannot carry a price weight.
+   XSparkClosureTotals zero_volume;
+   XSparkResetClosureTotals(zero_volume);
+   XSparkAccumulateClosureDeal(zero_volume, 3.00, -0.10, 0.0, 0.0, 2700.00, 100);
+   Check("zero-volume deal still counts its cash", NearlyEqual(zero_volume.net_profit, 2.90));
+   Check("zero-volume deal keeps a fallback price", NearlyEqual(zero_volume.exit_price, 2700.00));
+   Check("zero-volume deal adds no volume", NearlyEqual(zero_volume.volume, 0.0));
+
+   // A weighted deal must win over a previously stored fallback price.
+   XSparkAccumulateClosureDeal(zero_volume, 1.00, 0.0, 0.0, 0.02, 2500.00, 200);
+   Check("a weighted deal overrides the fallback price", NearlyEqual(zero_volume.exit_price, 2500.00));
+
+   // Non-finite inputs must not poison the totals.
+   const double closure_infinity = MathPow(10.0, 400.0);
+   const double closure_nan = closure_infinity - closure_infinity;
+
+   XSparkClosureTotals guarded;
+   XSparkResetClosureTotals(guarded);
+   XSparkAccumulateClosureDeal(guarded, 5.00, -0.20, 0.0, 0.01, 2600.00, 100);
+   XSparkAccumulateClosureDeal(guarded, closure_nan, closure_infinity, closure_nan,
+                               closure_infinity, closure_nan, 200);
+   Check("non-finite cash is ignored", NearlyEqual(guarded.net_profit, 4.80));
+   Check("non-finite volume does not corrupt the weighting", NearlyEqual(guarded.exit_price, 2600.00));
+   Check("non-finite volume adds no volume", NearlyEqual(guarded.volume, 0.01));
+   Check("totals remain finite after a poisoned deal", MathIsValidNumber(guarded.exit_price));
+}
+
 void OnStart()
 {
    Print("Starting XSpark execution/state hardening tests");
@@ -412,5 +494,6 @@ void OnStart()
    TestPositionIdentityMatching();
    TestStaleQuoteCalculations();
    TestExecutionResultState();
+   TestClosureAccumulation();
    PrintFormat("XSpark execution/state hardening tests complete: PASS=%d FAIL=%d", g_passed, g_failed);
 }

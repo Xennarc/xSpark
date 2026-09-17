@@ -3,6 +3,90 @@
 
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
 
+// Accumulated totals for every closing deal of one position.
+//
+// Two defects motivated this type, and they existed identically in two places:
+// the closure walk summed DEAL_PROFIT alone, so commission and swap never
+// reached the reported figure and a "net profit" line was really gross; and it
+// assigned rather than accumulated the exit price, so a position closed in more
+// than one deal - which every partial close produces - reported whichever deal
+// the loop happened to see last instead of the volume-weighted average it was
+// meant to represent.
+//
+// Both call sites now share one accumulator, so the two can no longer drift
+// apart or be fixed in one place only.
+struct XSparkClosureTotals
+{
+   double   gross_profit;      // DEAL_PROFIT summed
+   double   commission;        // DEAL_COMMISSION summed
+   double   swap;              // DEAL_SWAP summed
+   double   net_profit;        // what actually reached the balance
+   double   volume;            // total closed volume
+   double   exit_price;        // volume-weighted average across closing deals
+   datetime exit_time;         // latest closing deal
+   int      deal_count;
+   double   price_volume;      // running sum of price * volume, for the weighting
+};
+
+void XSparkResetClosureTotals(XSparkClosureTotals &totals)
+{
+   totals.gross_profit = 0.0;
+   totals.commission = 0.0;
+   totals.swap = 0.0;
+   totals.net_profit = 0.0;
+   totals.volume = 0.0;
+   totals.exit_price = 0.0;
+   totals.exit_time = 0;
+   totals.deal_count = 0;
+   totals.price_volume = 0.0;
+}
+
+// Folds one closing deal into the totals. Takes the deal's fields as values
+// rather than a ticket so the arithmetic is testable without MT5 history.
+//
+// A deal reporting non-positive or non-finite volume still contributes its cash
+// components - the money moved regardless - but cannot participate in the price
+// weighting, because a zero weight would either divide by zero or silently drop
+// the price. In that case the latest price is kept as a fallback, which is the
+// old behaviour and is better than nothing when no usable weight exists.
+void XSparkAccumulateClosureDeal(XSparkClosureTotals &totals,
+                                 const double profit,
+                                 const double commission,
+                                 const double swap,
+                                 const double volume,
+                                 const double price,
+                                 const datetime deal_time)
+{
+   if(MathIsValidNumber(profit))
+      totals.gross_profit += profit;
+
+   if(MathIsValidNumber(commission))
+      totals.commission += commission;
+
+   if(MathIsValidNumber(swap))
+      totals.swap += swap;
+
+   totals.net_profit = totals.gross_profit + totals.commission + totals.swap;
+   totals.deal_count++;
+
+   if(deal_time > totals.exit_time)
+      totals.exit_time = deal_time;
+
+   const bool weightable = MathIsValidNumber(volume) && volume > 0.0 &&
+                           MathIsValidNumber(price) && price > 0.0;
+
+   if(weightable)
+   {
+      totals.volume += volume;
+      totals.price_volume += price * volume;
+      totals.exit_price = totals.price_volume / totals.volume;
+   }
+   else if(totals.volume <= 0.0 && MathIsValidNumber(price) && price > 0.0)
+   {
+      totals.exit_price = price;
+   }
+}
+
 struct XSparkTradeState
 {
    ulong                  ticket;
