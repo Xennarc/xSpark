@@ -163,8 +163,8 @@ public:
          !HandleIsReady(m_rsi14_base_handle, XSPARK_SCOREBOT_CLOSED_BASE_BARS + 1) ||
          !HandleIsReady(m_atr14_base_handle, XSPARK_SCOREBOT_CLOSED_BASE_BARS + 1) ||
          !HandleIsReady(m_atr50_base_handle, XSPARK_SCOREBOT_CLOSED_BASE_BARS + 1) ||
-         !HandleIsReady(m_ema50_higher_handle, 2) ||
-         !HandleIsReady(m_rsi14_higher_handle, 2))
+         !HandleIsReady(m_ema50_higher_handle, 51) ||
+         !HandleIsReady(m_rsi14_higher_handle, 15))
       {
          m_last_reason = "Indicator bars are not fully calculated.";
          return false;
@@ -208,7 +208,7 @@ public:
          !IndicatorValueIsReady(m_rsi14_base[0]) ||
          !IndicatorValueIsReady(m_atr14_base[0]) ||
          !IndicatorValueIsReady(m_atr50_base[0]) ||
-         !IndicatorValueIsReady(m_ema50_higher[0]) ||
+         !IndicatorValueIsReady(m_ema50_higher[0]) || m_ema50_higher[0] <= 0.0 ||
          !IndicatorValueIsReady(m_rsi14_higher[0]))
       {
          m_last_reason = "One or more closed-bar indicator values are unavailable.";
