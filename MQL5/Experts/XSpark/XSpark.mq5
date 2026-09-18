@@ -559,6 +559,14 @@ void XSparkUpdateDashboard()
 // balance so that comparison survives across account sizes.
 //
 // Emitted at most once per evaluated bar, so it cannot flood.
+string XSparkContextJournal(const XSparkSignalContext &context)
+{
+   return StringFormat("rsi_base=%.4f rsi_prev=%.4f rsi_higher=%.4f O=%.8f H=%.8f L=%.8f C=%.8f range_ATR=%.4f",
+                       context.rsi_base, context.rsi_base_prev, context.rsi_higher,
+                       context.bar1_open, context.bar1_high, context.bar1_low, context.bar1_close,
+                       context.atr14 > 0.0 ? (context.bar1_high - context.bar1_low) / context.atr14 : 0.0);
+}
+
 void XSparkLogSignalRejection(const string stage,
                               const string reason,
                               XSparkScoreBotReport &report)
@@ -566,7 +574,7 @@ void XSparkLogSignalRejection(const string stage,
    g_logger.Info("Rejected",
                  StringFormat("stage=%s bar=%s pattern=%s dir=%s raw=%.4f final=%.4f threshold=%.4f "
                               "session_w=%.2f pat=%.2f atr=%.2f trend=%.2f rsi=%.2f sr=%.2f vol=%.2f mtf=%.2f "
-                              "atr14_pts=%.2f atr50_pts=%.2f rr=%.4f balance=%s reason=%s",
+                              "atr14_pts=%.2f atr50_pts=%.2f rr=%.4f balance=%s context=[%s] reason=%s",
                               stage,
                               TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES),
                               report.pattern_name,
@@ -586,6 +594,7 @@ void XSparkLogSignalRejection(const string stage,
                               report.atr50_points,
                               report.dynamic_rr,
                               DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
+                              XSparkContextJournal(report.context),
                               reason));
 }
 
@@ -716,6 +725,7 @@ bool XSparkPrepareTradePlan(XSparkSignal &signal,
    else
       initial_tp = entry_reference - risk_distance * signal.dynamic_rr;
 
+   plan.context = signal.context;
    plan.symbol = signal.symbol;
    plan.direction = signal.direction;
    plan.signal_bar_time = signal.signal_bar_time;
@@ -847,6 +857,12 @@ void XSparkLogEntry(XSparkTradePlan &plan,
    const double realised_distance = plan.final_sl > 0.0 && realised_entry > 0.0 ?
                                     MathAbs(realised_entry - plan.final_sl) :
                                     0.0;
+
+   g_logger.Info("EntryContext",
+                 StringFormat("bar=%s deal=%I64u %s planned_risk=%.8f execution_risk=%.8f fill_risk=%.8f fill_to_sized=%.6f",
+                              TimeToString(plan.signal_bar_time, TIME_DATE | TIME_MINUTES), result.deal_ticket,
+                              XSparkContextJournal(plan.context), plan.risk_distance, result.actual_risk_distance,
+                              realised_distance, result.actual_risk_distance > 0.0 ? realised_distance / result.actual_risk_distance : 0.0));
 
    if(realised_distance > 0.0 && result.actual_risk_distance > 0.0 &&
       realised_distance > result.actual_risk_distance)

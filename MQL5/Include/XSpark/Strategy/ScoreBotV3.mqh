@@ -205,6 +205,15 @@ public:
       report.ema50_base = cache.EMA50Base();
       report.ema50_higher = cache.EMA50Higher();
 
+      report.context.bar1_open = bar1.open;
+      report.context.bar1_high = bar1.high;
+      report.context.bar1_low = bar1.low;
+      report.context.bar1_close = bar1.close;
+      report.context.rsi_base = report.rsi_base;
+      report.context.rsi_base_prev = cache.RSI14BaseAt(2);
+      report.context.rsi_higher = report.rsi_higher;
+      report.context.atr14 = report.atr14;
+
       XSparkPatternResult pattern;
       if(!XSparkDetectScoreBotPattern(bar1, bar2, bar3, m_drop_ibr, pattern))
       {
@@ -300,6 +309,7 @@ public:
                                                                     pattern.direction);
       report.threshold_passed = report.components.final_score >= report.effective_threshold;
 
+      signal.context = report.context;
       signal.symbol = m_symbol;
       signal.direction = pattern.direction;
       signal.timestamp = TimeTradeServer();

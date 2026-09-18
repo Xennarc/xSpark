@@ -247,6 +247,14 @@ public:
       return m_valid ? m_rsi14_base[0] : 0.0;
    }
 
+   double RSI14BaseAt(const int closed_shift)
+   {
+      if(!m_valid || closed_shift < 1 || closed_shift > ArraySize(m_rsi14_base))
+         return EMPTY_VALUE;
+      const double value = m_rsi14_base[closed_shift - 1];
+      return IndicatorValueIsReady(value) ? value : EMPTY_VALUE;
+   }
+
    double ATR14Base()
    {
       return m_valid ? m_atr14_base[0] : 0.0;

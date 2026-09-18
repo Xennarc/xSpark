@@ -117,6 +117,7 @@ struct XSparkScoreComponents
 
 struct XSparkScoreBotReport
 {
+   XSparkSignalContext    context;
    datetime               signal_bar_time;
    EXSparkSignalDirection direction;
    EXSparkScoreBotPatternId pattern_id;
@@ -143,6 +144,7 @@ struct XSparkScoreBotReport
 
 struct XSparkTradePlan
 {
+   XSparkSignalContext    context;
    string                 symbol;
    EXSparkSignalDirection direction;
    datetime               signal_bar_time;
@@ -252,6 +254,7 @@ void XSparkResetScoreComponents(XSparkScoreComponents &components)
 
 void XSparkResetScoreBotReport(XSparkScoreBotReport &report)
 {
+   XSparkResetSignalContext(report.context);
    report.signal_bar_time = 0;
    report.direction = XSPARK_SIGNAL_NONE;
    report.pattern_id = XSPARK_PATTERN_NONE;
@@ -278,6 +281,7 @@ void XSparkResetScoreBotReport(XSparkScoreBotReport &report)
 
 void XSparkResetTradePlan(XSparkTradePlan &plan)
 {
+   XSparkResetSignalContext(plan.context);
    plan.symbol = "";
    plan.direction = XSPARK_SIGNAL_NONE;
    plan.signal_bar_time = 0;
