@@ -27,7 +27,11 @@ scan chart patterns but preserve legacy entries, including legacy pin bars.
    data and full settings. It logs the new candidates but executes legacy entries;
    the journal explicitly says `OBSERVE / LEGACY ENTRIES`.
 
-Equivalent active inputs: `InpUsePatternEngine=true`,
+You can also choose **Entry style → Chart patterns and engulfing entries** in
+the Inputs tab; it resolves the five entry switches together. See the
+[settings guide](INPUT_SETTINGS.md) for labels, units and saved-file behavior.
+
+Equivalent active inputs with **Use saved / custom entry switches** selected: `InpUsePatternEngine=true`,
 `InpGateObserveOnly=false`, `InpUseHTFStructureGate=true`,
 `InpUsePullbackGate=true`, `InpUseContinuationTriggers=true`.
 Flags, H&S and cups have independent recognition switches. Pin bars default off;
@@ -96,7 +100,7 @@ trade distinct instances, subject to existing exposure limits.
 
 ## Verification and remaining evidence
 
-`python3 tools/test_portable_logic.py`: **112 passed, 0 failed**. The harness adapts
+`python3 tools/test_portable_logic.py`: **151 passed, 0 failed** (including settings and multi-position checks). The harness adapts
 actual production MQL logic into C++ and runs AddressSanitizer/UndefinedBehaviorSanitizer.
 Coverage includes both directions of every chart type, invalid/unbroken/extended
 shapes, raw-candle H&S pivot discovery, equal-open engulfing, near-doji rejection,

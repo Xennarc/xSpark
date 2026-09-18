@@ -283,7 +283,12 @@ private:
       const int by_ticket = FindStateByTicket(ticket);
       if(by_ticket >= 0)
       {
-         m_states[by_ticket].identifier = state.identifier;
+         if(!XSparkPositionIdentityMatches(m_states[by_ticket].identifier, state.identifier))
+         {
+            m_last_reason = "Position ticket has a different broker identifier; refusing to transfer trade state.";
+            logger.Error("PositionManager", m_last_reason);
+            return false;
+         }
          return true;
       }
 
@@ -409,7 +414,8 @@ private:
    }
 
    // Returns how many live XSpark positions carry the broker position id and
-   // reports the first one. Anything other than exactly one match is ambiguous.
+   // reports the first one. A negative count means unreadable exposure. Anything
+   // other than exactly one match cannot establish a unique live position.
    int FindLiveTicketByIdentifier(const long identifier, ulong &ticket)
    {
       ticket = 0;
@@ -423,8 +429,8 @@ private:
       for(int index = 0; index < total_positions; index++)
       {
          const ulong candidate = PositionGetTicket(index);
-         if(candidate == 0 || !PositionSelectByTicket(candidate) || !PositionMatchesInstance())
-            continue;
+         if(candidate == 0 || !PositionSelectByTicket(candidate)) return -1;
+         if(!PositionMatchesInstance()) continue;
 
          if(!XSparkPositionIdentityMatches(PositionGetInteger(POSITION_IDENTIFIER), identifier))
             continue;
@@ -671,7 +677,8 @@ private:
 
       for(int index = 0; index < ArraySize(m_states); index++)
       {
-         if(!PositionSelectByTicket(m_states[index].ticket) || !PositionMatchesInstance())
+         if(!PositionSelectByTicket(m_states[index].ticket) || !PositionMatchesInstance() ||
+            !XSparkPositionIdentityMatches(PositionGetInteger(POSITION_IDENTIFIER), m_states[index].identifier))
             continue;
 
          if(PositionGetDouble(POSITION_SL) > 0.0)
@@ -1058,22 +1065,20 @@ public:
          return false;
       }
 
+      bool snapshot_complete = true;
       const int total_positions = PositionsTotal();
 
       for(int index = 0; index < total_positions; index++)
       {
          const ulong ticket = PositionGetTicket(index);
 
-         if(ticket == 0)
-            continue;
-
-         if(!PositionSelectByTicket(ticket))
-            continue;
+         if(ticket == 0 || !PositionSelectByTicket(ticket))
+         { snapshot_complete = false; continue; }
 
          if(!PositionMatchesInstance())
             continue;
 
-         AddOrUpdateSelectedPosition(ticket, logger);
+         if(!AddOrUpdateSelectedPosition(ticket, logger)) snapshot_complete = false;
       }
 
       // The prune below reads PositionsTotal() to decide a state is dead, then deletes
@@ -1086,35 +1091,28 @@ public:
          return true;
       }
 
+      if(!snapshot_complete)
+      {
+         m_last_reason = "Incomplete broker position snapshot; preserved all trade state.";
+         return false;
+      }
+
       for(int state_index = ArraySize(m_states) - 1; state_index >= 0; state_index--)
       {
          bool still_live = false;
 
-         if(PositionSelectByTicket(m_states[state_index].ticket) && PositionMatchesInstance())
+         if(PositionSelectByTicket(m_states[state_index].ticket) && PositionMatchesInstance() &&
+            XSparkPositionIdentityMatches(PositionGetInteger(POSITION_IDENTIFIER), m_states[state_index].identifier))
             still_live = true;
 
          if(!still_live && m_states[state_index].identifier != 0)
          {
-            const int total_after = PositionsTotal();
-            int match_count = 0;
+            // Entry prices are not identities: nearby same-direction trades
+            // must never inherit a closed trade's stops or partial-close state.
             ulong matched_ticket = 0;
-
-            for(int live_index = 0; live_index < total_after; live_index++)
-            {
-               const ulong candidate_ticket = PositionGetTicket(live_index);
-               if(candidate_ticket == 0 || !PositionSelectByTicket(candidate_ticket) || !PositionMatchesInstance())
-                  continue;
-
-               if(PositionDirection() != m_states[state_index].direction)
-                  continue;
-
-               const double entry = PositionGetDouble(POSITION_PRICE_OPEN);
-               if(MathAbs(entry - m_states[state_index].entry) <= XSparkScorePointsToPrice(1.0, m_score_point_size))
-               {
-                  match_count++;
-                  matched_ticket = candidate_ticket;
-               }
-            }
+            const int match_count = FindLiveTicketByIdentifier(m_states[state_index].identifier, matched_ticket);
+            if(match_count < 0)
+            { m_last_reason = "Cannot verify position identity; preserved trade state."; return false; }
 
             if(match_count == 1)
             {
@@ -1326,6 +1324,12 @@ public:
             return false;
          }
 
+         if(!XSparkPositionIdentityMatches(m_states[index_by_state].identifier, identifier))
+         {
+            reason = "Live position identity differs from its recorded trade state.";
+            return false;
+         }
+
          if(m_states[index_by_state].direction != PositionDirection())
          {
             reason = StringFormat("Managed state for ticket=%I64u identifier=%I64d holds direction %s while the live position is %s.",
@@ -1426,7 +1430,8 @@ public:
             continue;
 
          const ulong ticket = m_states[index].ticket;
-         if(!PositionSelectByTicket(ticket) || !PositionMatchesInstance())
+         if(!PositionSelectByTicket(ticket) || !PositionMatchesInstance() ||
+            !XSparkPositionIdentityMatches(PositionGetInteger(POSITION_IDENTIFIER), m_states[index].identifier))
             continue;
 
          const EXSparkSignalDirection direction = m_states[index].direction;

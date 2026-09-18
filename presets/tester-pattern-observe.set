@@ -11,3 +11,4 @@ InpUseCupHandlePattern=true
 InpUsePinBars=false
 InpPatternMaxChaseATR=0.5
 InpGateObserveOnly=true
+InpEntryStyle=2

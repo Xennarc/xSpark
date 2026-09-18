@@ -12,7 +12,7 @@ been performed.** No trade-frequency or profitability result is claimed.
 | S0 | Raw OHLC, current/previous/higher RSI, range/ATR on entries and rejected signals; original planned, execution-sized and fill stop distances logged separately. |
 | S2 | Pure closed-bar structure, asymmetric plateau handling, alternating magnitude-filtered pivots, overflow refusal, HH/HL and LH/LL classification, base-close invalidation, leg geometry, unbroken opposing-level lookup. Independent 160/80-bar cache; legacy 50-bar warm-up unchanged. Per-bar joint telemetry and compact dashboard status. |
 | S2a | Separate commit raises HTF handle readiness to 51 EMA and 15 RSI bars and rejects nonpositive HTF EMA. This can change the first eligible bar. |
-| S2b | Opposing XSpark positions refused at the EA gate and before each send attempt. Concurrent risk headroom checked. Drawdown tolerance counts correlated rounds. Account-risk refusals partition this instance's risk and other positions' risk. |
+| S2b | Opposing XSpark positions refused at the EA gate and before each send attempt. Multiple-slot risk is budgeted within 90% of the account cap; slot count and account exposure are rechecked before each send. Drawdown tolerance counts correlated rounds. Account-risk refusals partition this instance's risk and other positions' risk. |
 | S3/S3b/S5 | Optional coupled HTF-direction, pullback-location and continuation path. T1 pullback-extreme break, T2 aligned legacy candle, T3 candle/RSI turn. New timing signals use the existing pattern score slot; ceiling remains 9. |
 | S4 (gate only) | Optional RSI bounds and turn veto, with distinct inner/outer rejection reasons. Band defaults remain unchanged for measurement; see the explicit experiment below. |
 | S8b/S9 partial, chart follow-up | Deterministic ranking and opt-in engulfing-first profile; bull/bear flags, H&S/inverse H&S, cup/handle and inverse cup/handle; quote bounds and recognition telemetry. See [activation, definitions and limits](CHART_PATTERNS.md). Double tops/bottoms remain unimplemented. |
@@ -28,7 +28,7 @@ verification tools only; the EA has no new runtime dependency.
   exception. A bearish candle is never simply converted to a buy: an aligned
   closed-bar continuation trigger must exist.
 - HTF, pullback and continuation switches must be enabled together. Invalid
-  combinations, and the S2b headroom fault, block **entries** while position
+  combinations block **entries** while position
   reconciliation/management continues. They deliberately do not return
   `INIT_FAILED`, following the plan's protective-management requirement.
 - The existing RSI input defaults remain 40–70 for buys and 30–60 for sells.
@@ -75,7 +75,7 @@ pole/shoulder/rim timestamp; see [chart instance rules](CHART_PATTERNS.md).
 
 ## Verification actually performed
 
-`python3 tools/test_portable_logic.py` passes **112 assertions** using the actual
+`python3 tools/test_portable_logic.py` passes **151 assertions** using the actual
 pure production MQL source and fixtures through a small C++ syntax/API adapter.
 It builds with `-Wall -Wextra -Werror -pedantic`, AddressSanitizer and
 UndefinedBehaviorSanitizer. Leak detection is disabled because the managed
@@ -90,6 +90,13 @@ the full strategy, and inconsistent-snapshot rejection. Chart follow-up coverage
 adds mirrored chart fixtures, engulfing/pin ranking, quote bounds, configuration,
 raw-pivot H&S discovery, chart strategy eligibility and observe-mode parity. Existing MQL test scripts have not run
 inside MT5. The new native `TestMarketStructure.mq5` contains 34 of these checks.
+
+The [settings guide](INPUT_SETTINGS.md) explains the entry-style dropdown; nine
+additional portable checks cover resolution and saved-settings compatibility.
+
+The [multiple-trade fix](MULTIPLE_TRADES.md) replaces the blanket startup
+headroom fault with capped per-slot sizing. Thirty additional checks cover
+concurrent risk and broker-double state/management scenarios.
 
 ## Windows compilation
 
