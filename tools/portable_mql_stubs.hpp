@@ -10,7 +10,6 @@ datetime TimeTradeServer() {return 47000;}
 datetime TimeCurrent() {return 47000;}
 double XSparkPriceToScorePoints(double price, double point) {return price/point;}
 double MathLog(double x) {return std::log(x);}
-double MathCeil(double x) {return std::ceil(x);}
 int StringLen(const string& s) {return int(s.size());}
 int StringGetCharacter(const string& s,int i) {return s.at(i);}
 std::map<string,double> gv;

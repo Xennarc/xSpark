@@ -18,9 +18,12 @@ FILES = [
     "MQL5/Include/XSpark/Strategy/PatternDetector.mqh",
     "MQL5/Include/XSpark/Strategy/MarketStructure.mqh",
     "MQL5/Include/XSpark/Strategy/EntryGates.mqh",
+    "MQL5/Include/XSpark/Strategy/ChartPatterns.mqh",
     "MQL5/Scripts/Tests/TestMarketStructure.mq5",
+    "MQL5/Scripts/Tests/TestChartPatterns.mq5",
 ]
 PREAMBLE = r'''
+#define XSPARK_PORTABLE_TEST
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -35,6 +38,7 @@ enum ENUM_TIMEFRAMES {PERIOD_CURRENT, PERIOD_M1, PERIOD_M5, PERIOD_M15, PERIOD_M
 const double EMPTY_VALUE = std::numeric_limits<double>::max();
 template<class A, class B> auto MathMin(A a,B b) {return std::min<double>(a,b);}
 template<class A, class B> auto MathMax(A a,B b) {return std::max<double>(a,b);}
+double MathCeil(double a) {return std::ceil(a);}
 double MathAbs(double a) {return std::abs(a);}
 bool MathIsValidNumber(double a) {return std::isfinite(a);}
 template<class T> int ArraySize(const std::vector<T>& a) {return int(a.size());}
@@ -64,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     for file in ['Strategy/ScoringEngine.mqh', 'Core/StateStore.mqh', 'Risk/RiskManager.mqh', 'Strategy/ScoreBotV3.mqh']:
         body += adapt((ROOT / 'MQL5/Include/XSpark' / file).read_text())
     body += (ROOT / 'tools/portable_boundary_tests.hpp').read_text()
-    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); Print("TOTAL passed=",g_passed," failed=",g_failed); return g_failed ? 1 : 0; }\n')
+    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); RunChartPatternTests(); Print("TOTAL passed=",g_passed+g_pattern_passed," failed=",g_failed+g_pattern_failed); return g_failed+g_pattern_failed ? 1 : 0; }\n')
     exe = Path(tmp) / 'logic'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pedantic',
                     '-fsanitize=address,undefined', '-g', str(source), '-o', str(exe)], check=True)

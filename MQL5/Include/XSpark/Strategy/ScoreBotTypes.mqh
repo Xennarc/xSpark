@@ -81,7 +81,13 @@ enum EXSparkScoreBotPatternId
    XSPARK_PATTERN_BULLISH_IBR = 5,
    XSPARK_PATTERN_BEARISH_IBR = 6,
    XSPARK_PATTERN_PULLBACK_BREAK = 7,
-   XSPARK_PATTERN_MOMENTUM_TURN = 8
+   XSPARK_PATTERN_MOMENTUM_TURN = 8,
+   XSPARK_PATTERN_BULL_FLAG = 9,
+   XSPARK_PATTERN_BEAR_FLAG = 10,
+   XSPARK_PATTERN_INVERSE_HS = 11,
+   XSPARK_PATTERN_HEAD_SHOULDERS = 12,
+   XSPARK_PATTERN_CUP_HANDLE = 13,
+   XSPARK_PATTERN_INVERSE_CUP_HANDLE = 14
 };
 
 struct XSparkCandle
@@ -96,6 +102,10 @@ struct XSparkCandle
 
 struct XSparkPatternResult
 {
+   datetime                instance_time;
+   double                  breakout_level;
+   bool                    chart_pattern;
+   bool                    engulfing_confirmed;
    bool                    found;
    EXSparkSignalDirection  direction;
    EXSparkScoreBotPatternId pattern_id;
@@ -119,6 +129,9 @@ struct XSparkScoreComponents
 
 struct XSparkScoreBotReport
 {
+   string pattern_mode, detected_patterns, pattern_runner_up, entry_location;
+   double detected_level, pattern_runner_up_score;
+   datetime detected_instance;
    string base_structure, higher_structure, structure_status;
    string htf_verdict, pullback_verdict, rsi_verdict, joint_verdict;
    bool gate_candidate;
@@ -156,6 +169,8 @@ struct XSparkTradePlan
    string                 symbol;
    EXSparkSignalDirection direction;
    datetime               signal_bar_time;
+   double                 entry_breakout_level;
+   double                 entry_limit; // quote chase bound; zero on legacy plans
    double                 planned_risk_distance; // preserved when execution refreshes the plan
    double                 entry_reference;
    double                 theoretical_sl;
@@ -233,6 +248,12 @@ string XSparkPatternNameFromId(const EXSparkScoreBotPatternId pattern_id)
          return "Bullish IBR";
       case XSPARK_PATTERN_BEARISH_IBR:
          return "Bearish IBR";
+      case XSPARK_PATTERN_BULL_FLAG: return "Bull Flag";
+      case XSPARK_PATTERN_BEAR_FLAG: return "Bear Flag";
+      case XSPARK_PATTERN_INVERSE_HS: return "Inverse H&S";
+      case XSPARK_PATTERN_HEAD_SHOULDERS: return "Head & Shoulders";
+      case XSPARK_PATTERN_CUP_HANDLE: return "Cup & Handle";
+      case XSPARK_PATTERN_INVERSE_CUP_HANDLE: return "Inverse Cup & Handle";
       case XSPARK_PATTERN_PULLBACK_BREAK: return "Pullback Break";
       case XSPARK_PATTERN_MOMENTUM_TURN: return "Momentum Turn";
       default:
@@ -242,6 +263,8 @@ string XSparkPatternNameFromId(const EXSparkScoreBotPatternId pattern_id)
 
 void XSparkResetPatternResult(XSparkPatternResult &result)
 {
+   result.instance_time = 0; result.breakout_level = 0.0;
+   result.chart_pattern = false; result.engulfing_confirmed = false;
    result.found = false;
    result.direction = XSPARK_SIGNAL_NONE;
    result.pattern_id = XSPARK_PATTERN_NONE;
@@ -265,6 +288,10 @@ void XSparkResetScoreComponents(XSparkScoreComponents &components)
 
 void XSparkResetScoreBotReport(XSparkScoreBotReport &report)
 {
+   report.pattern_mode = "LEGACY"; report.detected_patterns = "NONE";
+   report.pattern_runner_up = "NONE"; report.pattern_runner_up_score = 0.0;
+   report.detected_level = 0.0; report.detected_instance = 0;
+   report.entry_location = "PIVOT PULLBACK";
    report.base_structure = "unavailable"; report.higher_structure = "unavailable";
    report.structure_status = "UNKNOWN";
    report.htf_verdict = "OFF"; report.pullback_verdict = "OFF"; report.rsi_verdict = "OFF";
@@ -302,6 +329,7 @@ void XSparkResetTradePlan(XSparkTradePlan &plan)
    plan.symbol = "";
    plan.direction = XSPARK_SIGNAL_NONE;
    plan.signal_bar_time = 0;
+   plan.entry_limit = 0.0; plan.entry_breakout_level = 0.0;
    plan.planned_risk_distance = 0.0;
    plan.entry_reference = 0.0;
    plan.theoretical_sl = 0.0;

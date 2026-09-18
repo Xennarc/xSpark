@@ -452,6 +452,27 @@ public:
       ChartRedraw(0);
    }
 
+   // Latest recognized boundary only. Detection is never labelled as a trade.
+   void AnnotatePattern(const XSparkScoreBotReport &report)
+   {
+      const string line = Name("pattern_boundary"), label = Name("pattern_detection");
+      if(report.detected_level <= 0.0)
+      {
+         ObjectDelete(0, line); ObjectDelete(0, label);
+         return;
+      }
+      if(ObjectFind(0, line) < 0) ObjectCreate(0, line, OBJ_HLINE, 0, 0, report.detected_level);
+      ObjectSetDouble(0, line, OBJPROP_PRICE, report.detected_level);
+      ObjectSetInteger(0, line, OBJPROP_COLOR, XSPARK_UI_CYAN);
+      ObjectSetInteger(0, line, OBJPROP_STYLE, STYLE_DOT);
+      ObjectSetString(0, line, OBJPROP_TOOLTIP, "Detected boundary: " + report.detected_patterns + " / " + report.pattern_mode);
+      if(ObjectFind(0, label) < 0) ObjectCreate(0, label, OBJ_TEXT, 0, report.signal_bar_time, report.detected_level);
+      ObjectMove(0, label, 0, report.signal_bar_time, report.detected_level);
+      ObjectSetString(0, label, OBJPROP_TEXT, "DETECTED: " + report.detected_patterns);
+      ObjectSetInteger(0, label, OBJPROP_COLOR, XSPARK_UI_CYAN);
+      ObjectSetInteger(0, label, OBJPROP_FONTSIZE, 8);
+   }
+
    void AnnotateEntry(XSparkTradePlan &plan, XSparkExecutionResult &result)
    {
       const string base = StringFormat("%s%I64u_%I64d",

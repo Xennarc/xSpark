@@ -68,6 +68,13 @@ input double InpPullbackMin = 0.30;
 input double InpPullbackMax = 0.80;
 input bool InpUseRSIGate = false;
 input bool InpRequireRSITurn = false;
+input group "2c. Chart patterns and engulfing"
+input bool InpUsePatternEngine = false; // false: scan only; true: use pattern profile
+input bool InpUseFlagPattern = true; // recognition, not permission to trade
+input bool InpUseHSPattern = true;
+input bool InpUseCupHandlePattern = true;
+input bool InpUsePinBars = false; // Only the new pattern profile; legacy is unchanged
+input double InpPatternMaxChaseATR = 0.50; // Furthest quote beyond breakout boundary
 input group "3. Momentum filter (RSI)"
 input int InpRSILongMin = 40;  // Buys: lowest RSI allowed
 input int InpRSILongMax = 70;  // Buys: highest RSI allowed
@@ -694,6 +701,12 @@ bool XSparkPrepareTradePlan(XSparkSignal &signal,
                                   g_market_state.Ask() :
                                   g_market_state.Bid();
 
+   if(!XSparkEntryLimitAllows(signal.direction, entry_reference, signal.entry_limit, signal.entry_breakout_level))
+   {
+      g_last_block_reason = "PATTERN ENTRY INVALID: quote broke back through boundary or exceeds chase bound.";
+      return false;
+   }
+
    if(entry_reference <= 0.0 || signal.desired_stop <= 0.0)
    {
       g_last_block_reason = "Entry reference or theoretical stop is invalid.";
@@ -745,6 +758,8 @@ bool XSparkPrepareTradePlan(XSparkSignal &signal,
    else
       initial_tp = entry_reference - risk_distance * signal.dynamic_rr;
 
+   plan.entry_limit = signal.entry_limit;
+   plan.entry_breakout_level = signal.entry_breakout_level;
    plan.context = signal.context;
    plan.symbol = signal.symbol;
    plan.direction = signal.direction;
@@ -1181,6 +1196,14 @@ void XSparkEvaluateNewBar()
                               TimeToString(report.candidate_instance, TIME_DATE | TIME_MINUTES), report.pattern_name,
                               XSparkContextJournal(report.context)));
 
+   g_logger.Info("Patterns",
+                 StringFormat("bar=%s mode=%s detected=[%s] selected=%s runner=%s/%.2f location=%s joint=%s level=%.8f instance=%s",
+                              TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES), report.pattern_mode,
+                              report.detected_patterns, report.candidate_pattern, report.pattern_runner_up,
+                              report.pattern_runner_up_score, report.entry_location, report.joint_verdict,
+                              report.detected_level, TimeToString(report.detected_instance, TIME_DATE | TIME_MINUTES)));
+   g_dashboard.AnnotatePattern(report);
+
    if(report.scored)
       g_last_report.selected_risk_pct = g_risk_manager.SelectedRiskPercentForScore(report.components.final_score);
 
@@ -1365,7 +1388,9 @@ void XSparkEvaluateNewBar()
 
    if(signal.instance_time > 0)
    {
-      const string key = StringFormat("leg.%d.%d", (int)g_base_timeframe, (int)signal.direction);
+      const string key = signal.instance_family == 0 ?
+                         StringFormat("leg.%d.%d", (int)g_base_timeframe, (int)signal.direction) :
+                         StringFormat("pattern.%d.%d.%d", (int)g_base_timeframe, (int)signal.direction, signal.instance_family);
       string latch_reason = "";
       if(!g_instance_store.ReserveNewer(key, signal.instance_time, signal.signal_bar_time, latch_reason))
       {
@@ -1497,7 +1522,22 @@ int OnInit()
    gates.use_rsi = InpUseRSIGate; gates.require_rsi_turn = InpRequireRSITurn;
    gates.min_swing_atr = InpMinSwingATR; gates.min_leg_atr = InpMinLegATR;
    gates.pullback_min = InpPullbackMin; gates.pullback_max = InpPullbackMax;
+   XSparkPatternConfig patterns;
+   XSparkDefaultPatternConfig(patterns);
+   patterns.enabled = InpUsePatternEngine; patterns.flags = InpUseFlagPattern;
+   patterns.head_shoulders = InpUseHSPattern; patterns.cups = InpUseCupHandlePattern;
+   patterns.pin_bars = InpUsePinBars; patterns.max_chase_atr = InpPatternMaxChaseATR;
+   g_strategy.ConfigurePatterns(patterns);
    g_v2_config_valid = XSparkValidateGateConfig(gates, g_v2_config_reason);
+   string pattern_config_reason;
+   if(!XSparkValidatePatternConfig(patterns, gates.use_htf, gates.use_pullback, gates.use_continuation, pattern_config_reason))
+   {
+      g_v2_config_valid = false;
+      g_v2_config_reason += " " + pattern_config_reason;
+   }
+   g_logger.Warn("Patterns", !patterns.enabled ? "SCAN ONLY: chart detectors are visible; LEGACY entry logic remains active." :
+                 (gates.observe_only ? "OBSERVE ONLY: pattern decisions are logged; LEGACY entry logic remains active." :
+                                      "PATTERN ENTRY PROFILE ACTIVE: engulfing and confirmed chart breakouts; unvalidated profitability."));
    if(!XSparkConcurrencyHasHeadroom(InpMaxOpenTrades, InpRiskPctTier1, InpRiskPctTier2,
                                     InpRiskPctTier3, InpMaxRiskPct, InpMaxAccountRiskPct))
    {
