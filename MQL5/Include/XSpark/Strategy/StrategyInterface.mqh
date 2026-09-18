@@ -25,6 +25,7 @@ void XSparkResetSignalContext(XSparkSignalContext &context)
 
 struct XSparkSignal
 {
+   datetime               instance_time;
    XSparkSignalContext    context;
    string                 symbol;
    EXSparkSignalDirection direction;
@@ -52,6 +53,7 @@ struct XSparkSignal
 
 void XSparkResetSignal(XSparkSignal &signal)
 {
+   signal.instance_time = 0;
    XSparkResetSignalContext(signal.context);
    signal.symbol = "";
    signal.direction = XSPARK_SIGNAL_NONE;

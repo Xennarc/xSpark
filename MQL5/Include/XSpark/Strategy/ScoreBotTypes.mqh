@@ -79,7 +79,9 @@ enum EXSparkScoreBotPatternId
    XSPARK_PATTERN_BULLISH_ENGULFING = 3,
    XSPARK_PATTERN_BEARISH_ENGULFING = 4,
    XSPARK_PATTERN_BULLISH_IBR = 5,
-   XSPARK_PATTERN_BEARISH_IBR = 6
+   XSPARK_PATTERN_BEARISH_IBR = 6,
+   XSPARK_PATTERN_PULLBACK_BREAK = 7,
+   XSPARK_PATTERN_MOMENTUM_TURN = 8
 };
 
 struct XSparkCandle
@@ -117,6 +119,12 @@ struct XSparkScoreComponents
 
 struct XSparkScoreBotReport
 {
+   string base_structure, higher_structure, structure_status;
+   string htf_verdict, pullback_verdict, rsi_verdict, joint_verdict;
+   bool gate_candidate;
+   EXSparkSignalDirection candidate_direction;
+   string candidate_pattern;
+   datetime candidate_instance;
    XSparkSignalContext    context;
    datetime               signal_bar_time;
    EXSparkSignalDirection direction;
@@ -148,6 +156,7 @@ struct XSparkTradePlan
    string                 symbol;
    EXSparkSignalDirection direction;
    datetime               signal_bar_time;
+   double                 planned_risk_distance; // preserved when execution refreshes the plan
    double                 entry_reference;
    double                 theoretical_sl;
    double                 final_sl;
@@ -224,6 +233,8 @@ string XSparkPatternNameFromId(const EXSparkScoreBotPatternId pattern_id)
          return "Bullish IBR";
       case XSPARK_PATTERN_BEARISH_IBR:
          return "Bearish IBR";
+      case XSPARK_PATTERN_PULLBACK_BREAK: return "Pullback Break";
+      case XSPARK_PATTERN_MOMENTUM_TURN: return "Momentum Turn";
       default:
          return "NO PATTERN";
    }
@@ -254,6 +265,12 @@ void XSparkResetScoreComponents(XSparkScoreComponents &components)
 
 void XSparkResetScoreBotReport(XSparkScoreBotReport &report)
 {
+   report.base_structure = "unavailable"; report.higher_structure = "unavailable";
+   report.structure_status = "UNKNOWN";
+   report.htf_verdict = "OFF"; report.pullback_verdict = "OFF"; report.rsi_verdict = "OFF";
+   report.joint_verdict = "OFF"; report.gate_candidate = false;
+   report.candidate_direction = XSPARK_SIGNAL_NONE; report.candidate_pattern = "NONE";
+   report.candidate_instance = 0;
    XSparkResetSignalContext(report.context);
    report.signal_bar_time = 0;
    report.direction = XSPARK_SIGNAL_NONE;
@@ -285,6 +302,7 @@ void XSparkResetTradePlan(XSparkTradePlan &plan)
    plan.symbol = "";
    plan.direction = XSPARK_SIGNAL_NONE;
    plan.signal_bar_time = 0;
+   plan.planned_risk_distance = 0.0;
    plan.entry_reference = 0.0;
    plan.theoretical_sl = 0.0;
    plan.final_sl = 0.0;

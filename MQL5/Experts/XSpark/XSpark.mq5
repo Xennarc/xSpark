@@ -55,6 +55,19 @@ input group "2. Signal quality"
 input double InpMinScore = 2.0;  // Setup quality needed, 0-9 (higher = pickier)
 input bool   InpDropIBR = false;  // Ignore inside-bar breakouts
 input double InpLongScoreExtra = 0.0;  // Extra quality demanded of buys only
+input group "2b. Experimental structure entries (V2)"
+input bool InpGateObserveOnly = true; // Compute verdicts without changing legacy entries
+input bool InpUseHTFStructureGate = false;
+input bool InpUsePullbackGate = false;
+input bool InpUseContinuationTriggers = false;
+input bool InpUseT1PullbackBreak = true; // Only active with continuation enabled
+input bool InpUseT3MomentumTurn = true; // Only active with continuation enabled
+input double InpMinSwingATR = 0.5; // Mean-TR multiple; uncalibrated starting value
+input double InpMinLegATR = 1.5;
+input double InpPullbackMin = 0.30;
+input double InpPullbackMax = 0.80;
+input bool InpUseRSIGate = false;
+input bool InpRequireRSITurn = false;
 input group "3. Momentum filter (RSI)"
 input int InpRSILongMin = 40;  // Buys: lowest RSI allowed
 input int InpRSILongMax = 70;  // Buys: highest RSI allowed
@@ -152,6 +165,9 @@ CXSparkPositionManager g_position_manager;
 CXSparkScoreBotV3      g_strategy;
 CXSparkDashboard       g_dashboard;
 
+bool g_v2_config_valid = false;
+string g_v2_config_reason = "V2 configuration not checked.";
+CXSparkStateStore g_instance_store;
 bool     g_state_purged = false;
 // Resolved once in OnInit and never re-read from the terminal. A conversion on
 // the killswitch flatten path runs while the quote feed is unusable, so the
@@ -362,15 +378,16 @@ bool XSparkValidateInputs()
       return false;
    }
 
+   g_logger.Info("EA", StringFormat("Drawdown tolerance assumes %d simultaneous correlated positions per loss round; not independent bets.", InpMaxOpenTrades));
    // The killswitch must survive an ordinary losing streak at the configured
    // risk, or it converts routine variance into a permanent stop. Refusing is
    // wrong here - the operator may want a tight limit deliberately - but it
    // must never be a surprise, so it is stated loudly at startup.
-   const int losses_to_killswitch = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxTotalDDPct);
-   const int losses_to_daily_halt = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxDailyDDPct);
+   const int losses_to_killswitch = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxTotalDDPct, InpMaxOpenTrades);
+   const int losses_to_daily_halt = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxDailyDDPct, InpMaxOpenTrades);
 
    g_logger.Info("EA",
-                 StringFormat("Risk tolerance at max %.2f%% per trade: %d consecutive full-stop losses latch the "
+                 StringFormat("Risk tolerance at max %.2f%% per trade: %d correlated full-stop rounds latch the "
                               "%.1f%% killswitch, %d latch the %.1f%% daily halt.",
                               InpMaxRiskPct,
                               losses_to_killswitch,
@@ -610,9 +627,9 @@ void XSparkLogSignalRejection(const string stage,
 // Fails closed. A position with no stop loss has unbounded downside, so total
 // risk becomes unknowable rather than large, and an unknowable total must not
 // be allowed to pass a cap.
-bool XSparkOpenAccountRiskCash(double &open_risk_cash, string &reason)
+bool XSparkOpenAccountRiskCash(double &open_risk_cash, double &own_risk_cash, double &foreign_risk_cash, string &reason)
 {
-   open_risk_cash = 0.0;
+   open_risk_cash = 0.0; own_risk_cash = 0.0; foreign_risk_cash = 0.0;
    reason = "";
 
    const int total = PositionsTotal();
@@ -647,6 +664,9 @@ bool XSparkOpenAccountRiskCash(double &open_risk_cash, string &reason)
       }
 
       open_risk_cash += position_risk;
+      if(position_symbol == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+         own_risk_cash += position_risk;
+      else foreign_risk_cash += position_risk;
    }
 
    return true;
@@ -861,7 +881,7 @@ void XSparkLogEntry(XSparkTradePlan &plan,
    g_logger.Info("EntryContext",
                  StringFormat("bar=%s deal=%I64u %s planned_risk=%.8f execution_risk=%.8f fill_risk=%.8f fill_to_sized=%.6f",
                               TimeToString(plan.signal_bar_time, TIME_DATE | TIME_MINUTES), result.deal_ticket,
-                              XSparkContextJournal(plan.context), plan.risk_distance, result.actual_risk_distance,
+                              XSparkContextJournal(plan.context), plan.planned_risk_distance, result.actual_risk_distance,
                               realised_distance, result.actual_risk_distance > 0.0 ? realised_distance / result.actual_risk_distance : 0.0));
 
    if(realised_distance > 0.0 && result.actual_risk_distance > 0.0 &&
@@ -1152,6 +1172,13 @@ void XSparkEvaluateNewBar()
                                                     signal,
                                                     report);
    g_last_report = report;
+   g_logger.Info("Structure",
+                 StringFormat("bar=%s mode=%s base=[%s] higher=[%s] htf=%s pullback=%s rsi=%s joint=%s candidate=%s dir=%s instance=%s legacy=%s",
+                              TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES),
+                              InpGateObserveOnly ? "observe" : "enforce", report.base_structure, report.higher_structure,
+                              report.htf_verdict, report.pullback_verdict, report.rsi_verdict, report.joint_verdict,
+                              report.candidate_pattern, XSparkDirectionName(report.candidate_direction),
+                              TimeToString(report.candidate_instance, TIME_DATE | TIME_MINUTES), report.pattern_name));
 
    if(report.scored)
       g_last_report.selected_risk_pct = g_risk_manager.SelectedRiskPercentForScore(report.components.final_score);
@@ -1174,6 +1201,13 @@ void XSparkEvaluateNewBar()
       return;
    }
 
+   if(!g_v2_config_valid)
+   {
+      g_status = "V2 CONFIG BLOCKED"; g_last_block_reason = g_v2_config_reason;
+      XSparkLogSignalRejection("configuration", g_last_block_reason, report);
+      return;
+   }
+
    // Opening inside the weekend-close window would be flattened immediately by
    // PositionManager, so the entry is refused rather than paid for.
    if(InpUseWeekendClose &&
@@ -1184,6 +1218,14 @@ void XSparkEvaluateNewBar()
       g_status = "WEEKEND CLOSE";
       g_last_block_reason = "Weekend close window is active; new entries are blocked.";
       XSparkVerboseBlock("PositionManager", g_last_block_reason);
+      return;
+   }
+
+   string exposure_reason = "";
+   if(!XSparkDirectionIsUnopposed(_Symbol, InpMagicNumber, signal.direction, exposure_reason))
+   {
+      g_status = "OPPOSING EXPOSURE"; g_last_block_reason = exposure_reason;
+      XSparkLogSignalRejection("exposure", exposure_reason, report);
       return;
    }
 
@@ -1235,11 +1277,13 @@ void XSparkEvaluateNewBar()
       return;
    }
 
+   plan.planned_risk_distance = plan.risk_distance;
+
    // Account-level risk cap. Checked here rather than in the earlier safety gate
    // because the prospective risk is only knowable once the plan has a volume
    // and a broker-valid stop, and a cap checked against an estimate is not a cap.
    {
-      double open_risk_cash = 0.0;
+      double open_risk_cash = 0.0, own_risk_cash = 0.0, foreign_risk_cash = 0.0;
       string account_risk_reason = "";
 
       double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
@@ -1260,7 +1304,7 @@ void XSparkEvaluateNewBar()
       string cap_reason = "";
 
       if(!prospective_known ||
-         !XSparkOpenAccountRiskCash(open_risk_cash, account_risk_reason) ||
+         !XSparkOpenAccountRiskCash(open_risk_cash, own_risk_cash, foreign_risk_cash, account_risk_reason) ||
          !XSparkAccountRiskWithinCap(open_risk_cash,
                                      prospective_risk_cash,
                                      AccountInfoDouble(ACCOUNT_BALANCE),
@@ -1272,6 +1316,8 @@ void XSparkEvaluateNewBar()
          g_last_block_reason = !prospective_known ? prospective_reason
                                : (account_risk_reason != "" ? account_risk_reason : cap_reason);
 
+         g_last_block_reason += StringFormat(" [own_symbol_magic=%.2f other_positions=%.2f account currency]",
+                                              own_risk_cash, foreign_risk_cash);
          XSparkLogSignalRejection("account_risk", g_last_block_reason, report);
          g_logger.Warn("RiskManager",
                        StringFormat("Entry refused by the account risk cap: %s", g_last_block_reason));
@@ -1314,6 +1360,18 @@ void XSparkEvaluateNewBar()
       g_last_block_reason = g_execution_engine.LastReason();
       XSparkVerboseBlock("ExecutionEngine", g_last_block_reason);
       return;
+   }
+
+   if(signal.instance_time > 0)
+   {
+      const string key = StringFormat("leg.%d.%d", (int)g_base_timeframe, (int)signal.direction);
+      string latch_reason = "";
+      if(!g_instance_store.ReserveNewer(key, signal.instance_time, signal.signal_bar_time, latch_reason))
+      {
+         g_status = "PATTERN INSTANCE USED"; g_last_block_reason = latch_reason;
+         XSparkLogSignalRejection("instance", latch_reason, report);
+         return;
+      }
    }
 
    XSparkExecutionResult execution_result;
@@ -1428,6 +1486,27 @@ int OnInit()
    }
 
    XSparkResolveSessionScorePointSize();
+
+   XSparkGateConfig gates;
+   XSparkDefaultGateConfig(gates);
+   gates.observe_only = InpGateObserveOnly;
+   gates.use_htf = InpUseHTFStructureGate; gates.use_pullback = InpUsePullbackGate;
+   gates.use_continuation = InpUseContinuationTriggers;
+   gates.use_t1 = InpUseT1PullbackBreak; gates.use_t3 = InpUseT3MomentumTurn;
+   gates.use_rsi = InpUseRSIGate; gates.require_rsi_turn = InpRequireRSITurn;
+   gates.min_swing_atr = InpMinSwingATR; gates.min_leg_atr = InpMinLegATR;
+   gates.pullback_min = InpPullbackMin; gates.pullback_max = InpPullbackMax;
+   g_v2_config_valid = XSparkValidateGateConfig(gates, g_v2_config_reason);
+   if(!XSparkConcurrencyHasHeadroom(InpMaxOpenTrades, InpRiskPctTier1, InpRiskPctTier2,
+                                    InpRiskPctTier3, InpMaxRiskPct, InpMaxAccountRiskPct))
+   {
+      g_v2_config_valid = false;
+      g_v2_config_reason += " Concurrent nominal risk must fit within 90% of the account risk cap.";
+   }
+   if(!g_v2_config_valid)
+      g_logger.Critical("V2", g_v2_config_reason + " New entries blocked; existing positions remain managed.");
+   g_strategy.ConfigureGates(gates);
+   g_instance_store.Initialize(AccountInfoInteger(ACCOUNT_LOGIN), _Symbol, InpMagicNumber);
 
    g_strategy.Configure(InpMinScore,
                         InpDropIBR,
