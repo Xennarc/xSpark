@@ -5,12 +5,14 @@
 #include <XSpark/Core/MarketState.mqh>
 #include <XSpark/Core/SymbolMath.mqh>
 #include <XSpark/Strategy/PatternDetector.mqh>
+#include <XSpark/Strategy/EntryGates.mqh>
 #include <XSpark/Strategy/ScoringEngine.mqh>
 #include <XSpark/Strategy/StrategyInterface.mqh>
 
 class CXSparkScoreBotV3 : public IXSparkStrategy
 {
 private:
+   XSparkGateConfig m_gates;
    string m_symbol;
    bool   m_initialized;
    string m_last_reason;
@@ -99,6 +101,7 @@ private:
 public:
    CXSparkScoreBotV3()
    {
+      XSparkDefaultGateConfig(m_gates);
       m_symbol = "";
       m_initialized = false;
       m_last_reason = "ScoreBot_v3 is not initialized.";
@@ -138,6 +141,8 @@ public:
       m_allow_asian_reduced = allow_asian_reduced;
       m_score_point_size = score_point_size;
    }
+
+   void ConfigureGates(const XSparkGateConfig &config) { m_gates = config; }
 
    bool Initialize(const string symbol)
    {
@@ -205,8 +210,98 @@ public:
       report.ema50_base = cache.EMA50Base();
       report.ema50_higher = cache.EMA50Higher();
 
+      report.context.bar1_open = bar1.open;
+      report.context.bar1_high = bar1.high;
+      report.context.bar1_low = bar1.low;
+      report.context.bar1_close = bar1.close;
+      report.context.rsi_base = report.rsi_base;
+      report.context.rsi_base_prev = cache.RSI14BaseAt(2);
+      report.context.rsi_higher = report.rsi_higher;
+      report.context.atr14 = report.atr14;
+
       XSparkPatternResult pattern;
-      if(!XSparkDetectScoreBotPattern(bar1, bar2, bar3, m_drop_ibr, pattern))
+      const bool legacy_found = XSparkDetectScoreBotPattern(bar1, bar2, bar3, m_drop_ibr, pattern);
+      XSparkStructure base, higher;
+      XSparkResetStructure(base); XSparkResetStructure(higher);
+      XSparkCandle base_bars[];
+      XSparkCandle higher_bars[];
+      ArrayResize(base_bars, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS);
+      ArrayResize(higher_bars, XSPARK_SCOREBOT_STRUCTURE_HIGHER_BARS);
+      bool copied = cache.StructureIsValid();
+      if(copied)
+      {
+         for(int i = 0; i < ArraySize(base_bars); i++)
+            if(!cache.StructureBaseBar(i + 1, base_bars[i])) copied = false;
+         for(int i = 0; i < ArraySize(higher_bars); i++)
+            if(!cache.StructureHigherBar(i + 1, higher_bars[i])) copied = false;
+         if(copied && (base_bars[0].time != bar1.time || higher_bars[0].time > bar1.time))
+            copied = false; // Never combine different closed-bar snapshots.
+      }
+      if(copied)
+      {
+         XSparkBuildStructure(base_bars, ArraySize(base_bars), m_gates.min_swing_atr, base);
+         XSparkBuildStructure(higher_bars, ArraySize(higher_bars), m_gates.min_swing_atr, higher);
+         XSparkInvalidateStructure(bar1.close, higher);
+      }
+      EXSparkSignalDirection resolved = legacy_found ? pattern.direction : XSPARK_SIGNAL_NONE;
+      if(m_gates.use_htf || !legacy_found)
+         resolved = higher.state == XSPARK_STRUCT_UP ? XSPARK_SIGNAL_BUY :
+                    (higher.state == XSPARK_STRUCT_DOWN ? XSPARK_SIGNAL_SELL : XSPARK_SIGNAL_NONE);
+      if(copied) XSparkLocateLeg(base_bars, ArraySize(base_bars), resolved, base);
+      report.base_structure = XSparkStructureJournal(base);
+      report.higher_structure = XSparkStructureJournal(higher);
+      report.structure_status = XSparkStructureName(higher.state);
+      if(m_gates.use_htf)
+         report.htf_verdict = !higher.valid || higher.state == XSPARK_STRUCT_UNKNOWN ? "HTF STRUCTURE UNKNOWN" :
+                              (higher.state == XSPARK_STRUCT_RANGE ? "HTF RANGE" : "PASS");
+      if(m_gates.use_pullback)
+         report.pullback_verdict = XSparkPullbackVerdict(base, report.atr14, m_gates);
+      if(m_gates.use_rsi)
+         report.rsi_verdict = XSparkRSIVerdict(resolved, report.rsi_base, report.context.rsi_base_prev,
+                                              m_rsi_long_min, m_rsi_long_max, m_rsi_short_min, m_rsi_short_max,
+                                              m_gates.require_rsi_turn);
+      XSparkPatternResult candidate;
+      XSparkResetPatternResult(candidate);
+      if(m_gates.use_continuation)
+      {
+         if(report.htf_verdict == "PASS" && report.pullback_verdict == "PASS")
+         {
+            XSparkPatternResult aligned;
+            XSparkAlignedLegacy(bar1, bar2, bar3, m_drop_ibr, resolved, aligned);
+            XSparkDetectContinuation(base_bars, ArraySize(base_bars), base, resolved,
+                                      report.rsi_base, report.context.rsi_base_prev, m_gates, aligned, candidate);
+         }
+      }
+      else candidate = pattern;
+      report.gate_candidate = candidate.found;
+      report.candidate_direction = candidate.direction;
+      report.candidate_pattern = candidate.pattern_name;
+      if(candidate.found && m_gates.use_continuation && base.leg_origin_shift > 0)
+         report.candidate_instance = base_bars[base.leg_origin_shift - 1].time;
+      const bool gates_active = m_gates.use_htf || m_gates.use_pullback || m_gates.use_rsi;
+      report.joint_verdict = gates_active ? "PASS" : "OFF";
+      if(m_gates.use_htf && report.htf_verdict != "PASS") report.joint_verdict = report.htf_verdict;
+      else if(m_gates.use_pullback && report.pullback_verdict != "PASS") report.joint_verdict = report.pullback_verdict;
+      else if(m_gates.use_rsi && report.rsi_verdict != "PASS") report.joint_verdict = report.rsi_verdict;
+      else if(m_gates.use_continuation && !candidate.found) report.joint_verdict = "WAIT FOR CONTINUATION";
+
+      // Observation must not change the legacy pattern, direction, score, stop,
+      // target, or persisted instance state. It is not a simulated equity curve.
+      if(gates_active && !m_gates.observe_only)
+      {
+         if(report.joint_verdict != "PASS")
+         {
+            report.has_pattern = legacy_found || candidate.found;
+            report.direction = pattern.direction; report.pattern_name = pattern.pattern_name;
+            report.pattern_id = pattern.pattern_id;
+            report.status = report.joint_verdict; report.block_reason = report.joint_verdict;
+            m_last_reason = report.block_reason;
+            return false;
+         }
+         pattern = candidate;
+         signal.instance_time = report.candidate_instance;
+      }
+      if(!pattern.found)
       {
          report.status = "SCANNING";
          report.block_reason = "NO PATTERN";
@@ -300,6 +395,7 @@ public:
                                                                     pattern.direction);
       report.threshold_passed = report.components.final_score >= report.effective_threshold;
 
+      signal.context = report.context;
       signal.symbol = m_symbol;
       signal.direction = pattern.direction;
       signal.timestamp = TimeTradeServer();

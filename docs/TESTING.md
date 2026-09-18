@@ -135,3 +135,10 @@ Reading real ATR history, and whether the derived numbers actually produce trade
 Rendering itself - object creation, fonts, colours, paint order - is NOT covered and must be checked visually on a chart. In particular, confirm on first attach that the panel does not overlap the price scale, that no text is clipped at the panel edge, and that the panel background paints over candles rather than behind them.
 - The weekend-close entry block.
 - Stale-quote rejection against a real feed, including weekend and rollover behaviour.
+
+## V2 entry validation
+
+See [V2_IMPLEMENTATION.md](V2_IMPLEMENTATION.md) for the stage matrix, portable
+logic checks, Windows compile helper, observe-mode control, persistence tests
+and outstanding MT5 acceptance sequence. Portable test success is not a native
+compiler result or a profitability result.

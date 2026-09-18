@@ -33,18 +33,19 @@ double XSparkRiskPercentForScore(const double final_score,
 // docs/IMPROVEMENT_PLAN.md already contained an 8-loss streak.
 //
 // Returns 0 when the inputs cannot produce an answer.
-int XSparkConsecutiveLossesToDrawdown(const double risk_pct, const double drawdown_limit_pct)
+int XSparkConsecutiveLossesToDrawdown(const double risk_pct, const double drawdown_limit_pct,
+                                     const int concurrent_positions = 1)
 {
    if(!MathIsValidNumber(risk_pct) || !MathIsValidNumber(drawdown_limit_pct))
       return 0;
 
-   if(risk_pct <= 0.0 || risk_pct >= 100.0)
+   if(concurrent_positions < 1 || risk_pct <= 0.0 || risk_pct * concurrent_positions >= 100.0)
       return 0;
 
    if(drawdown_limit_pct <= 0.0 || drawdown_limit_pct >= 100.0)
       return 0;
 
-   const double f = risk_pct / 100.0;
+   const double f = risk_pct * concurrent_positions / 100.0;
    const double limit = drawdown_limit_pct / 100.0;
 
    // Smallest k with 1 - (1-f)^k >= limit, i.e. k >= ln(1-limit) / ln(1-f).
@@ -54,6 +55,19 @@ int XSparkConsecutiveLossesToDrawdown(const double risk_pct, const double drawdo
       return 0;
 
    return (int)MathCeil(exact - 0.0000001);
+}
+
+// A slot setting that consumes the entire cap at nominal sizing will fail
+// unpredictably after fills drift. This is admission headroom, not diversification.
+bool XSparkConcurrencyHasHeadroom(const int slots, const double tier1, const double tier2,
+                                  const double tier3, const double per_trade_cap, const double account_cap)
+{
+   if(slots < 1 || slots > 2 || !MathIsValidNumber(tier1) || !MathIsValidNumber(tier2) ||
+      !MathIsValidNumber(tier3) || !MathIsValidNumber(per_trade_cap) || !MathIsValidNumber(account_cap) ||
+      tier1 <= 0.0 || tier2 <= 0.0 || tier3 <= 0.0 || per_trade_cap <= 0.0 || account_cap <= 0.0) return false;
+   if(slots == 1) return true;
+   const double maximum = MathMin(per_trade_cap, MathMax(tier1, MathMax(tier2, tier3)));
+   return slots * maximum <= 0.9 * account_cap;
 }
 
 // Money at risk on one open position, in account currency.

@@ -100,6 +100,16 @@ xspark-mt5/
     `-- pull_request_template.md
 ```
 
+## V2 experimental entry work
+
+The structure/pullback/continuation entry path is implemented behind default-off
+switches, with observe-only mode enabled by default. It has not been compiled
+in MetaEditor or tested for profitability. See
+[implementation status and terminal validation](docs/V2_IMPLEMENTATION.md).
+Run `python3 tools/test_portable_logic.py` for portable logic checks; this is not
+an MQL5 compiler. `tools/compile_mt5.ps1` verifies native builds on Windows using
+an installed MetaEditor without deploying them.
+
 ## Development Workflow
 
 1. Make small, reviewable changes.

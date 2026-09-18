@@ -4,6 +4,7 @@
 #include <Trade/Trade.mqh>
 #include <XSpark/Core/ExecutionMath.mqh>
 #include <XSpark/Core/Logger.mqh>
+#include <XSpark/Core/SafetyManager.mqh>
 #include <XSpark/Core/SymbolMath.mqh>
 #include <XSpark/Risk/PositionSizer.mqh>
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
@@ -570,6 +571,9 @@ public:
 
       for(int attempt = 1; attempt <= XSPARK_EXECUTION_MAX_ATTEMPTS; attempt++)
       {
+         string exposure_reason = "";
+         if(!XSparkDirectionIsUnopposed(plan.symbol, m_magic_number, plan.direction, exposure_reason))
+         { m_last_reason = exposure_reason; logger.Warn("ExecutionEngine", m_last_reason); return false; }
          MqlTick tick;
          if(!SymbolInfoTick(plan.symbol, tick))
          {

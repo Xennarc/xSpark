@@ -71,6 +71,35 @@ public:
       return GlobalVariableSet(Key(state_name), value) > 0;
    }
 
+   // An absent history cannot prove that an older setup was never traded.
+   // Bootstrap to the current signal bar and wait for a genuinely new origin.
+   // CAS prevents two attached instances from reserving the same known key.
+   bool ReserveNewer(const string state_name, const datetime instance_time,
+                     const datetime current_bar_time, string &reason)
+   {
+      reason = "";
+      if(instance_time <= 0 || current_bar_time <= 0 || instance_time > current_bar_time)
+      { reason = "Invalid pattern instance timestamp."; return false; }
+      const string key = Key(state_name);
+      if(!GlobalVariableCheck(key))
+      {
+         if(!Set(state_name, (double)current_bar_time))
+         { reason = "Pattern latch bootstrap failed; entry refused."; return false; }
+         GlobalVariablesFlush();
+         reason = "Pattern latch initialized; waiting for an origin newer than bootstrap bar.";
+         return false;
+      }
+      double previous = 0.0;
+      if(!GlobalVariableGet(key, previous) || !MathIsValidNumber(previous) || previous <= 0.0)
+      { reason = "Pattern latch unreadable; entry refused."; return false; }
+      if((double)instance_time <= previous)
+      { reason = "Pattern instance already consumed or predates latch bootstrap."; return false; }
+      if(!GlobalVariableSetOnCondition(key, (double)instance_time, previous))
+      { reason = "Pattern reservation failed or changed concurrently; entry refused."; return false; }
+      GlobalVariablesFlush();
+      return true;
+   }
+
    void Delete(const string state_name)
    {
       const string key = Key(state_name);

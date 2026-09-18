@@ -4,6 +4,8 @@
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
 
 #define XSPARK_SCOREBOT_CLOSED_BASE_BARS 50
+#define XSPARK_SCOREBOT_STRUCTURE_BASE_BARS 160
+#define XSPARK_SCOREBOT_STRUCTURE_HIGHER_BARS 80
 
 class CXSparkIndicatorCache
 {
@@ -20,6 +22,9 @@ private:
    int    m_rsi14_higher_handle;
 
    MqlRates m_base_rates[];
+   MqlRates m_structure_base_rates[];
+   MqlRates m_structure_higher_rates[];
+   bool m_structure_valid;
    double   m_ema21_base[];
    double   m_ema50_base[];
    double   m_rsi14_base[];
@@ -62,6 +67,7 @@ public:
       m_rsi14_higher_handle = INVALID_HANDLE;
       m_initialized = false;
       m_valid = false;
+      m_structure_valid = false;
       m_last_reason = "Indicator cache is not initialized.";
    }
 
@@ -130,11 +136,13 @@ public:
 
       m_initialized = false;
       m_valid = false;
+      m_structure_valid = false;
    }
 
    bool RefreshClosedData()
    {
       m_valid = false;
+      m_structure_valid = false;
 
       if(!m_initialized)
       {
@@ -155,8 +163,8 @@ public:
          !HandleIsReady(m_rsi14_base_handle, XSPARK_SCOREBOT_CLOSED_BASE_BARS + 1) ||
          !HandleIsReady(m_atr14_base_handle, XSPARK_SCOREBOT_CLOSED_BASE_BARS + 1) ||
          !HandleIsReady(m_atr50_base_handle, XSPARK_SCOREBOT_CLOSED_BASE_BARS + 1) ||
-         !HandleIsReady(m_ema50_higher_handle, 2) ||
-         !HandleIsReady(m_rsi14_higher_handle, 2))
+         !HandleIsReady(m_ema50_higher_handle, 51) ||
+         !HandleIsReady(m_rsi14_higher_handle, 15))
       {
          m_last_reason = "Indicator bars are not fully calculated.";
          return false;
@@ -200,13 +208,23 @@ public:
          !IndicatorValueIsReady(m_rsi14_base[0]) ||
          !IndicatorValueIsReady(m_atr14_base[0]) ||
          !IndicatorValueIsReady(m_atr50_base[0]) ||
-         !IndicatorValueIsReady(m_ema50_higher[0]) ||
+         !IndicatorValueIsReady(m_ema50_higher[0]) || m_ema50_higher[0] <= 0.0 ||
          !IndicatorValueIsReady(m_rsi14_higher[0]))
       {
          m_last_reason = "One or more closed-bar indicator values are unavailable.";
          return false;
       }
 
+      // Structure has an independent readiness contract; a short window must
+      // not delay the legacy strategy's first tradeable bar.
+      ArraySetAsSeries(m_structure_base_rates, true);
+      ArraySetAsSeries(m_structure_higher_rates, true);
+      const int base_count = CopyRates(m_symbol, m_base_timeframe, 1,
+                                      XSPARK_SCOREBOT_STRUCTURE_BASE_BARS, m_structure_base_rates);
+      const int higher_count = CopyRates(m_symbol, m_higher_timeframe, 1,
+                                        XSPARK_SCOREBOT_STRUCTURE_HIGHER_BARS, m_structure_higher_rates);
+      m_structure_valid = base_count == XSPARK_SCOREBOT_STRUCTURE_BASE_BARS &&
+                          higher_count == XSPARK_SCOREBOT_STRUCTURE_HIGHER_BARS;
       m_valid = true;
       m_last_reason = "Indicator cache is valid.";
       return true;
@@ -232,6 +250,25 @@ public:
       return true;
    }
 
+   bool StructureIsValid() { return m_structure_valid; }
+
+   bool StructureBar(const bool higher, const int closed_shift, XSparkCandle &bar)
+   {
+      const int count = higher ? XSPARK_SCOREBOT_STRUCTURE_HIGHER_BARS : XSPARK_SCOREBOT_STRUCTURE_BASE_BARS;
+      if(!m_structure_valid || closed_shift < 1 || closed_shift > count) return false;
+      MqlRates rate;
+      if(higher) rate = m_structure_higher_rates[closed_shift - 1];
+      else rate = m_structure_base_rates[closed_shift - 1];
+      bar.time = rate.time; bar.open = rate.open; bar.high = rate.high;
+      bar.low = rate.low; bar.close = rate.close; bar.tick_volume = rate.tick_volume;
+      return true;
+   }
+
+   bool StructureBaseBar(const int closed_shift, XSparkCandle &bar)
+   { return StructureBar(false, closed_shift, bar); }
+   bool StructureHigherBar(const int closed_shift, XSparkCandle &bar)
+   { return StructureBar(true, closed_shift, bar); }
+
    double EMA21Base()
    {
       return m_valid ? m_ema21_base[0] : 0.0;
@@ -245,6 +282,14 @@ public:
    double RSI14Base()
    {
       return m_valid ? m_rsi14_base[0] : 0.0;
+   }
+
+   double RSI14BaseAt(const int closed_shift)
+   {
+      if(!m_valid || closed_shift < 1 || closed_shift > ArraySize(m_rsi14_base))
+         return EMPTY_VALUE;
+      const double value = m_rsi14_base[closed_shift - 1];
+      return IndicatorValueIsReady(value) ? value : EMPTY_VALUE;
    }
 
    double ATR14Base()

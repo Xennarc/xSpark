@@ -423,6 +423,12 @@ void TestLossStreakTolerance()
          XSparkConsecutiveLossesToDrawdown(0.5, 25.0) == 58);
 
    // Fail closed on anything unanswerable rather than returning a plausible number.
+   Check("two correlated slots reach 25 percent in four rounds",
+         XSparkConsecutiveLossesToDrawdown(3.5, 25.0, 2) == 4);
+   Check("default double slots lack headroom", !XSparkConcurrencyHasHeadroom(2, 3, 3, 3, 3.5, 6));
+   Check("lower double-slot tiers fit headroom", XSparkConcurrencyHasHeadroom(2, 2, 2, 2, 3.5, 6));
+   Check("single slot headroom unchanged", XSparkConcurrencyHasHeadroom(1, 3, 3, 3, 3.5, 6));
+
    Check("zero risk yields no answer", XSparkConsecutiveLossesToDrawdown(0.0, 25.0) == 0);
    Check("negative risk yields no answer", XSparkConsecutiveLossesToDrawdown(-1.0, 25.0) == 0);
    Check("risk at 100% yields no answer", XSparkConsecutiveLossesToDrawdown(100.0, 25.0) == 0);

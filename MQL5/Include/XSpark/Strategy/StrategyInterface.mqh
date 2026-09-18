@@ -8,8 +8,25 @@ enum EXSparkSignalDirection
    XSPARK_SIGNAL_SELL = -1
 };
 
+// Raw closed-bar measurements, carried unchanged into entries and rejections.
+struct XSparkSignalContext
+{
+   double bar1_open, bar1_high, bar1_low, bar1_close;
+   double rsi_base, rsi_base_prev, rsi_higher, atr14;
+};
+
+void XSparkResetSignalContext(XSparkSignalContext &context)
+{
+   context.bar1_open = 0.0; context.bar1_high = 0.0;
+   context.bar1_low = 0.0; context.bar1_close = 0.0;
+   context.rsi_base = 0.0; context.rsi_base_prev = 0.0;
+   context.rsi_higher = 0.0; context.atr14 = 0.0;
+}
+
 struct XSparkSignal
 {
+   datetime               instance_time;
+   XSparkSignalContext    context;
    string                 symbol;
    EXSparkSignalDirection direction;
    double                 desired_stop;
@@ -36,6 +53,8 @@ struct XSparkSignal
 
 void XSparkResetSignal(XSparkSignal &signal)
 {
+   signal.instance_time = 0;
+   XSparkResetSignalContext(signal.context);
    signal.symbol = "";
    signal.direction = XSPARK_SIGNAL_NONE;
    signal.desired_stop = 0.0;

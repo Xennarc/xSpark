@@ -6,6 +6,28 @@
 #include <XSpark/Core/StateStore.mqh>
 #include <XSpark/Core/SymbolMath.mqh>
 
+// Read broker positions immediately before entry as well as at the EA gate.
+// A failure to select a live ticket is unknown exposure, never permission.
+bool XSparkDirectionIsUnopposed(const string symbol, const ulong magic,
+                                const EXSparkSignalDirection direction, string &reason)
+{
+   reason = "";
+   if(direction != XSPARK_SIGNAL_BUY && direction != XSPARK_SIGNAL_SELL)
+   { reason = "Invalid proposed direction."; return false; }
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+      { reason = "Cannot verify live exposure."; return false; }
+      if(PositionGetString(POSITION_SYMBOL) != symbol || (ulong)PositionGetInteger(POSITION_MAGIC) != magic) continue;
+      const ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      if((direction == XSPARK_SIGNAL_BUY && type != POSITION_TYPE_BUY) ||
+         (direction == XSPARK_SIGNAL_SELL && type != POSITION_TYPE_SELL))
+      { reason = StringFormat("OPPOSING EXPOSURE: position %I64u", ticket); return false; }
+   }
+   return true;
+}
+
 class CXSparkSafetyManager
 {
 private:

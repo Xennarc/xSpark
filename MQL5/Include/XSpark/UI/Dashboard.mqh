@@ -366,6 +366,10 @@ public:
            StringFormat("spread %.1f", spread_score_points),
            XSPARK_UI_TEXT_DIM, 8, XSPARK_UI_FONT_NUM, true);
 
+      Text("mkt_structure", XSPARK_UI_PAD, 218,
+           "HTF " + report.structure_status + " / " + report.joint_verdict,
+           XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT);
+
       // ---- risk and performance -----------------------------------------
       SectionLabel("s_risk", 228, "RISK & PERFORMANCE");
 

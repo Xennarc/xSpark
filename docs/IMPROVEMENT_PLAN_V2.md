@@ -1,6 +1,6 @@
 # XSpark Improvement Plan V2 — Structure Gates, Located Entries, Structural Exits
 
-Status: **plan only.** No code in this document has been written, compiled, or tested. There is no MetaEditor and no market data in the environment that produced it. Every number here is arithmetic over source read directly from this repository, or over the 50-trade Strategy Tester report already recorded in `docs/IMPROVEMENT_PLAN.md`. Nothing here is a backtest result. AGENTS.md rules 30, 32 and 33 apply.
+Status: **design and research plan; implementation is partial.** See [V2_IMPLEMENTATION.md](V2_IMPLEMENTATION.md) for implemented stages, deviations, actual validation, and remaining prerequisites. The original analysis below predates that implementation; its statements about available market evidence remain unchanged. There is no MetaEditor and no market data in the environment that produced it. Every number here is arithmetic over source read directly from this repository, or over the 50-trade Strategy Tester report already recorded in `docs/IMPROVEMENT_PLAN.md`. Nothing here is a backtest result. AGENTS.md rules 30, 32 and 33 apply.
 
 This document supplements `docs/IMPROVEMENT_PLAN.md`; it does not replace it. Section 5 reconciles the two.
 
