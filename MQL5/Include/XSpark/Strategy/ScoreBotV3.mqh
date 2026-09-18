@@ -6,6 +6,7 @@
 #include <XSpark/Core/SymbolMath.mqh>
 #include <XSpark/Strategy/PatternDetector.mqh>
 #include <XSpark/Strategy/EntryGates.mqh>
+#include <XSpark/Strategy/ChartPatterns.mqh>
 #include <XSpark/Strategy/ScoringEngine.mqh>
 #include <XSpark/Strategy/StrategyInterface.mqh>
 
@@ -13,6 +14,7 @@ class CXSparkScoreBotV3 : public IXSparkStrategy
 {
 private:
    XSparkGateConfig m_gates;
+   XSparkPatternConfig m_patterns;
    string m_symbol;
    bool   m_initialized;
    string m_last_reason;
@@ -102,6 +104,7 @@ public:
    CXSparkScoreBotV3()
    {
       XSparkDefaultGateConfig(m_gates);
+      XSparkDefaultPatternConfig(m_patterns);
       m_symbol = "";
       m_initialized = false;
       m_last_reason = "ScoreBot_v3 is not initialized.";
@@ -141,6 +144,8 @@ public:
       m_allow_asian_reduced = allow_asian_reduced;
       m_score_point_size = score_point_size;
    }
+
+   void ConfigurePatterns(const XSparkPatternConfig &config) { m_patterns = config; }
 
    void ConfigureGates(const XSparkGateConfig &config) { m_gates = config; }
 
@@ -244,7 +249,7 @@ public:
          XSparkInvalidateStructure(bar1.close, higher);
       }
       EXSparkSignalDirection resolved = legacy_found ? pattern.direction : XSPARK_SIGNAL_NONE;
-      if(m_gates.use_htf || !legacy_found)
+      if(m_gates.use_htf || m_patterns.enabled || !legacy_found)
          resolved = higher.state == XSPARK_STRUCT_UP ? XSPARK_SIGNAL_BUY :
                     (higher.state == XSPARK_STRUCT_DOWN ? XSPARK_SIGNAL_SELL : XSPARK_SIGNAL_NONE);
       if(copied) XSparkLocateLeg(base_bars, ArraySize(base_bars), resolved, base);
@@ -260,9 +265,48 @@ public:
          report.rsi_verdict = XSparkRSIVerdict(resolved, report.rsi_base, report.context.rsi_base_prev,
                                               m_rsi_long_min, m_rsi_long_max, m_rsi_short_min, m_rsi_short_max,
                                               m_gates.require_rsi_turn);
+      XSparkPatternResult detections[];
+      if(copied) XSparkScanPatterns(base_bars, ArraySize(base_bars), base, report.atr14, m_patterns, detections);
+      if(!copied || !base.valid) report.detected_patterns = "UNAVAILABLE: STRUCTURE DATA";
+      report.pattern_mode = !m_patterns.enabled ? "SCAN ONLY / LEGACY ENTRIES" :
+                            (m_gates.observe_only ? "OBSERVE / LEGACY ENTRIES" : "PATTERN ENTRIES ACTIVE");
+      for(int i = 0; i < ArraySize(detections); i++)
+      {
+         if(i == 0) report.detected_patterns = "";
+         else report.detected_patterns += " | ";
+         report.detected_patterns += detections[i].pattern_name;
+         if(detections[i].chart_pattern && detections[i].engulfing_confirmed) report.detected_patterns += " + Engulfing";
+         if(detections[i].chart_pattern && report.detected_level == 0.0)
+         { report.detected_level = detections[i].breakout_level; report.detected_instance = detections[i].instance_time; }
+      }
       XSparkPatternResult candidate;
       XSparkResetPatternResult(candidate);
-      if(m_gates.use_continuation)
+      string pattern_reason = "";
+      if(m_patterns.enabled)
+      {
+         XSparkPatternResult qualified[];
+         ArrayResize(qualified, 0);
+         for(int i = 0; i < ArraySize(detections); i++)
+         {
+            if(resolved == XSPARK_SIGNAL_NONE || detections[i].direction != resolved) continue;
+            // Chart detectors already prove their own consolidation/reversal
+            // location. A breakout should not need to be inside a pullback.
+            // Standalone candles still require the original pivot-location gate.
+            if(!detections[i].chart_pattern && report.pullback_verdict != "PASS") continue;
+            const int n = ArraySize(qualified);
+            ArrayResize(qualified, n + 1); qualified[n] = detections[i];
+         }
+         XSparkPatternResult runner;
+         if(!XSparkSelectPattern(qualified, resolved, candidate, runner, pattern_reason))
+            XSparkResetPatternResult(candidate);
+         report.pattern_runner_up = runner.pattern_name; report.pattern_runner_up_score = runner.score;
+         if(candidate.found && candidate.chart_pattern)
+         {
+            report.pullback_verdict = "PASS";
+            report.entry_location = "CONFIRMED CHART BREAKOUT";
+         }
+      }
+      else if(m_gates.use_continuation)
       {
          if(report.htf_verdict == "PASS" && report.pullback_verdict == "PASS")
          {
@@ -276,13 +320,16 @@ public:
       report.gate_candidate = candidate.found;
       report.candidate_direction = candidate.direction;
       report.candidate_pattern = candidate.pattern_name;
-      if(candidate.found && m_gates.use_continuation && base.leg_origin_shift > 0)
+      if(candidate.found && candidate.chart_pattern)
+         report.candidate_instance = candidate.instance_time;
+      else if(candidate.found && m_gates.use_continuation && base.leg_origin_shift > 0)
          report.candidate_instance = base_bars[base.leg_origin_shift - 1].time;
-      const bool gates_active = m_gates.use_htf || m_gates.use_pullback || m_gates.use_rsi;
+      const bool gates_active = m_gates.use_htf || m_gates.use_pullback || m_gates.use_rsi || m_patterns.enabled;
       report.joint_verdict = gates_active ? "PASS" : "OFF";
       if(m_gates.use_htf && report.htf_verdict != "PASS") report.joint_verdict = report.htf_verdict;
       else if(m_gates.use_pullback && report.pullback_verdict != "PASS") report.joint_verdict = report.pullback_verdict;
       else if(m_gates.use_rsi && report.rsi_verdict != "PASS") report.joint_verdict = report.rsi_verdict;
+      else if(m_patterns.enabled && !candidate.found) report.joint_verdict = pattern_reason;
       else if(m_gates.use_continuation && !candidate.found) report.joint_verdict = "WAIT FOR CONTINUATION";
 
       // Observation must not change the legacy pattern, direction, score, stop,
@@ -300,6 +347,12 @@ public:
          }
          pattern = candidate;
          signal.instance_time = report.candidate_instance;
+         if(candidate.chart_pattern)
+         {
+            signal.instance_family = (int)candidate.pattern_id;
+            signal.entry_breakout_level = candidate.breakout_level;
+            signal.entry_limit = candidate.breakout_level + (double)candidate.direction * m_patterns.max_chase_atr * report.atr14;
+         }
       }
       if(!pattern.found)
       {

@@ -108,6 +108,12 @@ private:
          return false;
       }
 
+      if(!XSparkEntryLimitAllows(plan.direction, current_entry_reference, plan.entry_limit, plan.entry_breakout_level))
+      {
+         reason = "PATTERN ENTRY INVALID: refreshed quote broke back through boundary or exceeds chase bound.";
+         return false;
+      }
+
       double drift = 0.0;
       const double max_drift_price = XSparkScorePointsToPrice(m_deviation_score_points, m_score_point_size);
 

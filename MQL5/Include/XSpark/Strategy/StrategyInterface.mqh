@@ -8,6 +8,19 @@ enum EXSparkSignalDirection
    XSPARK_SIGNAL_SELL = -1
 };
 
+// An optional direction-specific quote bound for confirmed chart breakouts.
+// The same function is checked during planning and at each execution retry.
+bool XSparkEntryLimitAllows(const EXSparkSignalDirection direction, const double entry, const double limit, const double breakout_level = 0.0)
+{
+   if(!MathIsValidNumber(entry) || entry <= 0.0 || !MathIsValidNumber(limit) || limit < 0.0) return false;
+   if(direction != XSPARK_SIGNAL_BUY && direction != XSPARK_SIGNAL_SELL) return false;
+   if(!MathIsValidNumber(breakout_level) || breakout_level < 0.0) return false;
+   if(breakout_level > 0.0 && ((direction == XSPARK_SIGNAL_BUY && entry <= breakout_level) ||
+                             (direction == XSPARK_SIGNAL_SELL && entry >= breakout_level))) return false;
+   if(limit == 0.0) return true;
+   return direction == XSPARK_SIGNAL_BUY ? entry <= limit : entry >= limit;
+}
+
 // Raw closed-bar measurements, carried unchanged into entries and rejections.
 struct XSparkSignalContext
 {
@@ -25,6 +38,9 @@ void XSparkResetSignalContext(XSparkSignalContext &context)
 
 struct XSparkSignal
 {
+   int                    instance_family; // zero: shared pullback latch; positive: chart-pattern family
+   double                 entry_breakout_level;
+   double                 entry_limit;
    datetime               instance_time;
    XSparkSignalContext    context;
    string                 symbol;
@@ -53,6 +69,7 @@ struct XSparkSignal
 
 void XSparkResetSignal(XSparkSignal &signal)
 {
+   signal.instance_family = 0; signal.entry_limit = 0.0; signal.entry_breakout_level = 0.0;
    signal.instance_time = 0;
    XSparkResetSignalContext(signal.context);
    signal.symbol = "";

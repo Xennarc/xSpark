@@ -110,6 +110,11 @@ Run `python3 tools/test_portable_logic.py` for portable logic checks; this is no
 an MQL5 compiler. `tools/compile_mt5.ps1` verifies native builds on Windows using
 an installed MetaEditor without deploying them.
 
+The new [chart-pattern and engulfing-first profile](docs/CHART_PATTERNS.md) recognizes
+flags, head and shoulders, and cup/handle formations in both directions. Pin bars
+are off in that profile. Use its explicit Strategy Tester presets to activate it;
+shipped defaults still execute the legacy logic. Profitability remains unverified.
+
 ## Development Workflow
 
 1. Make small, reviewable changes.

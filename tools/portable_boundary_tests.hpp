@@ -78,4 +78,29 @@ void TestBoundaries()
  cache.structure_base[0].time-=60;
  Check("inconsistent snapshot refuses", !strategy.Evaluate(cache,market,enforced,er) && er.joint_verdict=="HTF STRUCTURE UNKNOWN");
 
+ // Full strategy path: chart consolidation replaces the pivot pullback location.
+ CPFlag(cache.structure_base);
+ cache.structure_base.resize(160);
+ for(int i=32;i<160;i++) CPBar(cache.structure_base[i],i,101,101.1,100.9,101);
+ cache.base.assign(cache.structure_base.begin(),cache.structure_base.begin()+50);
+ Staircase(cache.structure_higher,false);
+ cache.structure_higher.resize(80);
+ for(int i=40;i<80;i++) Bar(cache.structure_higher[i],i,101);
+ for(auto& h:cache.structure_higher) {h.open-=5; h.high-=5; h.low-=5; h.close-=5;}
+ XSparkPatternConfig patterns; XSparkDefaultPatternConfig(patterns);
+ patterns.enabled=true; strategy.ConfigurePatterns(patterns);
+ Check("chart breakout reaches eligible strategy signal",strategy.Evaluate(cache,market,enforced,er));
+ Check("chart candidate selected with own location",enforced.pattern_id==XSPARK_PATTERN_BULL_FLAG && er.entry_location=="CONFIRMED CHART BREAKOUT");
+ Check("chart identity and quote bounds supplied",enforced.instance_family==XSPARK_PATTERN_BULL_FLAG && enforced.instance_time==cache.base[5].time && enforced.entry_breakout_level==105 && enforced.entry_limit==105.5);
+ Check("pattern active mode visible",er.pattern_mode=="PATTERN ENTRIES ACTIVE");
+ config.observe_only=true; strategy.ConfigureGates(config);
+ const bool pattern_observed=strategy.Evaluate(cache,market,observed,ob);
+ patterns.enabled=false; strategy.ConfigurePatterns(patterns);
+ const bool pattern_baseline=strategy.Evaluate(cache,market,baseline,br);
+ Check("pattern observation preserves legacy outcome",pattern_observed==pattern_baseline && observed.pattern_id==baseline.pattern_id && observed.score==baseline.score && observed.desired_stop==baseline.desired_stop);
+ Check("pattern observation cannot reserve or bound legacy",observed.instance_time==0 && observed.instance_family==0 && observed.entry_limit==0 && observed.entry_breakout_level==0);
+ patterns.enabled=true; strategy.ConfigurePatterns(patterns); config.observe_only=false; strategy.ConfigureGates(config);
+ Flat(cache.structure_higher,80);
+ Check("unresolved HTF blocks recognized chart",!strategy.Evaluate(cache,market,enforced,er) && er.detected_patterns.find("Bull Flag")!=string::npos && er.joint_verdict=="HTF STRUCTURE UNKNOWN");
+
 }

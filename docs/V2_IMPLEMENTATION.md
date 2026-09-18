@@ -1,6 +1,6 @@
 # V2 implementation and validation status
 
-Source baseline: `3214dcf` (main). This is an experimental entry implementation,
+Initial source baseline: `3214dcf`; chart-pattern follow-up base: `a0f43bf` (PR #15 merge). This is an experimental entry implementation,
 not a profitable or live-approved release. MetaEditor and MT5 are unavailable in
 the implementation environment. **No MQL5 compilation or Strategy Tester run has
 been performed.** No trade-frequency or profitability result is claimed.
@@ -15,6 +15,7 @@ been performed.** No trade-frequency or profitability result is claimed.
 | S2b | Opposing XSpark positions refused at the EA gate and before each send attempt. Concurrent risk headroom checked. Drawdown tolerance counts correlated rounds. Account-risk refusals partition this instance's risk and other positions' risk. |
 | S3/S3b/S5 | Optional coupled HTF-direction, pullback-location and continuation path. T1 pullback-extreme break, T2 aligned legacy candle, T3 candle/RSI turn. New timing signals use the existing pattern score slot; ceiling remains 9. |
 | S4 (gate only) | Optional RSI bounds and turn veto, with distinct inner/outer rejection reasons. Band defaults remain unchanged for measurement; see the explicit experiment below. |
+| S8b/S9 partial, chart follow-up | Deterministic ranking and opt-in engulfing-first profile; bull/bear flags, H&S/inverse H&S, cup/handle and inverse cup/handle; quote bounds and recognition telemetry. See [activation, definitions and limits](CHART_PATTERNS.md). Double tops/bottoms remain unimplemented. |
 | Supporting controls | Observe-only mode, invalid-combination entry block, timestamp latch persisted before an execution attempt, atomic reservation of existing latch keys. Failures refuse entry. |
 
 The executable strategy remains MQL5. Python/C++ files under `tools/` are local
@@ -48,7 +49,7 @@ verification tools only; the EA has no new runtime dependency.
 
 ## Duplicate protection and restart behaviour
 
-All continuation triggers, including aligned legacy candles, use one instance:
+With the original continuation profile, all triggers, including aligned legacy candles, use one instance:
 the base leg's origin pivot time. The persisted high-water timestamp is scoped
 by account, symbol, magic, base timeframe and direction. Failed or uncertain
 execution still consumes a reserved instance, matching the existing bar guard.
@@ -69,9 +70,12 @@ cannot be established from that API. Broker/terminal restart testing is still
 required. Portable mocks test failures of reads, writes and conditional updates,
 not the real filesystem or broker.
 
+Chart-profile instances additionally use a pattern-family latch and completing
+pole/shoulder/rim timestamp; see [chart instance rules](CHART_PATTERNS.md).
+
 ## Verification actually performed
 
-`python3 tools/test_portable_logic.py` passes **67 assertions** using the actual
+`python3 tools/test_portable_logic.py` passes **112 assertions** using the actual
 pure production MQL source and fixtures through a small C++ syntax/API adapter.
 It builds with `-Wall -Wextra -Werror -pedantic`, AddressSanitizer and
 UndefinedBehaviorSanitizer. Leak detection is disabled because the managed
@@ -82,7 +86,9 @@ outside-bar exclusion, missing/bad data, overflow, leg location, RSI exhaustion,
 turns, configuration dependencies, T1/T3, persistence/restart/failure paths,
 concurrent risk arithmetic, and observe-mode eligibility/direction/score/stop/
 target parity against legacy behaviour, an additive continuation flowing through
-the full strategy, and inconsistent-snapshot rejection. Existing MQL test scripts have not run
+the full strategy, and inconsistent-snapshot rejection. Chart follow-up coverage
+adds mirrored chart fixtures, engulfing/pin ranking, quote bounds, configuration,
+raw-pivot H&S discovery, chart strategy eligibility and observe-mode parity. Existing MQL test scripts have not run
 inside MT5. The new native `TestMarketStructure.mq5` contains 34 of these checks.
 
 ## Windows compilation
@@ -144,10 +150,11 @@ count is a hypothesis, not a measured result.
   stops/targets/partial/BE/trailing remain unchanged in this PR.
 - **S8c RR quantization:** inspect real `Final broker-valid RR` rejections first,
   per S0. The proposed one-tick tolerance has not been applied silently.
-- **S8a/S8b and S9:** legacy mother-bar/SR corrections, pattern ranking, flags,
-  double tops/bottoms and head-and-shoulders remain separate unimplemented stages.
-  Their source predicates and rejection populations need isolated tests and the
-  S1/S2 measurement baseline before accepting their effect on trade count.
+- **S8a/S8b and S9:** pattern ranking, flags,
+  H&S and cup/handle recognition are now partially addressed by the experimental
+  [chart profile](CHART_PATTERNS.md). Legacy mother-bar/SR corrections and double
+  tops/bottoms remain unimplemented. The S1/S2 measurement baseline is still needed
+  before accepting any effect on trade count or performance.
 - **Score-maximum centralization:** the existing constants and checks remain;
   no score ceiling was increased or clamped.
 

@@ -1,0 +1,13 @@
+; Experimental pattern profile. Load ONLY in MT5 Strategy Tester.
+; Trading is enabled for simulated orders. Other inputs are retained: export a full .set.
+InpEnableTrading=true
+InpUsePatternEngine=true
+InpUseHTFStructureGate=true
+InpUsePullbackGate=true
+InpUseContinuationTriggers=true
+InpUseFlagPattern=true
+InpUseHSPattern=true
+InpUseCupHandlePattern=true
+InpUsePinBars=false
+InpPatternMaxChaseATR=0.5
+InpGateObserveOnly=false
