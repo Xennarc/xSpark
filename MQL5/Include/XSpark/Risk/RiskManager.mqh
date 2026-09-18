@@ -57,12 +57,31 @@ int XSparkConsecutiveLossesToDrawdown(const double risk_pct, const double drawdo
    return (int)MathCeil(exact - 0.0000001);
 }
 
-// A slot setting that consumes the entire cap at nominal sizing will fail
-// unpredictably after fills drift. This is admission headroom, not diversification.
+#define XSPARK_MAX_OPEN_TRADES 10
+
+bool XSparkTradeSlotsValid(const int slots)
+{ return slots >= 1 && slots <= XSPARK_MAX_OPEN_TRADES; }
+
+bool XSparkPositionSlotAvailable(const int open_positions, const int slots)
+{ return XSparkTradeSlotsValid(slots) && open_positions >= 0 && open_positions < slots; }
+
+// Reserve 10% of the account cap for drift when planning multiple positions.
+// More slots reduce risk per entry; they never increase the account risk cap.
+// Single-position sizing retains the existing per-trade setting.
+double XSparkConcurrentRiskCap(const int slots, const double per_trade_cap, const double account_cap)
+{
+   if(!XSparkTradeSlotsValid(slots) || !MathIsValidNumber(per_trade_cap) ||
+      !MathIsValidNumber(account_cap) || per_trade_cap <= 0.0 || account_cap <= 0.0) return 0.0;
+   if(slots == 1) return per_trade_cap;
+   return MathMin(per_trade_cap, 0.9 * account_cap / slots);
+}
+
+// Diagnostic for the requested (uncapped) tiers; do not use this as a startup
+// veto. Multiple-slot admission now uses XSparkConcurrentRiskCap instead.
 bool XSparkConcurrencyHasHeadroom(const int slots, const double tier1, const double tier2,
                                   const double tier3, const double per_trade_cap, const double account_cap)
 {
-   if(slots < 1 || slots > 2 || !MathIsValidNumber(tier1) || !MathIsValidNumber(tier2) ||
+   if(!XSparkTradeSlotsValid(slots) || !MathIsValidNumber(tier1) || !MathIsValidNumber(tier2) ||
       !MathIsValidNumber(tier3) || !MathIsValidNumber(per_trade_cap) || !MathIsValidNumber(account_cap) ||
       tier1 <= 0.0 || tier2 <= 0.0 || tier3 <= 0.0 || per_trade_cap <= 0.0 || account_cap <= 0.0) return false;
    if(slots == 1) return true;
@@ -209,11 +228,16 @@ public:
    bool Initialize(const double tier1_pct = 1.0,
                    const double tier2_pct = 1.5,
                    const double tier3_pct = 2.0,
-                   const double max_risk_pct = 2.0)
+                   const double max_risk_pct = 2.0,
+                   const int max_open_trades = 1,
+                   const double max_account_risk_pct = 6.0)
    {
-      if(tier1_pct <= 0.0 || tier2_pct <= 0.0 || tier3_pct <= 0.0 || max_risk_pct <= 0.0)
+      m_initialized = false;
+      const double effective_cap = XSparkConcurrentRiskCap(max_open_trades, max_risk_pct, max_account_risk_pct);
+      if(!MathIsValidNumber(tier1_pct) || !MathIsValidNumber(tier2_pct) || !MathIsValidNumber(tier3_pct) ||
+         effective_cap <= 0.0 || tier1_pct <= 0.0 || tier2_pct <= 0.0 || tier3_pct <= 0.0 || max_risk_pct <= 0.0)
       {
-         m_last_reason = "Risk percentages must be positive.";
+         m_last_reason = "Risk percentages must be finite and positive; maximum trades must be 1-10.";
          return false;
       }
 
@@ -221,7 +245,7 @@ public:
       m_tier1_pct = tier1_pct;
       m_tier2_pct = tier2_pct;
       m_tier3_pct = tier3_pct;
-      m_max_risk_pct = max_risk_pct;
+      m_max_risk_pct = effective_cap;
       m_last_reason = "Risk manager initialized.";
       return true;
    }

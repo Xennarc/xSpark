@@ -7,6 +7,7 @@
 #include <XSpark/Core/SafetyManager.mqh>
 #include <XSpark/Core/SymbolMath.mqh>
 #include <XSpark/Risk/PositionSizer.mqh>
+#include <XSpark/Risk/AccountExposure.mqh>
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
 #include <XSpark/Strategy/StrategyInterface.mqh>
 
@@ -28,6 +29,8 @@ private:
    double m_min_rr;
    double m_max_rr;
    int    m_max_quote_age_seconds;
+   int    m_max_open_trades;
+   double m_max_account_risk_pct;
    datetime m_last_submitted_signal_bar_time;
    string m_last_reason;
    CTrade m_trade;
@@ -255,6 +258,21 @@ private:
          }
       }
 
+      // Re-read after resizing: another position may have appeared since planning.
+      double open_cash = 0.0, own_cash = 0.0, foreign_cash = 0.0;
+      int own_positions = 0;
+      if(!XSparkReadAccountExposure(plan.symbol, m_magic_number, open_cash, own_cash, foreign_cash, own_positions, reason))
+         return false;
+      if(!XSparkPositionSlotAvailable(own_positions, m_max_open_trades))
+      { reason = "Maximum open trades reached before send."; return false; }
+      double tick_value = SymbolInfoDouble(plan.symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+      if(tick_value <= 0.0) tick_value = SymbolInfoDouble(plan.symbol, SYMBOL_TRADE_TICK_VALUE);
+      double prospective_cash = 0.0, projected_pct = 0.0;
+      if(!XSparkPositionRiskCash(current_entry_reference, final_sl, volume,
+                                 SymbolInfoDouble(plan.symbol, SYMBOL_TRADE_TICK_SIZE), tick_value, prospective_cash, reason) ||
+         !XSparkAccountRiskWithinCap(open_cash, prospective_cash, AccountInfoDouble(ACCOUNT_BALANCE),
+                                     m_max_account_risk_pct, projected_pct, reason)) return false;
+
       send_sl = final_sl;
       send_tp = final_tp;
       send_volume = volume;
@@ -369,6 +387,7 @@ public:
       m_min_rr = 1.5;
       m_max_rr = 3.0;
       m_max_quote_age_seconds = 15;
+      m_max_open_trades = 1; m_max_account_risk_pct = 6.0;
       m_last_submitted_signal_bar_time = 0;
       m_last_reason = "Execution engine is not initialized; broker execution is disabled.";
    }
@@ -382,8 +401,12 @@ public:
                    const double margin_buffer_pct,
                    const double min_rr,
                    const double max_rr,
-                   const int max_quote_age_seconds)
+                   const int max_quote_age_seconds,
+                   const int max_open_trades = 1,
+                   const double max_account_risk_pct = 6.0)
    {
+      if(!XSparkTradeSlotsValid(max_open_trades) || !MathIsValidNumber(max_account_risk_pct) || max_account_risk_pct <= 0.0)
+      { m_last_reason = "Invalid maximum open trades or account risk cap."; return false; }
       if(magic_number == 0)
       {
          m_last_reason = "Magic Number must be explicit and non-zero.";
@@ -425,6 +448,7 @@ public:
       m_min_rr = min_rr;
       m_max_rr = max_rr;
       m_max_quote_age_seconds = max_quote_age_seconds;
+      m_max_open_trades = max_open_trades; m_max_account_risk_pct = max_account_risk_pct;
       m_last_submitted_signal_bar_time = 0;
       m_trade.SetExpertMagicNumber(m_magic_number);
       m_last_reason = "Execution engine initialized.";

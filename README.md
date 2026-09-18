@@ -115,6 +115,13 @@ flags, head and shoulders, and cup/handle formations in both directions. Pin bar
 are off in that profile. Use its explicit Strategy Tester presets to activate it;
 shipped defaults still execute the legacy logic. Profitability remains unverified.
 
+For the simplified Inputs layout and one-dropdown entry selection, see
+[the settings guide](docs/INPUT_SETTINGS.md). Existing `.set` identifiers and
+defaults are preserved.
+
+The [multiple-trade guide](docs/MULTIPLE_TRADES.md) explains the 1–10 slot limit,
+automatic risk allocation and independent position management.
+
 ## Development Workflow
 
 1. Make small, reviewable changes.

@@ -10,157 +10,115 @@
 #include <XSpark/Execution/ExecutionEngine.mqh>
 #include <XSpark/Risk/PositionSizer.mqh>
 #include <XSpark/Risk/RiskManager.mqh>
+#include <XSpark/Risk/AccountExposure.mqh>
 #include <XSpark/Strategy/ScoreBotV3.mqh>
+#include <XSpark/Strategy/EntrySettings.mqh>
 #include <XSpark/Trade/PositionManager.mqh>
 #include <XSpark/UI/Dashboard.mqh>
 
-input group "0. Adapt to this market"
-// The four thresholds below this group marked "Manual" are expressed in
-// ScoreBot points - the pip of whatever instrument the chart is on. That makes
-// them instrument-specific, and the shipped values are gold values. On EURUSD
-// an ATR floor of 80 asks for 80 PIPS of range on a timeframe whose ATR is
-// nearer 10, so the volatility gate refuses every bar and the EA never trades.
-// That is not hypothetical; it is what a EURUSD M15 run produced.
-//
-// With this on, those four are DERIVED from what the instrument actually does:
-// the reference is the median ATR of its own recent history, and the settings
-// below are percentages that mean the same thing on every symbol and timeframe.
-// Turn it off to use the manual values exactly as before. See ADR-026.
-input bool   InpAutoTuneForSymbol = true;   // Adapt thresholds to this market (recommended)
+// Keep input identifiers and existing defaults stable for saved .set files.
+// Trailing comments are the MT5 display labels (maximum 63 characters).
+// Setup guide, units and compatibility: docs/INPUT_SETTINGS.md.
 
-// Volatility band, as a share of this market's normal range. Below the floor
-// there is too little movement to pay the costs; above the ceiling the bar is
-// an outlier rather than the market the strategy was built on. 60% and 600%
-// keep the 10:1 band shape the gold defaults shipped with (80 to 800), so the
-// ceiling stays what it always was - a guard against extreme bars rather than
-// a routine filter.
-input double InpQuietMarketPct = 60.0;      // Skip when range below this % of normal
-input double InpWildMarketPct = 600.0;      // Skip when range above this % of normal
+input group "01. Start here"
+input bool   InpEnableTrading = false; // Allow new trades (false = watch only)
+input EXSparkEntryStyle InpEntryStyle = XSPARK_ENTRY_SAVED; // Entry style
+input bool   InpAutoTuneForSymbol = true; // Automatically adapt to this market
+input int    InpMaxOpenTrades = 1; // Maximum open trades for this bot (1-10)
+input double InpMinScore = 2.0; // Minimum setup score (0-9; higher = stricter)
 
-// Slippage allowances, as a share of the SMALLEST stop this configuration can
-// produce. Expressed this way the entry figure IS the worst-case overshoot of
-// realised risk over selected risk (ADR-024), so it satisfies the drift bound
-// by construction. 25% reproduces the shipped gold value exactly.
-input double InpEntrySlipPct = 25.0;        // Entry slippage, % of smallest stop
-input double InpExitSlipPct = 85.0;         // Exit slippage, % of smallest stop
-input double InpSpreadCapPct = 40.0;        // Widest spread, % of smallest stop
+input group "02. Risk and account limits"
+input double InpRiskPctTier1 = 3.0; // Risk ceiling: score below 4.5 (% of balance)
+input double InpRiskPctTier2 = 3.0; // Risk ceiling: score 4.5 to below 5.5 (%)
+input double InpRiskPctTier3 = 3.0; // Risk ceiling: score 5.5 and above (%)
+input double InpMaxRiskPct = 3.5; // Maximum risk per trade (%)
+input double InpMaxAccountRiskPct = 6.0; // Maximum combined risk across the account (%)
+input double InpMaxDailyDDPct = 15.0; // Daily equity drop to pause new trades (%)
+input bool   InpUseTotalDDKillSwitch = true; // Use account drawdown emergency stop
+input double InpMaxTotalDDPct = 25.0; // Equity drop to trigger emergency stop (%)
 
-input group "1. Basics"
-input bool   InpEnableTrading = false;  // Place real trades (off = watch and log only)
-input ulong  InpMagicNumber = XSPARK_SCOREBOT_MAGIC_DEFAULT;  // Bot ID (keep unique per chart)
-input string InpOrderComment = XSPARK_SCOREBOT_COMMENT_DEFAULT;  // Label shown on trades
-input int    InpMaxOpenTrades = 1;  // Most trades open at once
-input bool   InpVerboseLog = false;  // Log every skipped bar (noisy)
-input group "2. Signal quality"
-input double InpMinScore = 2.0;  // Setup quality needed, 0-9 (higher = pickier)
-input bool   InpDropIBR = false;  // Ignore inside-bar breakouts
-input double InpLongScoreExtra = 0.0;  // Extra quality demanded of buys only
-input group "2b. Experimental structure entries (V2)"
-input bool InpGateObserveOnly = true; // Compute verdicts without changing legacy entries
-input bool InpUseHTFStructureGate = false;
-input bool InpUsePullbackGate = false;
-input bool InpUseContinuationTriggers = false;
-input bool InpUseT1PullbackBreak = true; // Only active with continuation enabled
-input bool InpUseT3MomentumTurn = true; // Only active with continuation enabled
-input double InpMinSwingATR = 0.5; // Mean-TR multiple; uncalibrated starting value
-input double InpMinLegATR = 1.5;
-input double InpPullbackMin = 0.30;
-input double InpPullbackMax = 0.80;
-input bool InpUseRSIGate = false;
-input bool InpRequireRSITurn = false;
-input group "2c. Chart patterns and engulfing"
-input bool InpUsePatternEngine = false; // false: scan only; true: use pattern profile
-input bool InpUseFlagPattern = true; // recognition, not permission to trade
-input bool InpUseHSPattern = true;
-input bool InpUseCupHandlePattern = true;
-input bool InpUsePinBars = false; // Only the new pattern profile; legacy is unchanged
-input double InpPatternMaxChaseATR = 0.50; // Furthest quote beyond breakout boundary
-input group "3. Momentum filter (RSI)"
-input int InpRSILongMin = 40;  // Buys: lowest RSI allowed
-input int InpRSILongMax = 70;  // Buys: highest RSI allowed
-input int InpRSIShortMin = 30;  // Sells: lowest RSI allowed
-input int InpRSIShortMax = 60;  // Sells: highest RSI allowed
-input group "4. Stops, targets and market speed"
-input double InpATRMinPoints = 80.0;  // Manual: quietest market to trade (Adapt off)
-input double InpATRMaxPoints = 800.0;  // Manual: wildest market to trade (Adapt off)
-input double InpATRMultSL = 1.5;  // Stop distance, in average daily ranges
-input double InpMinRR = 1.5;  // Lowest reward-to-risk to accept
-input double InpMaxRR = 3.0;  // Highest reward-to-risk to aim for
-input double InpATRRatioBoost = 1.3;  // How fast rising volatility raises the target
-input double InpPartialTPRatio = 2.5;  // Take part profit at this many R
-input double InpPartialClosePct = 50.0;  // How much of the trade to bank there (%)
-input double InpATRMultTrail = 2.0;  // Trailing stop distance, in ranges
-input group "5. Risk and loss limits"
-// Defaults are the growth-optimal region for the edge measured in
-// docs/IMPROVEMENT_PLAN.md (36% win rate, 1.974 payoff, +0.0706 R per trade),
-// which puts the Kelly fraction at 3.58%. Growth per trade PEAKS there and
-// falls away above it: 10% risk turns a genuinely positive edge into a
-// decaying account, because compounding is multiplicative. See ADR-022.
-//
-// The tiers are flat by default. Tier selection reads the session-weighted
-// score, so identical evidence would otherwise size differently purely by the
-// hour of day, and at a larger risk figure that distortion is amplified. The
-// inputs remain separate so tiering can be reinstated deliberately.
-input double InpRiskPctTier1 = 3.0;  // Risk per trade, weak setup (% of balance)
-input double InpRiskPctTier2 = 3.0;  // Risk per trade, fair setup (% of balance)
-input double InpRiskPctTier3 = 3.0;  // Risk per trade, strong setup (% of balance)
-input double InpMaxRiskPct = 3.5;  // Hard ceiling on risk per trade (%)
-input double InpMaxDailyDDPct = 15.0;  // Stop for the day after losing this much (%)
-// Account-level cap on total money at risk across ALL open positions, on every
-// symbol and every Magic Number. InpMaxRiskPct is a per-TRADE label and cannot
-// enforce AGENTS.md rule 27 on its own: three instances on three symbols, each
-// obeying 3%, is 9% at risk with nothing able to see it. Set this to the total
-// drawdown you are willing to have live at one moment.
-input double InpMaxAccountRiskPct = 6.0;  // Most money at risk at once, all trades (%)
-input group "6. Trading hours"
-input bool InpAllowAsianReduced = true;  // Trade the Asian session at reduced weight
-input group "7. Safety and execution"
-input bool   InpUseSpreadFilter = true;  // Skip trades when the spread is too wide
-input double InpMaxSpreadPoints = 50.0;  // Manual: widest spread allowed (Adapt off)
-input double InpMaxSpreadATRPct = 10.0;  // Widest spread as a share of range (%)
-input bool   InpUseTotalDDKillSwitch = true;  // Stop trading for good after a big drawdown
-// Sized to survive an ordinary losing streak at the configured risk rather than
-// to feel small. At 3% risk, eight consecutive full-stop losses - the streak
-// the baseline run already produced - cost 21.6%. An 8% limit would latch on
-// the third loss and stop the account permanently on routine variance. The
-// startup log prints the exact tolerance for whatever values are set.
-input double InpMaxTotalDDPct = 25.0;  // Drawdown that stops the bot for good (%)
-// Clears a PERSISTED killswitch latch. The latch now survives restarts, so
-// this is the only way to resume after one. Set it true, attach, confirm the
-// CRITICAL line, then set it back to false.
-input bool   InpClearKillswitchLatch = false;  // RESET a triggered stop (set back to false)
-input bool   InpUseStopLevelValidation = true;  // Respect broker minimum stop distance
-input bool   InpUseMarginCheck = true;  // Check free margin before entering
-input double InpMarginBufferPct = 20.0;  // Spare margin to keep back (%)
-input int    InpMaxQuoteAgeSeconds = 15;  // Refuse to trade on prices older than (sec)
-// Slippage tolerances, in ScoreBot points (the pip of the instrument: 0.01 on
-// gold, 0.0001 on a 5-digit FX major, 0.01 on a 3-digit JPY cross). These were
-// compile-time constants tuned for gold, which made them silently wrong on
-// every other instrument - 30 points against a gold stop of at least 120 is a
-// bound, the same 30 pips against a 15-pip FX stop is not. See ADR-024.
-//
-// Entry: how far the fill may drift from the price the order was SIZED
-// against. Because the stop is placed relative to that same price, this is
-// also the amount by which a permitted fill can push realised risk past
-// selected risk. Smaller is tighter risk control at the cost of more rejected
-// entries. The startup drift-bound line reports what the current value is
-// worth as a percentage, and a value that no longer bounds anything is a
-// DRIFT GATE FAULT.
-input double InpEntryDeviationPoints = XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS;  // Manual: entry slippage allowed (Adapt off)
-// Exit: deliberately NOT subject to the same check, and deliberately larger.
-// A tolerance that is too small on an exit gets the close REJECTED, which
-// leaves live exposure that XSpark intended to be flat - the opposite of a
-// risk control. Generosity here is protective, so only a non-positive value is
-// refused.
-input double InpExitDeviationPoints = XSPARK_CLOSE_DEVIATION_SCORE_POINTS;  // Manual: exit slippage allowed (Adapt off)
-// Chart panel placement. The panel paints its own opaque background, so it is
-// legible on any chart colour scheme; these only move it out of the way.
-input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER;  // On-chart panel position
-input int    InpDashboardMarginX = 12;  // Panel distance from side edge (px)
-input int    InpDashboardMarginY = 18;  // Panel distance from top/bottom (px)
-input bool   InpUseWeekendClose = false;  // Close everything before the weekend
-input int    InpWeekendCloseHour = 20;  // Weekend close hour (server time)
-input int    InpWeekendCloseMinute = 0;  // Weekend close minute
+input group "03. Chart patterns"
+input bool InpUseFlagPattern = true; // Recognize bull and bear flags
+input bool InpUseHSPattern = true; // Recognize head and shoulders (both directions)
+input bool InpUseCupHandlePattern = true; // Recognize cup and handle (both directions)
+input bool InpUsePinBars = false; // Allow pin bars with chart-pattern entries
+input double InpPatternMaxChaseATR = 0.50; // Maximum entry beyond pattern edge (x average range)
+
+input group "04. Stops and taking profit"
+input double InpATRMultSL = 1.5; // Stop-loss distance (x average range)
+input double InpMinRR = 1.5; // Minimum target (x initial stop distance)
+input double InpMaxRR = 3.0; // Maximum target (x initial stop distance)
+input double InpPartialTPRatio = 2.5; // Take some profit at (x initial stop distance)
+input double InpPartialClosePct = 50.0; // Portion of trade to close at that point (%)
+input double InpATRMultTrail = 2.0; // Trailing-stop distance (x average range)
+
+input group "05. Trading hours"
+input bool InpAllowAsianReduced = true; // Allow Asian-session entries at reduced score
+input bool   InpUseWeekendClose = false; // Close this bot's trades before the weekend
+input int    InpWeekendCloseHour = 20; // Friday closing hour (broker time, 0-23)
+input int    InpWeekendCloseMinute = 0; // Friday closing minute (0-59)
+
+input group "06. Chart panel and logs"
+input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER; // Chart panel corner
+input int    InpDashboardMarginX = 12; // Panel distance from left/right edge (pixels)
+input int    InpDashboardMarginY = 18; // Panel distance from top/bottom edge (pixels)
+input bool   InpVerboseLog = false; // Show detailed diagnostic logs
+
+input group "07. Advanced - momentum and setup filters"
+input double InpLongScoreExtra = 0.0; // Extra setup score required for buys
+input bool   InpDropIBR = false; // Ignore inside-bar candle signals
+input bool InpUseRSIGate = false; // Require the momentum filter for new entries
+input bool InpRequireRSITurn = false; // Also require momentum to turn toward the trade
+input int InpRSILongMin = 40; // Buy momentum: lowest RSI (0-100)
+input int InpRSILongMax = 70; // Buy momentum: highest RSI (0-100)
+input int InpRSIShortMin = 30; // Sell momentum: lowest RSI (0-100)
+input int InpRSIShortMax = 60; // Sell momentum: highest RSI (0-100)
+
+input group "08. Advanced - trend and pullback tuning"
+input double InpMinSwingATR = 0.5; // Minimum swing size (x average candle range)
+input double InpMinLegATR = 1.5; // Minimum trend move (x average range)
+input double InpPullbackMin = 0.30; // Smallest pullback (0.30 means 30% of move)
+input double InpPullbackMax = 0.80; // Largest pullback (0.80 means 80% of move)
+input bool InpUseT1PullbackBreak = true; // Use pullback breaks with custom trend entries
+input bool InpUseT3MomentumTurn = true; // Use momentum turns with custom trend entries
+
+input group "09. Advanced - market movement and costs"
+input double InpQuietMarketPct = 60.0; // Minimum market movement (% of normal)
+input double InpWildMarketPct = 600.0; // Maximum market movement (% of normal)
+input double InpATRRatioBoost = 1.3; // Target boost when market movement increases
+input double InpEntrySlipPct = 25.0; // Entry price tolerance (% of smallest stop)
+input double InpExitSlipPct = 85.0; // Exit price tolerance (% of smallest stop)
+input double InpSpreadCapPct = 40.0; // Maximum spread (% of smallest stop)
+input double InpMaxSpreadATRPct = 10.0; // Maximum spread (% of average range)
+
+input group "10. Advanced - broker and price checks"
+input bool   InpUseSpreadFilter = true; // Block entries when the spread is too wide
+input bool   InpUseStopLevelValidation = true; // Check broker minimum stop distance
+input bool   InpUseMarginCheck = true; // Check available margin before entering
+input double InpMarginBufferPct = 20.0; // Extra margin required (% of order margin)
+input int    InpMaxQuoteAgeSeconds = 15; // Maximum price age before refusing (seconds)
+
+input group "11. Manual limits - only when auto-adapt is off"
+input double InpATRMinPoints = 80.0; // Minimum market movement (strategy points)
+input double InpATRMaxPoints = 800.0; // Maximum market movement (strategy points)
+input double InpMaxSpreadPoints = 50.0; // Maximum spread (strategy points)
+input double InpEntryDeviationPoints = XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS; // Entry price tolerance (strategy points)
+input double InpExitDeviationPoints = XSPARK_CLOSE_DEVIATION_SCORE_POINTS; // Exit price tolerance (strategy points)
+
+input group "12. Advanced - bot identity"
+input ulong  InpMagicNumber = XSPARK_SCOREBOT_MAGIC_DEFAULT; // Unique bot ID (use a different ID per chart)
+input string InpOrderComment = XSPARK_SCOREBOT_COMMENT_DEFAULT; // Trade label shown in account history
+
+input group "13. Custom entry switches - saved/custom style only"
+input bool InpGateObserveOnly = true; // Preview changes but keep original entries
+input bool InpUsePatternEngine = false; // Use chart-pattern entry rules
+input bool InpUseHTFStructureGate = false; // Require agreement with the higher-timeframe trend
+input bool InpUsePullbackGate = false; // Require a valid pullback or chart location
+input bool InpUseContinuationTriggers = false; // Require a signal that the trend is resuming
+
+input group "14. Recovery - deliberate reset only"
+input bool   InpClearKillswitchLatch = false; // Reset emergency stop once (then set false)
+
 CXSparkLogger          g_logger;
 CXSparkMarketState     g_market_state;
 CXSparkIndicatorCache  g_indicator_cache;
@@ -173,6 +131,7 @@ CXSparkScoreBotV3      g_strategy;
 CXSparkDashboard       g_dashboard;
 
 bool g_v2_config_valid = false;
+bool g_observe_entries = true; // Resolved entry style, used by per-bar telemetry.
 string g_v2_config_reason = "V2 configuration not checked.";
 CXSparkStateStore g_instance_store;
 bool     g_state_purged = false;
@@ -281,9 +240,9 @@ bool XSparkValidateInputs()
       return false;
    }
 
-   if(InpMaxOpenTrades != 1 && InpMaxOpenTrades != 2)
+   if(!XSparkTradeSlotsValid(InpMaxOpenTrades))
    {
-      g_logger.Critical("EA", "InpMaxOpenTrades must be 1 or 2.");
+      g_logger.Critical("EA", "Maximum open trades must be between 1 and 10.");
       return false;
    }
 
@@ -390,13 +349,14 @@ bool XSparkValidateInputs()
    // risk, or it converts routine variance into a permanent stop. Refusing is
    // wrong here - the operator may want a tight limit deliberately - but it
    // must never be a surprise, so it is stated loudly at startup.
-   const int losses_to_killswitch = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxTotalDDPct, InpMaxOpenTrades);
-   const int losses_to_daily_halt = XSparkConsecutiveLossesToDrawdown(InpMaxRiskPct, InpMaxDailyDDPct, InpMaxOpenTrades);
+   const double effective_risk_cap = XSparkConcurrentRiskCap(InpMaxOpenTrades, InpMaxRiskPct, InpMaxAccountRiskPct);
+   const int losses_to_killswitch = XSparkConsecutiveLossesToDrawdown(effective_risk_cap, InpMaxTotalDDPct, InpMaxOpenTrades);
+   const int losses_to_daily_halt = XSparkConsecutiveLossesToDrawdown(effective_risk_cap, InpMaxDailyDDPct, InpMaxOpenTrades);
 
    g_logger.Info("EA",
                  StringFormat("Risk tolerance at max %.2f%% per trade: %d correlated full-stop rounds latch the "
                               "%.1f%% killswitch, %d latch the %.1f%% daily halt.",
-                              InpMaxRiskPct,
+                              effective_risk_cap,
                               losses_to_killswitch,
                               InpMaxTotalDDPct,
                               losses_to_daily_halt,
@@ -620,63 +580,6 @@ void XSparkLogSignalRejection(const string stage,
                               DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2),
                               XSparkContextJournal(report.context),
                               reason));
-}
-
-// Total money at risk across EVERY open position on the account, in account
-// currency.
-//
-// Deliberately not filtered by symbol or Magic Number. AGENTS.md rule 27 is
-// about the ACCOUNT, and the account does not care which EA or which hand
-// opened a position. Filtering to XSpark's own magic would reproduce exactly the
-// blindness this exists to remove: three instances on three symbols, each
-// obeying its own per-trade cap, each unable to see the other two.
-//
-// Fails closed. A position with no stop loss has unbounded downside, so total
-// risk becomes unknowable rather than large, and an unknowable total must not
-// be allowed to pass a cap.
-bool XSparkOpenAccountRiskCash(double &open_risk_cash, double &own_risk_cash, double &foreign_risk_cash, string &reason)
-{
-   open_risk_cash = 0.0; own_risk_cash = 0.0; foreign_risk_cash = 0.0;
-   reason = "";
-
-   const int total = PositionsTotal();
-
-   for(int index = 0; index < total; index++)
-   {
-      const ulong ticket = PositionGetTicket(index);
-      if(ticket == 0 || !PositionSelectByTicket(ticket))
-      {
-         reason = "An open position could not be read; account risk is unknown.";
-         return false;
-      }
-
-      const string position_symbol = PositionGetString(POSITION_SYMBOL);
-      double position_risk = 0.0;
-      string position_reason = "";
-
-      double tick_value = SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
-      if(tick_value <= 0.0)
-         tick_value = SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_VALUE);
-
-      if(!XSparkPositionRiskCash(PositionGetDouble(POSITION_PRICE_OPEN),
-                                 PositionGetDouble(POSITION_SL),
-                                 PositionGetDouble(POSITION_VOLUME),
-                                 SymbolInfoDouble(position_symbol, SYMBOL_TRADE_TICK_SIZE),
-                                 tick_value,
-                                 position_risk,
-                                 position_reason))
-      {
-         reason = StringFormat("Position %I64u on %s: %s", ticket, position_symbol, position_reason);
-         return false;
-      }
-
-      open_risk_cash += position_risk;
-      if(position_symbol == _Symbol && (ulong)PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-         own_risk_cash += position_risk;
-      else foreign_risk_cash += position_risk;
-   }
-
-   return true;
 }
 
 void XSparkVerboseBlock(const string component, const string reason)
@@ -1190,7 +1093,7 @@ void XSparkEvaluateNewBar()
    g_logger.Info("Structure",
                  StringFormat("bar=%s mode=%s base=[%s] higher=[%s] htf=%s pullback=%s rsi=%s joint=%s candidate=%s dir=%s instance=%s legacy=%s context=[%s]",
                               TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES),
-                              InpGateObserveOnly ? "observe" : "enforce", report.base_structure, report.higher_structure,
+                              g_observe_entries ? "observe" : "enforce", report.base_structure, report.higher_structure,
                               report.htf_verdict, report.pullback_verdict, report.rsi_verdict, report.joint_verdict,
                               report.candidate_pattern, XSparkDirectionName(report.candidate_direction),
                               TimeToString(report.candidate_instance, TIME_DATE | TIME_MINUTES), report.pattern_name,
@@ -1308,6 +1211,7 @@ void XSparkEvaluateNewBar()
    // and a broker-valid stop, and a cap checked against an estimate is not a cap.
    {
       double open_risk_cash = 0.0, own_risk_cash = 0.0, foreign_risk_cash = 0.0;
+      int own_positions = 0;
       string account_risk_reason = "";
 
       double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
@@ -1328,7 +1232,7 @@ void XSparkEvaluateNewBar()
       string cap_reason = "";
 
       if(!prospective_known ||
-         !XSparkOpenAccountRiskCash(open_risk_cash, own_risk_cash, foreign_risk_cash, account_risk_reason) ||
+         !XSparkReadAccountExposure(_Symbol, InpMagicNumber, open_risk_cash, own_risk_cash, foreign_risk_cash, own_positions, account_risk_reason) ||
          !XSparkAccountRiskWithinCap(open_risk_cash,
                                      prospective_risk_cash,
                                      AccountInfoDouble(ACCOUNT_BALANCE),
@@ -1527,8 +1431,19 @@ int OnInit()
    patterns.enabled = InpUsePatternEngine; patterns.flags = InpUseFlagPattern;
    patterns.head_shoulders = InpUseHSPattern; patterns.cups = InpUseCupHandlePattern;
    patterns.pin_bars = InpUsePinBars; patterns.max_chase_atr = InpPatternMaxChaseATR;
+   string entry_style_reason;
+   const bool entry_style_valid = XSparkApplyEntryStyle(InpEntryStyle, gates, patterns, entry_style_reason);
+   g_observe_entries = gates.observe_only;
    g_strategy.ConfigurePatterns(patterns);
    g_v2_config_valid = XSparkValidateGateConfig(gates, g_v2_config_reason);
+   if(!entry_style_valid)
+   {
+      g_v2_config_valid = false;
+      g_v2_config_reason += " " + entry_style_reason;
+   }
+   g_logger.Info("Settings", "Entry style: " + XSparkEntryStyleName(InpEntryStyle) +
+                 "; new trades=" + XSparkBoolToString(InpEnableTrading) +
+                 "; original-entry preview=" + XSparkBoolToString(g_observe_entries));
    string pattern_config_reason;
    if(!XSparkValidatePatternConfig(patterns, gates.use_htf, gates.use_pullback, gates.use_continuation, pattern_config_reason))
    {
@@ -1538,12 +1453,10 @@ int OnInit()
    g_logger.Warn("Patterns", !patterns.enabled ? "SCAN ONLY: chart detectors are visible; LEGACY entry logic remains active." :
                  (gates.observe_only ? "OBSERVE ONLY: pattern decisions are logged; LEGACY entry logic remains active." :
                                       "PATTERN ENTRY PROFILE ACTIVE: engulfing and confirmed chart breakouts; unvalidated profitability."));
-   if(!XSparkConcurrencyHasHeadroom(InpMaxOpenTrades, InpRiskPctTier1, InpRiskPctTier2,
-                                    InpRiskPctTier3, InpMaxRiskPct, InpMaxAccountRiskPct))
-   {
-      g_v2_config_valid = false;
-      g_v2_config_reason += " Concurrent nominal risk must fit within 90% of the account risk cap.";
-   }
+   const double concurrent_cap = XSparkConcurrentRiskCap(InpMaxOpenTrades, InpMaxRiskPct, InpMaxAccountRiskPct);
+   g_logger.Info("RiskManager", StringFormat("Trade slots=%d; per-entry risk ceiling=%.3f%%; account cap=%.2f%%. "
+                 "With multiple slots, risk is reduced to share 90%% of the account cap. Live exposure is checked before every send.",
+                 InpMaxOpenTrades, concurrent_cap, InpMaxAccountRiskPct));
    if(!g_v2_config_valid)
       g_logger.Critical("V2", g_v2_config_reason + " New entries blocked; existing positions remain managed.");
    g_strategy.ConfigureGates(gates);
@@ -1597,7 +1510,9 @@ int OnInit()
    if(!g_risk_manager.Initialize(InpRiskPctTier1,
                                  InpRiskPctTier2,
                                  InpRiskPctTier3,
-                                 InpMaxRiskPct))
+                                 InpMaxRiskPct,
+                                 InpMaxOpenTrades,
+                                 InpMaxAccountRiskPct))
    {
       g_logger.Critical("RiskManager", g_risk_manager.LastReason());
       return INIT_FAILED;
@@ -1618,7 +1533,9 @@ int OnInit()
                                      InpMarginBufferPct,
                                      InpMinRR,
                                      InpMaxRR,
-                                     InpMaxQuoteAgeSeconds))
+                                     InpMaxQuoteAgeSeconds,
+                                     InpMaxOpenTrades,
+                                     InpMaxAccountRiskPct))
    {
       g_logger.Critical("ExecutionEngine", g_execution_engine.LastReason());
       return INIT_FAILED;
