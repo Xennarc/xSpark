@@ -51,4 +51,31 @@ void TestBoundaries()
  Check("RSI gate can actually veto high score", !strategy.Evaluate(cache,market,enforced,er) && er.rsi_verdict=="RSI INNER HIGH");
  config.observe_only=true; strategy.ConfigureGates(config);
  Check("RSI observation leaves baseline trade eligible", strategy.Evaluate(cache,market,observed,ob));
+ // Exercise the complete new-entry path on a bar with NO legacy pattern.
+ Staircase(cache.structure_base,false);
+ cache.structure_base.resize(160);
+ for(int i=40;i<160;i++) Bar(cache.structure_base[i],i,100);
+ Staircase(cache.structure_higher,false);
+ cache.structure_higher.resize(80);
+ for(int i=40;i<80;i++) Bar(cache.structure_higher[i],i,100);
+ auto& b=cache.structure_base;
+ b[0].open=107.0; b[0].close=107.4; b[0].high=107.6; b[0].low=106.9;
+ b[1].open=107.1; b[1].close=107.0; b[1].high=107.4; b[1].low=106.8;
+ b[2].open=107.5; b[2].close=107.1; b[2].high=107.7; b[2].low=106.9;
+ b[3].open=108.0; b[3].close=107.5; b[3].high=108.2; b[3].low=107.3;
+ b[4].open=108.0; b[4].close=108.0; b[4].high=108.2; b[4].low=107.8;
+ cache.base.assign(b.begin(),b.begin()+50);
+ cache.rsi=45; cache.previous=44; cache.structure_ready=true;
+ XSparkDefaultGateConfig(config);
+ config.use_htf=true; config.use_pullback=true; config.use_continuation=true;
+ strategy.ConfigureGates(config);
+ Check("observe does not execute additive candidate", !strategy.Evaluate(cache,market,observed,ob));
+ Check("observe finds additive momentum turn", ob.gate_candidate && ob.joint_verdict=="PASS" && ob.candidate_pattern=="Momentum Turn");
+ config.observe_only=false; strategy.ConfigureGates(config);
+ Check("enforced path emits additive signal", strategy.Evaluate(cache,market,enforced,er));
+ Check("continuation has origin identity", enforced.instance_time>0 && enforced.instance_time<enforced.signal_bar_time);
+ Check("continuation stays inside score ceiling", enforced.score<=9 && enforced.pattern_score==1.0);
+ cache.structure_base[0].time-=60;
+ Check("inconsistent snapshot refuses", !strategy.Evaluate(cache,market,enforced,er) && er.joint_verdict=="HTF STRUCTURE UNKNOWN");
+
 }

@@ -234,6 +234,8 @@ public:
             if(!cache.StructureBaseBar(i + 1, base_bars[i])) copied = false;
          for(int i = 0; i < ArraySize(higher_bars); i++)
             if(!cache.StructureHigherBar(i + 1, higher_bars[i])) copied = false;
+         if(copied && (base_bars[0].time != bar1.time || higher_bars[0].time > bar1.time))
+            copied = false; // Never combine different closed-bar snapshots.
       }
       if(copied)
       {

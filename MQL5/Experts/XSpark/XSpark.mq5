@@ -1173,12 +1173,13 @@ void XSparkEvaluateNewBar()
                                                     report);
    g_last_report = report;
    g_logger.Info("Structure",
-                 StringFormat("bar=%s mode=%s base=[%s] higher=[%s] htf=%s pullback=%s rsi=%s joint=%s candidate=%s dir=%s instance=%s legacy=%s",
+                 StringFormat("bar=%s mode=%s base=[%s] higher=[%s] htf=%s pullback=%s rsi=%s joint=%s candidate=%s dir=%s instance=%s legacy=%s context=[%s]",
                               TimeToString(report.signal_bar_time, TIME_DATE | TIME_MINUTES),
                               InpGateObserveOnly ? "observe" : "enforce", report.base_structure, report.higher_structure,
                               report.htf_verdict, report.pullback_verdict, report.rsi_verdict, report.joint_verdict,
                               report.candidate_pattern, XSparkDirectionName(report.candidate_direction),
-                              TimeToString(report.candidate_instance, TIME_DATE | TIME_MINUTES), report.pattern_name));
+                              TimeToString(report.candidate_instance, TIME_DATE | TIME_MINUTES), report.pattern_name,
+                              XSparkContextJournal(report.context)));
 
    if(report.scored)
       g_last_report.selected_risk_pct = g_risk_manager.SelectedRiskPercentForScore(report.components.final_score);
