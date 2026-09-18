@@ -20,10 +20,11 @@ After extensive testing the account owner reports four things:
 All four are mechanically explainable from source, and the explanations are largely the same defect seen from four sides. This plan commits to:
 
 1. **Naming the root cause with arithmetic, not adjectives.** The entry gate does not gate. Five of seven scoring components are arithmetically incapable of preventing a trade, and under shipped defaults they do not change position size either. That single fact explains (a), (b) and (d) simultaneously, and it is the reason adding patterns for (c) would make things worse rather than better.
-2. **Fixing the shape of the decision, not the weights.** Every new market-structure input is a **pre-scoring gate** — a veto. Nothing is added to the score. `XSPARK_SCOREBOT_MAX_SCORE` stays 9.0, the tier constants stay 5.5 and 4.5, and every existing test remains valid.
-3. **Shipping every behaviour change default-OFF, one stage at a time, each with a falsifiable expectation written before the run**, and with a stated statistical test that is correct for comparing a *nested subset* of trades against the population it came from.
-4. **Making every prose-only sequencing rule mechanical.** A prohibition with no code behind it in an operator-configured EA is documentation, not a control. Section 3.8 turns the three ordering rules in this plan into `OnInit` refusals.
-5. **Stating plainly what this plan cannot establish.** It is defect repair. No claim that it makes money is supported by anything in this repository, and several stages may be permanently unfalsifiable on the available sample. Section 8 says so without softening.
+2. **Fixing the shape of the decision, not the weights.** Every new market-structure input runs **before the score**. Nothing is added to the score. `XSPARK_SCOREBOT_MAX_SCORE` stays 9.0, the tier constants stay 5.5 and 4.5, and every existing test remains valid.
+3. **Holding trade frequency at roughly the baseline, by construction.** The account owner's requirement is better prediction at the *same* trade count, not fewer trades. That rules out a design made only of vetoes, and an earlier draft of this plan was exactly that. Structure therefore does two jobs beyond refusing: it **re-signs** setups the current code takes with the wrong sign (section 3.3), and it **arms continuation triggers** the three legacy candle detectors cannot see (section 3.4b). Both add entries. Every stage records its trade-count delta against a ±20 % band around the S1 baseline, and a stage that leaves the count outside it does not proceed until an additive stage restores it. **The band is a constraint on what gets built, never a runtime quota** — nothing here lowers a standard to fill a slot.
+4. **Shipping every behaviour change default-OFF, one stage at a time, each with a falsifiable expectation written before the run**, and with a stated statistical test that is correct for comparing a *nested subset* of trades against the population it came from.
+5. **Making every prose-only sequencing rule mechanical.** A prohibition with no code behind it in an operator-configured EA is documentation, not a control. Section 3.8 turns the three ordering rules in this plan into `OnInit` refusals.
+6. **Stating plainly what this plan cannot establish.** It is defect repair. No claim that it makes money is supported by anything in this repository, and several stages may be permanently unfalsifiable on the available sample. Section 8 says so without softening.
 
 **Three experiments that cost nothing and should happen before a line of code is written** are specified in Stage S0. One of them can refute the central premise of the exit work using data the EA already logs.
 
@@ -208,11 +209,13 @@ Stated because a document whose authority rests on source verification must repo
 
 ### 3.1 The one architectural decision: gates, not scores
 
-Every new market-structure input is a **hard pre-scoring veto**, placed alongside the existing session gate (`ScoreBotV3.mqh:222-229`) and ATR gate (`:231-240`). Nothing is added to `raw`, nothing is removed from it, and the session multiplier is not touched.
+Every new market-structure input runs **before the score**, alongside the existing session gate (`ScoreBotV3.mqh:222-229`) and ATR gate (`:231-240`). Nothing is added to `raw`, nothing is removed from it, and the session multiplier is not touched.
+
+**What those inputs do is not uniform, and the first draft of this plan got this wrong.** It made every one of them a veto, which is a design that can only ever trade less — and the account owner's requirement is better prediction at an unchanged trade count. Three roles, not one: some inputs **veto**; some **resolve the direction** of a setup the current code would take with the wrong sign (section 3.3); some **arm a trigger** the legacy detectors cannot see (section 3.4b). Only the first subtracts.
 
 Three reasons, in order of force:
 
-1. **It is the only shape that can express "mostly trade with the HTF trend."** Mostly-with-trend requires against-trend setups to be *rejected*. The scorer has no negative term and no rejection path (section 2.5).
+1. **It is the only shape that can express "mostly trade with the HTF trend."** Mostly-with-trend requires against-trend setups to be *resolved*: re-signed when they are pullbacks inside a live trend, refused when they are not, and taken as-is only on a confirmed change of character. The scorer has no negative term, no rejection path and no way to change a signal's direction (section 2.5).
 2. **It is the only shape that changes anything at all.** Under flat tiers, re-weighting moves neither trades nor dollars (section 2.1).
 3. **It costs exactly 0.0 of a ceiling that is saturated to 1e-7.** See section 3.8.
 
@@ -233,7 +236,8 @@ The evaluation chain becomes:
 + NEW:     PATTERN INSTANCE USED (S9)   this multi-bar instance already traded
 + NEW:     HTF STRUCTURE UNKNOWN (S3)   structure data or pivot count insufficient
 + NEW:     HTF RANGE             (S3)   structure computed, says chop
-+ NEW:     HTF TREND BLOCKED     (S3)   pattern direction contradicts HTF structure
++ NEW:     HTF DIRECTION RESOLVED(S3)   pattern re-signed to the HTF direction, or deferred to a 3.4b trigger
++ NEW:     HTF COUNTER BLOCKED   (S3)   counter-HTF and no change of character
 + NEW:     RSI EXTENDED/EXHAUSTED(S4)   RSI outside the pullback-depth band
 + NEW:     NO QUALIFYING LEG     (S5)   base leg smaller than InpMinLegATR
 + NEW:     LEG BROKEN            (S5)   retracement > 1.0
@@ -370,24 +374,34 @@ Separately and independently: add `double RSI14BaseAt(const int closed_shift)`. 
 
 **Test file `MQL5/Scripts/Tests/TestMarketStructure.mq5`**, all literal bars, no terminal dependency: a clean HH/HL staircase → UP; a clean LH/LL staircase → DOWN; an equal-highs plateau → exactly one pivot, at the newest bar; an outside bar → no pivot; a sub-`min_swing` wiggle → absorbed; equal highs with rising lows → RANGE, not UP; a close through the last low → UP becomes RANGE on that bar; fewer than four pivots → UNKNOWN with a reason string; **a window engineered to produce more than `XSPARK_STRUCTURE_MAX_PIVOTS` raw pivots → `valid == false` with reason `"pivot overflow"`, never UP or DOWN**; a five-leg staircase → `legs_in_state == 5`.
 
-### 3.3 HTF bias gate — finding (d)
+### 3.3 HTF direction resolution — finding (d), and where the trade count is protected
 
 `InpUseHTFStructureGate`, default **false**.
 
-| HTF state | BUY | SELL |
-| --- | --- | --- |
-| `UP` | allowed | **refused** — `HTF TREND BLOCKED` |
-| `DOWN` | **refused** — `HTF TREND BLOCKED` | allowed |
-| `RANGE` | **refused** — `HTF RANGE` | **refused** — `HTF RANGE` |
-| `UNKNOWN` | **refused** — `HTF STRUCTURE UNKNOWN` | **refused** — `HTF STRUCTURE UNKNOWN` |
+**The first draft of this plan made this a veto**: a pattern whose direction contradicted the HTF structure was refused outright. That is wrong, and it is wrong in the specific way that produced the frequency collapse an earlier section 8 described as intended. **A counter-trend pattern inside a pullback is not a bad trade to delete. It is a good trade with the sign backwards.**
 
-`UNKNOWN` is a refusal, not an absence of filter. AGENTS.md rules 23 and 24.
+Look at the mechanism that produces finding (b). In an uptrend price pulls back. On the way down the base timeframe prints bearish pins and bearish engulfings — `PatternDetector.mqh:32-40` and `:70-84` return `XSPARK_SIGNAL_SELL` for both, from candle geometry alone, with no reference to anything around them. RSI is low *because it is a pullback inside an uptrend*. Today the EA shorts it. That is "sells when RSI is too low" exactly, and the correct response is not to refuse the bar — it is to read the pullback and **buy its completion**.
+
+So the higher timeframe supplies the **direction** and the base timeframe supplies the **timing**:
+
+| HTF state | Resolved direction | What a contradicting pattern means |
+| --- | --- | --- |
+| `UP` | BUY only | pullback in progress — **arm, do not trade**; wait for a section 3.4b trigger |
+| `DOWN` | SELL only | rally in progress — arm, the mirror of the above |
+| `RANGE` | none from trend | only the reversal set at a range extreme (section 3.7) |
+| `UNKNOWN` | none | **refused** — `HTF STRUCTURE UNKNOWN`. AGENTS.md rules 23 and 24. |
+
+Three consequences that have to be stated separately:
+
+- **Re-signing is not a veto and must not be measured as one.** The bar that used to produce a losing SELL now produces either a BUY a few bars later or no trade at all. S3's telemetry records which, per bar, so the count delta decomposes into **re-signed**, **deferred-then-taken** and **lost** rather than collapsing into one shrinkage number.
+- **"Mostly with the HTF trend", not "only".** The operator's word was *mostly*, and it is load-bearing. A counter-HTF entry stays reachable at a higher evidence bar: the base structure must show a confirmed **change of character** — a close beyond the last with-trend swing pivot, which the HTF has not yet confirmed. `InpAllowCounterTrendOnCHoCH`, default **false**, is the only route to one.
+- **`UNKNOWN` is the one genuinely subtractive branch here**, and S2's telemetry must size it before S3 enforces anything. If `UNKNOWN` is common on this instrument and period, the pivot parameters are wrong, not the market.
 
 This is the owner's sentence implemented literally: *an uptrend makes higher highs and higher lows*, evaluated on the higher timeframe, from data the process does not currently hold.
 
 **It is faster than what it replaces, and it is still not fast.** `ema50_higher` has a ~24.5-HTF-bar centre of mass plus up to one HTF bar of staleness. A `W = 2` fractal confirms a pivot two HTF bars after it forms — up to eight M15 bars on the tested pair — and classification needs four alternating pivots. The base-close invalidation rule removes the exit-side lag entirely, which is the side where being late loses money, but **entry into a trend state still costs two HTF confirmation bars.**
 
-> **Hard sequencing rule, enforced at `OnInit` and not merely written down.** `InpUseHTFStructureGate = true` with `InpUsePullbackGate = false` is **refused** by the input-combination check of section 3.8. "The H1 is up, therefore buy" on a two-pivot-lagged classifier licenses buying an already-established leg — which makes symptom (a) **worse**, not better. The HTF supplies direction only; the base timeframe supplies the price. S3 and S5 are evaluated together as well as separately, and the configuration that would produce the wrong measurement cannot be started.
+> **Hard sequencing rule, enforced at `OnInit` and not merely written down.** `InpUseHTFStructureGate = true` with `InpUsePullbackGate = false` is **refused** by the input-combination check of section 3.8. "The H1 is up, therefore buy" on a two-pivot-lagged classifier licenses buying an already-established leg — which makes symptom (a) **worse**, not better. The HTF supplies direction only; the base timeframe supplies the price. S3 and S5 are evaluated together as well as separately, and the configuration that would produce the wrong measurement cannot be started. **`InpUseHTFStructureGate` additionally requires `InpUseContinuationTriggers`**, for the same reason running the other way: resolving a setup's direction and then having no trigger able to take the resolved entry is a veto with extra steps, and it is precisely the configuration that collapses the trade count.
 
 **No third timeframe, and the reason is lag and observability rather than the partner table.** The table at `ScoreBotTypes.mqh:22-43` terminates at H4→D1 and ADR-021 gives its own reason: H8 has no 4× partner and lands on W1 at 21×. A third tier is *undefined* for **two** of the seven supported base periods — H2→H8→(nothing) and H4→D1→(nothing) — and `TestScoreBotV3Logic.mq5:295-313` asserts those refusals. But that argument is weaker here than it looks, and the honest version must say so: the structure module is a pure function over `MqlRates` and needs **no indicator handle**, so nothing stops a `CopyRates` on H4 while the base is M15. The refusal rests on two other grounds instead. First, lag: a `W = 2` fractal on H4 confirms a pivot eight hours after it forms and needs four such pivots to classify, so a third tier buys a slower verdict for an M15 entry, not a better one. Second, observability: one well-built HTF tier carrying real structure is fully instrumented by the S2/S3 telemetry and its verdict can be checked against the chart; two tiers multiply the joint states the matched-subset test must partition, against a sample that already cannot support the partition it has. It is also worth recording plainly that every supported ratio is an exact integer (5, 6, 4, 4, 4, 4, 6), so an HTF close always coincides with a base close and the base-bar-boundary evaluation can never miss an HTF transition — a property a hand-picked M15/H4 pair would keep but a hand-picked M15/H2 pair would not.
 
@@ -414,6 +428,26 @@ Below `InpPullbackMin` the entry is a chase near the leg extreme — which *is* 
 Note the window is measured against **confirmed swing pivots**, not against a fixed-lookback high/low. `docs/IMPROVEMENT_PLAN.md:334` correctly rejected an earlier anti-chase design because its scan started at the signal bar, putting any new extreme at position 1.0 by construction. A pivot-anchored leg does not have that defect: the leg extreme is a real prior high, and the signal bar's own close is the thing being located within it.
 
 **What this does not fix.** The entry is still a market order at `bar1.close + spread` on the next tick (section 2.3, source 3). The gate removes the *chase* population by refusing to trade at a premium; it does not move the fill to a discount. The pending/limit-order path that would do that is explicitly out of scope — see section 6.
+
+### 3.4b With-trend continuation triggers — where the trades come back
+
+`InpUseContinuationTriggers`, default **false**. **This is the stage that holds the trade count up, and it is why section 3.3 is a resolver rather than a veto.**
+
+The three legacy detectors are reversal instruments. A pin, an engulfing and an inside-bar breakout each demand a specific candle shape, and in a healthy trend most pullbacks complete without printing any of them. That is the arithmetic behind a veto-only design collapsing frequency: it removes the counter-trend entries and puts nothing in their place.
+
+Inside a resolved direction (3.3) and a qualifying pullback zone (3.4), a continuation entry does not need a named candlestick pattern. It needs evidence that the pullback is over. Three triggers, each a pure function of closed bars, each independently switchable, all scored through the existing `pattern` slot so `raw` and the 9.0 ceiling are untouched:
+
+| Trigger | Rule for a BUY (mirror for a SELL) | Score |
+| --- | --- | --- |
+| **T1 pullback-high break** | `bar1.close > max(high[2 .. bars since the pullback extreme])` | 1.5 |
+| **T2 reversal candle, correctly signed** | any legacy detector firing with `direction == resolved direction` | its own |
+| **T3 momentum turn** | `RSI14BaseAt(1) > RSI14BaseAt(2)` **and** `bar1.close > bar1.open` **and** retracement already reached `InpPullbackMin` | 1.0 |
+
+T1 is the classic continuation entry and fires on the large majority of completed pullbacks. T3 catches the pullbacks that grind sideways rather than break. T2 is today's behaviour with the sign fixed — and it is the direct answer to finding (b): the bullish pin at the pullback low was always the right trade; the bearish pin three bars earlier was the wrong one, and the EA currently takes the second and scores the first no higher.
+
+**Frequency arithmetic, registered as an expectation and not a measurement.** One HTF trend leg on the tested M15/H1 pair typically contains several base-timeframe pullbacks. Today at most one of them prints a correctly-signed legacy pattern. Under T1-T3 most of them arm a trigger. **The expectation pre-registered before S3b runs is that the continuation population is at least as large as the counter-trend population 3.3 stops taking.** If it is not, that is the finding — and section 6.2 risk 5 says what happens then. The answer is never to loosen a trigger until the number comes back.
+
+**One trade per pullback.** T1, T2 and T3 can all fire within a few bars of each other. The pattern-instance latch of section 3.7 is therefore a hard prerequisite, and for these triggers it is keyed on the **pullback's origin pivot**, not on the signal bar. Without it a single pullback produces three entries and the count band is met by triple-counting one idea — which would be the same defect this plan exists to remove, wearing a trend-following label.
 
 ### 3.5 RSI repair — finding (b)
 
@@ -706,6 +740,7 @@ Every reviewed proposal understated this by a factor of two to three, and `docs/
 | S0 | 0 | (struct fields and journal columns only) |
 | S2 / S2a | 0 | (constants only) |
 | S3 | 3 | `InpUseHTFStructureGate`, `InpMinSwingATR`, `InpGateObserveOnly` |
+| S3b | 4 | `InpUseContinuationTriggers`, `InpUseT1PullbackBreak`, `InpUseT3MomentumTurn`, `InpAllowCounterTrendOnCHoCH` — **all four are booleans; T1 and T3 introduce no new numeric threshold**, T3 reusing `InpPullbackMin` |
 | S4 | 2 | `InpUseRSIGate`, `InpRequireRSITurn` — **plus four existing inputs whose defaults swap; no new numeric value** |
 | S5 | 4 | `InpUsePullbackGate`, `InpMinLegATR`, `InpPullbackMin`, `InpPullbackMax` |
 | S6 | 4 | `InpUseStructuralStop`, `InpStopBufferATR`, `InpATRMultSLFloor`, `InpATRMultSLCap` |
@@ -713,7 +748,9 @@ Every reviewed proposal understated this by a factor of two to three, and `docs/
 | S8 | 3 | `InpUseBreakEvenDecoupled` + `InpBreakEvenR`, `InpBreakEvenBufferATR`, `InpTrailArmR` — counted as 3 because the decoupling flag and `InpBreakEvenR` ship as one switch |
 | S8c | 0 | (derived tolerance, no input) |
 | S9 | 15 | `InpUsePatternRanking`, `InpPatternConflictTol`, `InpPinOppositeWickMax`, `InpEngulfMinBody2ATR` (4), `InpUseFlagPattern` + 4 (5), `InpUseDoublePattern` + 2 (3), `InpUseHSPattern` + 2 (3) |
-| **Total** | **34** | **19 outside the pattern library, 15 inside it** |
+| **Total** | **38** | **23 outside the pattern library, 15 inside it** |
+
+**S3b is the cheapest stage in the table per unit of effect**, and that is worth stating rather than leaving to be noticed: it is the stage carrying the trade-count requirement, it adds four switches and **zero** new numbers to tune, and every quantity it reads (`InpPullbackMin`, the leg geometry, `RSI14BaseAt`) is already paid for by S2 and S5. A stage that restores frequency without adding a fittable threshold is the opposite of the curve-fit this section exists to guard against.
 
 **Hard-coded constants that are also choices:** `XSPARK_STRUCTURE_FRACTAL_WING` (2, matching the existing scan), `XSPARK_SCOREBOT_STRUCTURE_BASE_BARS` (160), `XSPARK_SCOREBOT_STRUCTURE_HIGHER_BARS` (80), `XSPARK_STRUCTURE_MAX_PIVOTS` (56, derived from the window and the wing), `XSPARK_STRUCTURE_TR_PERIOD` (14), the flag detector's *N* ∈ [3,8] and *m* ∈ [3,10] windows (four numbers), the double-pattern separation bounds (two numbers), and the seven-element pattern priority ordering. **Twelve more choices, on top of the thirty-four.**
 
@@ -785,14 +822,25 @@ This is `docs/IMPROVEMENT_PLAN.md` **Stage 4**, unchanged, and it is a hard prer
 | **Expectation** | Trades differ, if at all, **only at the start of a run**, by the leading trades that were taken on an under-calculated HTF buffer. No mid-run trade changes. |
 | **Revert if** | Any mid-run trade differs. |
 
-### S3 — HTF structure direction gate. **Default OFF.** Observe mode first.
+### S3 — HTF structure direction resolution. **Default OFF.** Observe mode first.
 
 | Field | Value |
 | --- | --- |
 | **Changes** | `InpUseHTFStructureGate`, `InpMinSwingATR`, `InpGateObserveOnly`. Three new block statuses. `htf_state` and `htf_gate_active` on `XSparkSignal` (`StrategyInterface.mqh:11-35`) with matching lines in `XSparkResetSignal` (`:37-61`), copied onto `XSparkTradePlan` for the entry journal. The gated `RiskManager::IsSignalApproved` branch (section 3.9). **The `InpUseHTFStructureGate && !InpUsePullbackGate` `OnInit` refusal (section 3.8) lands in this stage.** |
-| **Expectations** | With `InpUseHTFStructureGate = false`: **trade set identical to the S2 control run** — this is the check that the RiskManager branch is correctly gated and not vetoing everything. With the gate enforcing: trades whose direction contradicts the HTF structure verdict → **exactly 0** (true by construction; a correctness check on the implementation, not a result). Trade count down materially. **Mean R above the matched-subset null at the 90th percentile or better**, at the largest `n` available. |
-| **Revert if** | The gate-off trade set is not identical (the defence-in-depth branch is mis-gated); or the trade count falls by less than 20 % when enforcing (the gate is not binding — a bug); or mean R does not clear the matched-subset null. |
+| **Expectations** | With `InpUseHTFStructureGate = false`: **trade set identical to the S2 control run** — this is the check that the RiskManager branch is correctly gated and not vetoing everything. With the gate enforcing: trades whose direction contradicts the HTF structure verdict → **exactly 0** (true by construction; a correctness check on the implementation, not a result). **The count delta is recorded split three ways — re-signed, deferred-then-taken, lost — never as a single shrinkage number.** **Mean R above the matched-subset null at the 90th percentile or better**, at the largest `n` available. |
+| **Revert if** | The gate-off trade set is not identical (the defence-in-depth branch is mis-gated); or the re-signed population is empty when enforcing (the resolver is behaving as a veto — a bug); or mean R does not clear the matched-subset null. |
+| **Count rule** | S3 enforcing **without** S3b cuts the count by construction and is an observe-mode measurement only, run so the counter-trend population can be sized. It is never a shipped configuration, and the `OnInit` refusal of section 3.8 makes that mechanical rather than advisory. |
 | **Hard constraint** | **Enforced at `OnInit`, not in prose.** `InpUseHTFStructureGate` cannot be enabled without `InpUsePullbackGate`. S3 and S5 are evaluated together as well as separately; judging S3 alone and concluding "the trend filter made it worse" would be a correct measurement of an incomplete change. |
+
+### S3b — With-trend continuation triggers. **Default OFF. Ships with S3, never after it.**
+
+| Field | Value |
+| --- | --- |
+| **Changes** | `InpUseContinuationTriggers`, `InpUseT1PullbackBreak`, `InpUseT3MomentumTurn`, `InpAllowCounterTrendOnCHoCH`. The pullback-origin instance latch (section 3.7), persisted through `StateStore`. `trigger_id` on the report, the signal and the entry journal. |
+| **Files** | `MarketStructure.mqh`, `ScoreBotV3.mqh`, `ScoreBotTypes.mqh`, `StrategyInterface.mqh`, `XSpark.mq5` |
+| **Expectations** | The continuation population is **at least as large as** the counter-trend population S3 stops taking, measured from the same observe-mode run. Combined S3+S3b trade count within ±20 % of the S1 baseline. Mean R above the matched-subset null. **Realised R recorded per trigger**, because T1, T2 and T3 are three different bets and a blended mean hides which one carries the result. |
+| **Revert if** | A single pullback produces more than one entry (the latch is broken); or the combined count is outside ±20 % and no additive stage can close it — in which case the trade-off is **reported to the account owner**, not closed by loosening a trigger. A single trigger whose mean R is materially below the others at usable `n` turns that trigger off; it does not revert the stage. |
+| **Refuse to ship if** | The instance latch is not keyed on the pullback origin pivot and persisted through `StateStore`, or S3 can be enabled without this stage. A resolver that defers entries with nothing able to take them is a veto under another name, and it is the exact configuration that produced the frequency objection this stage exists to answer. |
 
 ### S4 — RSI gate and band swap. **Gate default OFF; band swap default ON.**
 
@@ -809,7 +857,7 @@ This is `docs/IMPROVEMENT_PLAN.md` **Stage 4**, unchanged, and it is a hard prer
 | Field | Value |
 | --- | --- |
 | **Changes** | `InpUsePullbackGate`, `InpMinLegATR`, `InpPullbackMin`, `InpPullbackMax`. Three new block statuses. |
-| **Expectations** | Median retracement at entry rises from whatever S2's leg telemetry recorded to above 0.40. **Mean `MAE_R` falls** — that is the arithmetic this change is built on (entries sit closer to their invalidation) and it is the metric that decides. Trade count down materially. |
+| **Expectations** | Median retracement at entry rises from whatever S2's leg telemetry recorded to above 0.40. **Mean `MAE_R` falls** — that is the arithmetic this change is built on (entries sit closer to their invalidation) and it is the metric that decides. Count falls here and is restored by S3b, which is why the two are measured as a pair and never judged apart. |
 | **Revert if** | Mean `MAE_R` does not fall. |
 | **Note** | `InpPullbackMin` and `InpPullbackMax` are **chosen from S2/S3 observe-mode telemetry**, not shipped as guesses, which is why S2's journal line carries `leg_origin`, `leg_extreme`, `leg_range` and `retracement`. The 0.30/0.80 defaults in this document are a starting window, and the `r`-versus-realised-MFE distribution recorded in S2 is what sets them. At most three pre-registered candidate pairs. |
 
@@ -843,6 +891,7 @@ This is `docs/IMPROVEMENT_PLAN.md` **Stage 4**, unchanged, and it is a hard prer
 | Field | Value |
 | --- | --- |
 | **Order** | ranking + conflict block + instance latch + pin/engulfing fixes + the `OnInit` gates-required refusal → flag → double top/bottom → head & shoulders |
+| **Pull-forward clause** | The **flag** detector is additive and is continuation, so it is the first fallback if S3b's continuation population comes in below the counter-trend population it has to replace. In that case the flag detector moves ahead of S5 rather than the pullback window being widened. This is the only reordering this plan permits, and it is permitted because it adds an entry source rather than lowering a bar. |
 | **Expectations** | The ranking change alone: the only trades that change are bars where two detectors fired, identifiable from the recorded runner-up. The pin fix: trades removed are exactly those whose `upper/lower > 0.65`. Each new detector: trade count up by the detected population, with realised R recorded separately by `pattern_id`. |
 | **Revert if** | A detector's trades show materially worse mean R than the flag baseline — it stays off permanently. |
 | **Refuse to ship if** | The instance latch is not persisted through `StateStore`, or a failed persist does not **refuse the entry**, or the stored value is a boolean rather than the `instance_time` itself, or the `OnInit` refusal of a detector without its gates is missing. All four land with the first multi-bar detector (section 3.7). |
@@ -909,9 +958,10 @@ Nothing in the repository. The baseline is still the 50-trade run at 0.35 standa
 ### 6.2 Risks
 
 1. **HTF structure is still lagging, and S3 alone makes symptom (a) worse.** Two HTF confirmation bars plus four pivots to classify. The base-close invalidation removes the exit-side lag entirely, which is the half that matters most, but the entry side keeps its floor. **S5 is the mitigation, and the S3-without-S5 ordering is now refused at `OnInit` rather than prohibited in prose** — which is the difference between a rule and a hope, because a prose rule survives exactly until the first merge that drops it.
-2. **The acceptance gate may be unreachable, and this plan does not solve it.** S3 plus S5 plausibly remove 60-85 % of trades. Against `IMPROVEMENT_PLAN.md:245`'s `n >= 500` requirement that needs roughly 1 500-3 000 baseline trades, which at the stated ~5 trades/day is 300-600 trading days, and the available real-tick history depth for XAUUSDm is an open question (section 7). Observe mode extracts the counterfactual from a single run and the matched-subset null is the right test, but neither manufactures sample. **The honest position is that several gate stages may never be falsifiable on profitability and therefore ship on structural-correctness grounds with profitability explicitly unclaimed** — which is what AGENTS.md rule 34 already says about infrastructure.
+2. **The acceptance gate may be unreachable, and this plan does not solve it.** S3 plus S5 remove a large fraction of today's entries; S3b and the new detectors are what put entries back, and **the net is genuinely unknown until S1 and the observe-mode runs size both populations**. Against `IMPROVEMENT_PLAN.md:245`'s `n >= 500` requirement that needs roughly 1 500-3 000 baseline trades, which at the stated ~5 trades/day is 300-600 trading days, and the available real-tick history depth for XAUUSDm is an open question (section 7). Observe mode extracts the counterfactual from a single run and the matched-subset null is the right test, but neither manufactures sample. **The honest position is that several gate stages may never be falsifiable on profitability and therefore ship on structural-correctness grounds with profitability explicitly unclaimed** — which is what AGENTS.md rule 34 already says about infrastructure.
 3. **The gates are correlated, so the trade set collapses faster than the individual rejection rates suggest.** HTF-up, a pullback in the lower half of the leg, and RSI below 60 are three ways of describing similar market states. **Record the joint verdict in observe mode, not three separate counts.**
 4. **The location gate may select the weakest instances of the HTF trend.** Strong trends produce shallow 23-38 % pullbacks; retracements past 50 % are more typical of failing structure. `InpPullbackMax` is meant to bound that, but the boundary between "deep pullback" and "failing leg" is exactly what nobody can set from this evidence base. This is why the window is chosen from S2/S3 telemetry rather than shipped as a guess, and why S5's decision metric is `MAE_R` rather than mean R. The measured-move target branch (section 3.6 Step 3) is what keeps the *shallow* end of the window viable, so if that branch is dropped this risk returns in full.
+5. **The count band is the most dangerous requirement in this document, and it is the account owner's explicit requirement.** Holding frequency at baseline while raising quality works only if the additive stages genuinely find entries the legacy detectors miss. The failure mode has to be named before it arrives: if the continuation triggers under-deliver, the temptation is to widen `InpPullbackMax`, drop `InpMinLegATR`, or relax T1 until the number returns — and every one of those re-creates the original defect, a system that trades because nothing stopped it. **The band is a check on the design, not a target the runtime pursues.** A stage that leaves the count materially down and cannot be rescued additively gets reported as a quality-versus-frequency trade-off with both numbers attached, and the decision belongs to the account owner. It is never resolved by lowering a threshold.
 5. **Statelessness costs monotonicity.** Section 3.2. A pivot scrolling out of the window can change the verdict with no new price action. Accepted in exchange for eliminating an entire class of backtest-versus-live divergence.
 6. **The structural stop is the most dangerous change here.** It silently invalidates a fail-closed control unless the floor, the separate `structural_min_stop_points` field, both re-based drift-bound call sites, the untouched exit and spread derivations, the `ExecutionEngine`-sited per-trade assertion and the post-adjustment cap re-check all land together. Anyone who later tightens the floor "to get better R", or who "simplifies" `structural_min_stop_points` back into `min_stop_points`, re-breaks it — and the second of those breaks the killswitch flatten's slippage tolerance, not the entry gate.
 7. **`InpMinRR` flips from decoration to primary filter, and its tolerance was wrong before this plan touched it.** Sections 2.4 and 3.6 Step 4. S8c is a behaviour change on the default configuration and the only one in this plan that adds trades.
@@ -943,7 +993,7 @@ The first four are carried forward from `docs/IMPROVEMENT_PLAN.md` section 8 bec
 - **No compilation was performed and none is possible in the environment that produced this document.** Every code change described is unverified source. AGENTS.md rules 30 and 32 require that to be stated rather than assumed.
 - **No backtest was run by the author.** Every forward-looking number in section 4 — trade-count deltas, `MAE_R` direction, `MFE_R` clustering, the predicted `Final broker-valid RR` population — is a **pre-registered expectation**, not a measurement. AGENTS.md rule 33.
 - **Nothing here is a profitability claim.** Every structural defect named in section 2 is wrong independently of any backtest; every claim that fixing it earns money requires the S1 measurement run, which has not happened. The 50-trade baseline sits 0.35 standard errors from zero edge and cannot rank one threshold against another.
-- **Reduced trade frequency is an expected and intended consequence, not a side effect.** The gates only subtract; S8c is the single exception and it adds back only an artefact population. A plausible 60-85 % reduction is the price of selectivity, it slows every subsequent measurement, and it will make the EA look broken on a live chart for stretches. **Anyone who is not prepared for that should not enable the gates.** The dashboard rows and block statuses specified in S2 exist for exactly this reason: an EA that refuses four out of five previously-taken setups with no visible reason gets switched off by its operator.
+- **Trade frequency is held at roughly the baseline by design, and that is a harder target than cutting it.** An earlier draft of this plan treated a 60-85 % reduction as intended. The account owner's requirement is better prediction at the *same* count, and the plan was rebuilt around it: re-signing (3.3), continuation triggers (3.4b) and the new detectors (3.7) all add entries, against the vetoes, which remove them. **Whether they balance is unmeasured and cannot be known before S1 and the observe-mode runs.** The honest position is that this plan is *designed* to be count-neutral and is not *proven* count-neutral; if the measurement says otherwise, the deliverable is a reported trade-off, not a loosened threshold. The dashboard rows and block statuses of S2 exist so that any frequency change is visible with its reason attached rather than looking like a broken EA.
 - **Every threshold default in this document is a starting point with a stated validation route, not a tuned answer.** Three are genuinely derived (`InpPinOppositeWickMax` from a window fixed by the repository's own fixtures; `XSPARK_STRUCTURE_MAX_PIVOTS` from the window size and the fractal wing; the RR tolerance from the tick size), one is bounded by the repository's own arithmetic (`InpMinScore = 4.0` from the unaided pattern ceiling), one is a pure swap of existing values (the RSI bands), and the rest are guesses that must be set from measurement before they are trusted.
 - **The RSI outer bounds are retained without a justification under the new interpretation**, and section 3.5 says so rather than presenting the swap as a complete repair.
 - **Every confidence interval and streak probability assumes independent trades.** M15 gold clusters by day, session and volatility regime. Effective sample size is below the trade count, every interval is wider than stated, and every required sample size is larger.
