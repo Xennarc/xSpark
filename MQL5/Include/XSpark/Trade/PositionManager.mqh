@@ -1936,6 +1936,23 @@ public:
       return m_managed_position_count;
    }
 
+   // Replaces the exit deviation after auto-tune derives it for this symbol.
+   // A setter rather than a re-Initialize: re-initialising would clear the
+   // per-position state array and the R ledger, abandoning live positions.
+   bool SetExitDeviationScorePoints(const double deviation_score_points)
+   {
+      if(!MathIsValidNumber(deviation_score_points) || deviation_score_points <= 0.0)
+         return false;
+
+      m_exit_deviation_score_points = deviation_score_points;
+      return true;
+   }
+
+   double ExitDeviationScorePoints()
+   {
+      return m_exit_deviation_score_points;
+   }
+
    string LastReason()
    {
       return m_last_reason;

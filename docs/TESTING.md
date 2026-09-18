@@ -122,6 +122,12 @@ The following cannot be proven outside MT5 and must be checked in the Strategy T
 - Broker protection verification: a broker that accepts a market order but does not apply the stop, and the protection-repair retry loop.
 - Exit deviation: that XSpark-owned closes and modifications fill at the wider tolerance.
 
+## Auto-Tune Script
+
+`MQL5/Scripts/Tests/TestAutoTune.mq5` covers deriving the instrument-scaled thresholds: median robustness against a volatility spike and against the unset values `CopyBuffer` returns at the edge of history, the gold-shaped case reproducing the shipped 80/800/30 exactly, the EURUSD-shaped case that motivated the change, scale invariance across a 1000x range, that a derived entry slippage is never an inert drift gate, and every unusable input failing closed.
+
+Reading real ATR history, and whether the derived numbers actually produce trades on a given symbol, are Strategy Tester questions and are NOT covered here.
+
 ## Dashboard Layout Script
 
 `MQL5/Scripts/Tests/TestDashboardLayout.mq5` covers the chart panel's pure presentation rules: status-to-severity mapping (including that an unmapped status renders as a FAULT rather than as healthy), bar fill in pixels against each component's own maximum, the session tag, panel placement for all four corners including a window smaller than the panel, and reason trimming.

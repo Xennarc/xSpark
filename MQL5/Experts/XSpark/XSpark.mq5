@@ -1,6 +1,7 @@
 #property version     "1.00"
 #property description "XSpark Expert Advisor with ScoreBot_v3 MAX_SHARPE strategy."
 
+#include <XSpark/Core/AutoTune.mqh>
 #include <XSpark/Core/IndicatorCache.mqh>
 #include <XSpark/Core/Logger.mqh>
 #include <XSpark/Core/MarketState.mqh>
@@ -13,36 +14,63 @@
 #include <XSpark/Trade/PositionManager.mqh>
 #include <XSpark/UI/Dashboard.mqh>
 
-input group "General"
-input bool   InpEnableTrading = false;
-input ulong  InpMagicNumber = XSPARK_SCOREBOT_MAGIC_DEFAULT;
-input string InpOrderComment = XSPARK_SCOREBOT_COMMENT_DEFAULT;
-input int    InpMaxOpenTrades = 1;
-input bool   InpVerboseLog = false;
+input group "0. Adapt to this market"
+// The four thresholds below this group marked "Manual" are expressed in
+// ScoreBot points - the pip of whatever instrument the chart is on. That makes
+// them instrument-specific, and the shipped values are gold values. On EURUSD
+// an ATR floor of 80 asks for 80 PIPS of range on a timeframe whose ATR is
+// nearer 10, so the volatility gate refuses every bar and the EA never trades.
+// That is not hypothetical; it is what a EURUSD M15 run produced.
+//
+// With this on, those four are DERIVED from what the instrument actually does:
+// the reference is the median ATR of its own recent history, and the settings
+// below are percentages that mean the same thing on every symbol and timeframe.
+// Turn it off to use the manual values exactly as before. See ADR-026.
+input bool   InpAutoTuneForSymbol = true;   // Adapt thresholds to this market (recommended)
 
-input group "Strategy"
-input double InpMinScore = 2.0;
-input bool   InpDropIBR = false;
-input double InpLongScoreExtra = 0.0;
+// Volatility band, as a share of this market's normal range. Below the floor
+// there is too little movement to pay the costs; above the ceiling the bar is
+// an outlier rather than the market the strategy was built on. 60% and 600%
+// keep the 10:1 band shape the gold defaults shipped with (80 to 800), so the
+// ceiling stays what it always was - a guard against extreme bars rather than
+// a routine filter.
+input double InpQuietMarketPct = 60.0;      // Skip when range below this % of normal
+input double InpWildMarketPct = 600.0;      // Skip when range above this % of normal
 
-input group "RSI"
-input int InpRSILongMin = 40;
-input int InpRSILongMax = 70;
-input int InpRSIShortMin = 30;
-input int InpRSIShortMax = 60;
+// Slippage allowances, as a share of the SMALLEST stop this configuration can
+// produce. Expressed this way the entry figure IS the worst-case overshoot of
+// realised risk over selected risk (ADR-024), so it satisfies the drift bound
+// by construction. 25% reproduces the shipped gold value exactly.
+input double InpEntrySlipPct = 25.0;        // Entry slippage, % of smallest stop
+input double InpExitSlipPct = 85.0;         // Exit slippage, % of smallest stop
+input double InpSpreadCapPct = 40.0;        // Widest spread, % of smallest stop
 
-input group "ATR / exits"
-input double InpATRMinPoints = 80.0;
-input double InpATRMaxPoints = 800.0;
-input double InpATRMultSL = 1.5;
-input double InpMinRR = 1.5;
-input double InpMaxRR = 3.0;
-input double InpATRRatioBoost = 1.3;
-input double InpPartialTPRatio = 2.5;
-input double InpPartialClosePct = 50.0;
-input double InpATRMultTrail = 2.0;
-
-input group "Risk"
+input group "1. Basics"
+input bool   InpEnableTrading = false;  // Place real trades (off = watch and log only)
+input ulong  InpMagicNumber = XSPARK_SCOREBOT_MAGIC_DEFAULT;  // Bot ID (keep unique per chart)
+input string InpOrderComment = XSPARK_SCOREBOT_COMMENT_DEFAULT;  // Label shown on trades
+input int    InpMaxOpenTrades = 1;  // Most trades open at once
+input bool   InpVerboseLog = false;  // Log every skipped bar (noisy)
+input group "2. Signal quality"
+input double InpMinScore = 2.0;  // Setup quality needed, 0-9 (higher = pickier)
+input bool   InpDropIBR = false;  // Ignore inside-bar breakouts
+input double InpLongScoreExtra = 0.0;  // Extra quality demanded of buys only
+input group "3. Momentum filter (RSI)"
+input int InpRSILongMin = 40;  // Buys: lowest RSI allowed
+input int InpRSILongMax = 70;  // Buys: highest RSI allowed
+input int InpRSIShortMin = 30;  // Sells: lowest RSI allowed
+input int InpRSIShortMax = 60;  // Sells: highest RSI allowed
+input group "4. Stops, targets and market speed"
+input double InpATRMinPoints = 80.0;  // Manual: quietest market to trade (Adapt off)
+input double InpATRMaxPoints = 800.0;  // Manual: wildest market to trade (Adapt off)
+input double InpATRMultSL = 1.5;  // Stop distance, in average daily ranges
+input double InpMinRR = 1.5;  // Lowest reward-to-risk to accept
+input double InpMaxRR = 3.0;  // Highest reward-to-risk to aim for
+input double InpATRRatioBoost = 1.3;  // How fast rising volatility raises the target
+input double InpPartialTPRatio = 2.5;  // Take part profit at this many R
+input double InpPartialClosePct = 50.0;  // How much of the trade to bank there (%)
+input double InpATRMultTrail = 2.0;  // Trailing stop distance, in ranges
+input group "5. Risk and loss limits"
 // Defaults are the growth-optimal region for the edge measured in
 // docs/IMPROVEMENT_PLAN.md (36% win rate, 1.974 payoff, +0.0706 R per trade),
 // which puts the Kelly fraction at 3.58%. Growth per trade PEAKS there and
@@ -53,40 +81,38 @@ input group "Risk"
 // score, so identical evidence would otherwise size differently purely by the
 // hour of day, and at a larger risk figure that distortion is amplified. The
 // inputs remain separate so tiering can be reinstated deliberately.
-input double InpRiskPctTier1 = 3.0;
-input double InpRiskPctTier2 = 3.0;
-input double InpRiskPctTier3 = 3.0;
-input double InpMaxRiskPct = 3.5;
-input double InpMaxDailyDDPct = 15.0;
+input double InpRiskPctTier1 = 3.0;  // Risk per trade, weak setup (% of balance)
+input double InpRiskPctTier2 = 3.0;  // Risk per trade, fair setup (% of balance)
+input double InpRiskPctTier3 = 3.0;  // Risk per trade, strong setup (% of balance)
+input double InpMaxRiskPct = 3.5;  // Hard ceiling on risk per trade (%)
+input double InpMaxDailyDDPct = 15.0;  // Stop for the day after losing this much (%)
 // Account-level cap on total money at risk across ALL open positions, on every
 // symbol and every Magic Number. InpMaxRiskPct is a per-TRADE label and cannot
 // enforce AGENTS.md rule 27 on its own: three instances on three symbols, each
 // obeying 3%, is 9% at risk with nothing able to see it. Set this to the total
 // drawdown you are willing to have live at one moment.
-input double InpMaxAccountRiskPct = 6.0;
-
-input group "Sessions"
-input bool InpAllowAsianReduced = true;
-
-input group "Production controls"
-input bool   InpUseSpreadFilter = true;
-input double InpMaxSpreadPoints = 50.0;
-input double InpMaxSpreadATRPct = 10.0;
-input bool   InpUseTotalDDKillSwitch = true;
+input double InpMaxAccountRiskPct = 6.0;  // Most money at risk at once, all trades (%)
+input group "6. Trading hours"
+input bool InpAllowAsianReduced = true;  // Trade the Asian session at reduced weight
+input group "7. Safety and execution"
+input bool   InpUseSpreadFilter = true;  // Skip trades when the spread is too wide
+input double InpMaxSpreadPoints = 50.0;  // Manual: widest spread allowed (Adapt off)
+input double InpMaxSpreadATRPct = 10.0;  // Widest spread as a share of range (%)
+input bool   InpUseTotalDDKillSwitch = true;  // Stop trading for good after a big drawdown
 // Sized to survive an ordinary losing streak at the configured risk rather than
 // to feel small. At 3% risk, eight consecutive full-stop losses - the streak
 // the baseline run already produced - cost 21.6%. An 8% limit would latch on
 // the third loss and stop the account permanently on routine variance. The
 // startup log prints the exact tolerance for whatever values are set.
-input double InpMaxTotalDDPct = 25.0;
+input double InpMaxTotalDDPct = 25.0;  // Drawdown that stops the bot for good (%)
 // Clears a PERSISTED killswitch latch. The latch now survives restarts, so
 // this is the only way to resume after one. Set it true, attach, confirm the
 // CRITICAL line, then set it back to false.
-input bool   InpClearKillswitchLatch = false;
-input bool   InpUseStopLevelValidation = true;
-input bool   InpUseMarginCheck = true;
-input double InpMarginBufferPct = 20.0;
-input int    InpMaxQuoteAgeSeconds = 15;
+input bool   InpClearKillswitchLatch = false;  // RESET a triggered stop (set back to false)
+input bool   InpUseStopLevelValidation = true;  // Respect broker minimum stop distance
+input bool   InpUseMarginCheck = true;  // Check free margin before entering
+input double InpMarginBufferPct = 20.0;  // Spare margin to keep back (%)
+input int    InpMaxQuoteAgeSeconds = 15;  // Refuse to trade on prices older than (sec)
 // Slippage tolerances, in ScoreBot points (the pip of the instrument: 0.01 on
 // gold, 0.0001 on a 5-digit FX major, 0.01 on a 3-digit JPY cross). These were
 // compile-time constants tuned for gold, which made them silently wrong on
@@ -100,25 +126,21 @@ input int    InpMaxQuoteAgeSeconds = 15;
 // entries. The startup drift-bound line reports what the current value is
 // worth as a percentage, and a value that no longer bounds anything is a
 // DRIFT GATE FAULT.
-input double InpEntryDeviationPoints = XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS;
-
+input double InpEntryDeviationPoints = XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS;  // Manual: entry slippage allowed (Adapt off)
 // Exit: deliberately NOT subject to the same check, and deliberately larger.
 // A tolerance that is too small on an exit gets the close REJECTED, which
 // leaves live exposure that XSpark intended to be flat - the opposite of a
 // risk control. Generosity here is protective, so only a non-positive value is
 // refused.
-input double InpExitDeviationPoints = XSPARK_CLOSE_DEVIATION_SCORE_POINTS;
-
+input double InpExitDeviationPoints = XSPARK_CLOSE_DEVIATION_SCORE_POINTS;  // Manual: exit slippage allowed (Adapt off)
 // Chart panel placement. The panel paints its own opaque background, so it is
 // legible on any chart colour scheme; these only move it out of the way.
-input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER;
-input int    InpDashboardMarginX = 12;
-input int    InpDashboardMarginY = 18;
-
-input bool   InpUseWeekendClose = false;
-input int    InpWeekendCloseHour = 20;
-input int    InpWeekendCloseMinute = 0;
-
+input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER;  // On-chart panel position
+input int    InpDashboardMarginX = 12;  // Panel distance from side edge (px)
+input int    InpDashboardMarginY = 18;  // Panel distance from top/bottom (px)
+input bool   InpUseWeekendClose = false;  // Close everything before the weekend
+input int    InpWeekendCloseHour = 20;  // Weekend close hour (server time)
+input int    InpWeekendCloseMinute = 0;  // Weekend close minute
 CXSparkLogger          g_logger;
 CXSparkMarketState     g_market_state;
 CXSparkIndicatorCache  g_indicator_cache;
@@ -146,6 +168,12 @@ string g_score_point_size_reason = "ScoreBot point size has not been resolved.";
 // once at initialisation rather than re-derived per signal.
 bool   g_entry_drift_bound_usable = false;
 string g_entry_drift_bound_reason = "Entry drift bound has not been evaluated.";
+
+// Market calibration. Runs once, on the first bar where enough history exists,
+// and is retried on every later bar until it succeeds - so a short history
+// delays trading rather than permanently disabling it.
+bool   g_auto_tune_complete = false;
+XSparkAutoTuneResult g_auto_tune;
 
 // Increments in OnTester and OnDeinit so a single run proves which ran first,
 // rather than the ordering being assumed from documentation.
@@ -370,42 +398,76 @@ bool XSparkValidateInputs()
    // compile-time constant tuned for gold. Whether it still bounds anything is
    // a property of the WHOLE configuration - deviation, ATR floor and stop
    // multiple together - so it is checked here rather than trusted. ADR-024.
-   double min_stop_points = 0.0;
-   double overshoot_ratio = 0.0;
-   string drift_reason = "";
-   const int drift_bound = XSparkEntryDriftBound(InpEntryDeviationPoints,
-                                                 InpATRMultSL,
-                                                 InpATRMinPoints,
-                                                 min_stop_points,
-                                                 overshoot_ratio,
-                                                 drift_reason);
-
-   g_entry_drift_bound_usable = drift_bound != XSPARK_DRIFT_BOUND_FAULT;
-   g_entry_drift_bound_reason = drift_reason;
-
-   if(drift_bound == XSPARK_DRIFT_BOUND_FAULT)
+   //
+   // With auto-tune on, the deviation checked here is NOT the one that will be
+   // used, so the check is deferred to the calibration pass. The flag stays
+   // false until then and the SafetyManager vetoes new entries, so the window
+   // before the first calibration fails closed rather than trading on a bound
+   // nobody verified.
+   if(InpAutoTuneForSymbol)
    {
-      // Deliberately NOT INIT_FAILED. Refusing to initialise would abandon any
-      // live position to the broker with no XSpark management at all, which is
-      // worse than the misconfiguration. The SafetyManager veto stops NEW
-      // exposure while protective management of existing positions continues,
-      // exactly as the point-size fault does. AGENTS.md rules 9 and 23.
-      g_logger.Critical("EA", "Entry drift gate is inert: " + drift_reason +
-                              " New entries are blocked until the entry deviation, the ATR floor or the stop multiple is corrected for this instrument.");
-   }
-   else if(drift_bound == XSPARK_DRIFT_BOUND_WARN)
-   {
-      g_logger.Warn("EA", drift_reason);
+      g_entry_drift_bound_usable = false;
+      g_entry_drift_bound_reason = "Waiting for the first market calibration.";
+
+      if(InpQuietMarketPct <= 0.0 || InpWildMarketPct <= InpQuietMarketPct)
+      {
+         g_logger.Critical("EA", "The quiet-market percentage must be positive and below the wild-market percentage, or no bar could ever pass the volatility gate.");
+         return false;
+      }
+
+      if(InpEntrySlipPct <= 0.0 || InpExitSlipPct <= 0.0 || InpSpreadCapPct <= 0.0)
+      {
+         g_logger.Critical("EA", "Slippage and spread percentages must be positive.");
+         return false;
+      }
+
+      if(InpEntrySlipPct >= 100.0)
+      {
+         g_logger.Critical("EA", "Entry slippage at or above 100% of the smallest stop would let a fill land at or beyond its own stop.");
+         return false;
+      }
+
+      g_logger.Info("EA", "Adapting thresholds to this market; the volatility band, spread cap and slippage allowances will be derived from its own recent range. New entries are blocked until that completes.");
    }
    else
    {
-      g_logger.Info("EA", drift_reason);
-   }
+      double min_stop_points = 0.0;
+      double overshoot_ratio = 0.0;
+      string drift_reason = "";
+      const int drift_bound = XSparkEntryDriftBound(InpEntryDeviationPoints,
+                                                    InpATRMultSL,
+                                                    InpATRMinPoints,
+                                                    min_stop_points,
+                                                    overshoot_ratio,
+                                                    drift_reason);
 
-   if(!MathIsValidNumber(InpExitDeviationPoints) || InpExitDeviationPoints <= 0.0)
-   {
-      g_logger.Critical("EA", "InpExitDeviationPoints must be a finite positive number of ScoreBot points.");
-      return false;
+      g_entry_drift_bound_usable = drift_bound != XSPARK_DRIFT_BOUND_FAULT;
+      g_entry_drift_bound_reason = drift_reason;
+
+      if(drift_bound == XSPARK_DRIFT_BOUND_FAULT)
+      {
+         // Deliberately NOT INIT_FAILED. Refusing to initialise would abandon any
+         // live position to the broker with no XSpark management at all, which is
+         // worse than the misconfiguration. The SafetyManager veto stops NEW
+         // exposure while protective management of existing positions continues,
+         // exactly as the point-size fault does. AGENTS.md rules 9 and 23.
+         g_logger.Critical("EA", "Entry drift gate is inert: " + drift_reason +
+                                 " New entries are blocked until the entry deviation, the ATR floor or the stop multiple is corrected for this instrument.");
+      }
+      else if(drift_bound == XSPARK_DRIFT_BOUND_WARN)
+      {
+         g_logger.Warn("EA", drift_reason);
+      }
+      else
+      {
+         g_logger.Info("EA", drift_reason);
+      }
+
+      if(!MathIsValidNumber(InpExitDeviationPoints) || InpExitDeviationPoints <= 0.0)
+      {
+         g_logger.Critical("EA", "InpExitDeviationPoints must be a finite positive number of ScoreBot points.");
+         return false;
+      }
    }
 
    if(InpWeekendCloseHour < 0 || InpWeekendCloseHour > 23 ||
@@ -906,6 +968,130 @@ void XSparkEnterStateRecovery(XSparkTradePlan &plan, XSparkExecutionResult &resu
                          "Entry confirmed; state for the new position was rebuilt from broker values by reconciliation.";
 }
 
+// Derives the instrument-scaled thresholds from the instrument's own recent
+// range and pushes them into the components that use them.
+//
+// Deliberately NOT in OnInit. Indicator history is not reliably available there
+// - in the Strategy Tester especially - and a calibration built on three bars
+// would be worse than none. This runs at the first point the EA already knows
+// it has usable data, and every component it feeds is updated through a setter
+// rather than a re-Initialize, because re-initialising PositionManager would
+// clear the per-position state of live trades.
+//
+// Returns true when the EA may proceed to evaluate. Fails CLOSED: until it
+// succeeds the SafetyManager veto on the drift bound is left in place.
+bool XSparkCalibrateForSymbol()
+{
+   if(!InpAutoTuneForSymbol || g_auto_tune_complete)
+      return true;
+
+   // Sampled from the indicator cache's own ATR14 handle, which this caller has
+   // already refreshed successfully. Opening a second handle here would measure
+   // the market with one ATR and gate it with another, and a handle created and
+   // released on each retry could never warm up between attempts.
+   double samples[];
+   const int copied = g_indicator_cache.CopyATR14BaseHistory(XSPARK_AUTOTUNE_SAMPLE_BARS, samples);
+
+   if(copied <= 0)
+   {
+      g_last_block_reason = "No ATR history is available yet to calibrate this market.";
+      return false;
+   }
+
+   double reference_price = 0.0;
+   int valid_samples = 0;
+   string median_reason = "";
+   if(!XSparkSampleMedian(samples, copied, XSPARK_AUTOTUNE_MIN_SAMPLES,
+                          reference_price, valid_samples, median_reason))
+   {
+      g_last_block_reason = "Market calibration is waiting: " + median_reason;
+      return false;
+   }
+
+   // The samples are prices; every threshold downstream is in ScoreBot points.
+   const double reference_points = XSparkPriceToScorePoints(reference_price, g_score_point_size);
+
+   string derive_reason = "";
+   if(!XSparkDeriveAutoTune(reference_points,
+                            InpQuietMarketPct,
+                            InpWildMarketPct,
+                            InpATRMultSL,
+                            InpEntrySlipPct,
+                            InpExitSlipPct,
+                            InpSpreadCapPct,
+                            g_auto_tune,
+                            derive_reason))
+   {
+      g_last_block_reason = "Market calibration failed: " + derive_reason;
+      g_logger.Critical("AutoTune", g_last_block_reason);
+      return false;
+   }
+
+   // Every setter is checked. A component that refuses a derived value would
+   // otherwise keep its gold default while the others moved, which is a worse
+   // state than not calibrating at all.
+   if(!g_strategy.SetVolatilityBand(g_auto_tune.atr_min_points, g_auto_tune.atr_max_points) ||
+      !g_safety_manager.SetMaxSpreadScorePoints(g_auto_tune.spread_cap_points) ||
+      !g_execution_engine.SetEntryDeviationScorePoints(g_auto_tune.entry_deviation_points) ||
+      !g_position_manager.SetExitDeviationScorePoints(g_auto_tune.exit_deviation_points))
+   {
+      g_last_block_reason = "A derived threshold was refused by the component that uses it; the configuration is left uncalibrated and new entries stay blocked.";
+      g_logger.Critical("AutoTune", g_last_block_reason);
+      return false;
+   }
+
+   // Re-run the ADR-024 bound against what will ACTUALLY be used. By
+   // construction it passes, because the entry deviation was derived as a
+   // percentage of the same minimum stop the bound measures against - but it is
+   // checked rather than assumed, because that is the whole point of the bound.
+   double bound_min_stop = 0.0;
+   double bound_ratio = 0.0;
+   string bound_reason = "";
+   const int bound = XSparkEntryDriftBound(g_auto_tune.entry_deviation_points,
+                                           InpATRMultSL,
+                                           g_auto_tune.atr_min_points,
+                                           bound_min_stop,
+                                           bound_ratio,
+                                           bound_reason);
+
+   g_entry_drift_bound_usable = bound != XSPARK_DRIFT_BOUND_FAULT;
+   g_entry_drift_bound_reason = bound_reason;
+   g_safety_manager.SetEntryDriftBound(g_entry_drift_bound_usable, g_entry_drift_bound_reason);
+
+   if(bound == XSPARK_DRIFT_BOUND_FAULT)
+   {
+      g_logger.Critical("AutoTune", "Derived entry slippage does not bound realised risk: " + bound_reason);
+      return false;
+   }
+
+   if(bound == XSPARK_DRIFT_BOUND_WARN)
+      g_logger.Warn("AutoTune", bound_reason);
+
+   g_auto_tune_complete = true;
+
+   g_logger.Info("AutoTune",
+                 StringFormat("Calibrated %s %s from %d of %d ATR samples: %s",
+                              _Symbol,
+                              EnumToString(g_base_timeframe),
+                              valid_samples,
+                              copied,
+                              derive_reason));
+
+   // Reported so an operator can see immediately whether the spread on this
+   // symbol will bind the gate, rather than inferring it from a run that took
+   // no trades.
+   const double spread_points = XSparkPriceToScorePoints(g_market_state.SpreadPrice(), g_score_point_size);
+   g_logger.Info("AutoTune",
+                 StringFormat("Current spread %.2f points is %.1f%% of the smallest stop (cap %.1f%%) and %.1f%% of the reference range (cap %.1f%%).",
+                              spread_points,
+                              g_auto_tune.min_stop_points > 0.0 ? spread_points / g_auto_tune.min_stop_points * 100.0 : 0.0,
+                              InpSpreadCapPct,
+                              g_auto_tune.reference_atr_points > 0.0 ? spread_points / g_auto_tune.reference_atr_points * 100.0 : 0.0,
+                              InpMaxSpreadATRPct));
+
+   return true;
+}
+
 void XSparkEvaluateNewBar()
 {
    if(!g_indicator_cache.RefreshClosedData())
@@ -913,6 +1099,13 @@ void XSparkEvaluateNewBar()
       g_status = "SCANNING";
       g_last_block_reason = g_indicator_cache.LastReason();
       XSparkVerboseBlock("IndicatorCache", g_last_block_reason);
+      return;
+   }
+
+   if(!XSparkCalibrateForSymbol())
+   {
+      g_status = "SCANNING";
+      XSparkVerboseBlock("AutoTune", g_last_block_reason);
       return;
    }
 

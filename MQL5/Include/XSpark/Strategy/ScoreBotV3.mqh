@@ -338,6 +338,33 @@ public:
       return report.threshold_passed;
    }
 
+   // Replaces the volatility band after auto-tune derives it for this symbol.
+   // Configure() would do the same job, but it takes fourteen arguments and
+   // restating thirteen unchanged ones to move two is how the wrong value gets
+   // passed. Refuses an unusable band rather than muting the strategy silently.
+   bool SetVolatilityBand(const double atr_min_points, const double atr_max_points)
+   {
+      if(!MathIsValidNumber(atr_min_points) || atr_min_points <= 0.0 ||
+         !MathIsValidNumber(atr_max_points) || atr_max_points <= atr_min_points)
+      {
+         return false;
+      }
+
+      m_atr_min_points = atr_min_points;
+      m_atr_max_points = atr_max_points;
+      return true;
+   }
+
+   double ATRMinPoints()
+   {
+      return m_atr_min_points;
+   }
+
+   double ATRMaxPoints()
+   {
+      return m_atr_max_points;
+   }
+
    string LastReason()
    {
       return m_last_reason;

@@ -553,6 +553,33 @@ public:
       return m_score_point_size_conforms;
    }
 
+   // Replaces the absolute spread cap after auto-tune derives it for this
+   // symbol. The ATR-percentage spread gate beside it is already scale-free and
+   // is deliberately left alone.
+   bool SetMaxSpreadScorePoints(const double max_spread_points)
+   {
+      if(!MathIsValidNumber(max_spread_points) || max_spread_points <= 0.0)
+         return false;
+
+      m_max_spread_points = max_spread_points;
+      return true;
+   }
+
+   double MaxSpreadScorePoints()
+   {
+      return m_max_spread_points;
+   }
+
+   // Set after auto-tune derives the entry deviation, because with auto-tune on
+   // the value checked at OnInit is not the value that will be used. Until this
+   // is called the flag stays false and CanOpenNewTrades vetoes, so the window
+   // before calibration fails closed rather than trading on an unchecked bound.
+   void SetEntryDriftBound(const bool usable, const string bound_reason)
+   {
+      m_entry_drift_bound_usable = usable;
+      m_entry_drift_bound_reason = bound_reason;
+   }
+
    bool EntryDriftBoundUsable()
    {
       return m_entry_drift_bound_usable;
