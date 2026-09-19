@@ -109,3 +109,9 @@ MetaEditor compilation and visual verification of the Inputs dialog remain
 outstanding. No risk defaults or trade-frequency/profitability claims changed.
 The previous auto-adaptation, risk and execution rationale remains documented in
 ADRs 022, 024 and 026 in `docs/DECISIONS.md`.
+
+## Chart panel
+
+The panel now has **Start with a compact chart panel** and **Animate live dashboard
+activity** in the display group. **Less / Expand** changes the view on the chart.
+See the [dashboard guide](DASHBOARD.md) for live activity, trade totals and messages.

@@ -101,7 +101,17 @@ The EA calls it at the first bar where enough history exists rather than in `OnI
 
 The panel paints its own opaque background rather than inheriting the chart's, so it stays legible on a light chart, a dark chart and the Strategy Tester alike. Placement is an input - a corner plus margins - resolved into left-upper space on every refresh, so every object anchors identically and the panel stays put when the chart window is resized.
 
-Presentation rules that can be decided without a chart live in `UI/DashboardLayout.mqh` and are tested there: status-to-severity mapping, bar fill in pixels, the session tag, panel placement, and reason trimming. Two contracts in that file are deliberate and load-bearing. A bar whose value cannot be computed renders EMPTY, never full, so an unreadable reading can never look like a maximum. And severity treats green as a closed set of `SCANNING` and `MANAGING`, with everything unrecognised mapping to FAULT - the inverse of what shipped, where an unmapped status fell through to green and a status added elsewhere in the EA would render as healthy until someone remembered to edit the panel. See ADR-025.
+Presentation helpers in `UI/DashboardLayout.mqh` handle bar pixels, placement,
+wrapping and candle countdowns. `Core/UserMessages.mqh` supplies the shared
+plain-language notices for the panel and warning/error logs; unknown failures
+remain attention states. Logger preserves the original reason after the readable
+explanation. See [Dashboard](DASHBOARD.md) for layout, refresh and validation.
+
+The EA takes a display snapshot of live quotes and matching positions, then
+renders it at a bounded rate. It stores the last closed-candle decision separately
+from routine management status and recomputes hard alarms for each render. The
+one-second display timer and chart events never evaluate signals or send orders.
+The panel has collapsible detail cards; nonvisual tests skip graphical work.
 
 `AnnotateEntry` runs only at fill time, which is why `Deinitialize` takes a flag: a de-init that will be followed by a re-init on the same chart must not delete the entry, stop and target markers of positions that are still open.
 

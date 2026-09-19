@@ -2,6 +2,7 @@
 #define XSPARK_UI_DASHBOARD_LAYOUT_MQH
 
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
+#include <XSpark/Core/UserMessages.mqh>
 
 // Pure layout and presentation decisions for the chart panel. Nothing in this
 // file touches the chart API, so every rule below is exercisable from a test
@@ -20,8 +21,8 @@
 #define XSPARK_UI_SEV_FAULT   4   // something is wrong and stays wrong
 
 // Panel geometry. Widths are in screen pixels.
-#define XSPARK_UI_PANEL_WIDTH 306
-#define XSPARK_UI_PANEL_HEIGHT 404
+#define XSPARK_UI_PANEL_WIDTH 400
+#define XSPARK_UI_PANEL_HEIGHT 660
 #define XSPARK_UI_PAD 12
 
 // Maps a status string to its severity.
@@ -135,18 +136,18 @@ void XSparkDashboardPanelOrigin(const int corner,
                                 const int margin_x,
                                 const int margin_y,
                                 int &x,
-                                int &y)
+                                int &y,
+                                const int panel_width = XSPARK_UI_PANEL_WIDTH,
+                                const int panel_height = XSPARK_UI_PANEL_HEIGHT)
 {
    const bool right = (corner == CORNER_RIGHT_UPPER || corner == CORNER_RIGHT_LOWER);
    const bool lower = (corner == CORNER_LEFT_LOWER || corner == CORNER_RIGHT_LOWER);
 
-   x = right ? chart_width - XSPARK_UI_PANEL_WIDTH - margin_x : margin_x;
-   y = lower ? chart_height - XSPARK_UI_PANEL_HEIGHT - margin_y : margin_y;
+   x = right ? chart_width - panel_width - margin_x : margin_x;
+   y = lower ? chart_height - panel_height - margin_y : margin_y;
 
-   if(x < 0)
-      x = 0;
-   if(y < 0)
-      y = 0;
+   x = (int)MathMax(0, MathMin(x, chart_width - panel_width));
+   y = (int)MathMax(0, MathMin(y, chart_height - panel_height));
 }
 
 // Trims a reason string to what fits on the footer line, with an ellipsis so a
@@ -166,4 +167,55 @@ string XSparkDashboardTrim(const string text, const int max_chars)
    return StringSubstr(text, 0, max_chars - 3) + "...";
 }
 
+// UI snapshot only. Reading it must not run a strategy or send an order.
+struct XSparkDashboardLive
+{
+   string symbol, timeframe, currency, entry_style;
+   double bid, ask, open_profit;
+   int digits, seconds_to_close, bar_seconds, position_count;
+   long quote_age, quote_stamp;
+   bool connected, quote_valid, positions_valid, animate;
+   string positions[3];
+   double position_profit[3];
+};
+
+int XSparkDashboardSecondsLeft(const datetime now, const datetime opened, const int seconds)
+{
+   if(now <= 0 || opened <= 0 || seconds <= 0 || now < opened) return -1;
+   const long elapsed = now - opened;
+   if(elapsed >= seconds) return 0; // Never start a fake next candle without a tick.
+   return seconds - (int)elapsed;
+}
+
+// Word wrapping for the explanation card; tooltip/journal retain the full text.
+string XSparkDashboardLine(const string text, const int line, const int columns, const bool final_line = false)
+{
+   if(columns < 1 || line < 0) return "";
+   int start = 0;
+   for(int row = 0; row <= line; row++)
+   {
+      const int remaining = StringLen(text) - start;
+      if(remaining <= 0) return "";
+      int length = (int)MathMin(columns, remaining);
+      if(remaining > columns)
+         for(int k = length; k > 0; k--)
+            if(StringSubstr(text, start + k, 1) == " ") { length = k; break; }
+      if(row == line)
+      {
+         if(final_line && remaining > length)
+            return XSparkDashboardTrim(StringSubstr(text, start), columns);
+         return StringSubstr(text, start, length);
+      }
+      start += length;
+      while(StringSubstr(text, start, 1) == " ") start++;
+   }
+   return "";
+}
+
+string XSparkDashboardGate(const string verdict)
+{
+   if(verdict == "PASS") return "Ready";
+   if(verdict == "OFF") return "Off";
+   return "Waiting";
+}
 #endif

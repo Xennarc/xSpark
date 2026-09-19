@@ -1,5 +1,6 @@
 #ifndef XSPARK_CORE_LOGGER_MQH
 #define XSPARK_CORE_LOGGER_MQH
+#include <XSpark/Core/UserMessages.mqh>
 
 enum EXSparkLogLevel
 {
@@ -52,6 +53,18 @@ public:
    {
       if(level == XSPARK_LOG_DEBUG && !m_debug_enabled)
          return;
+
+      if(level >= XSPARK_LOG_WARN)
+      {
+         XSparkNotice notice;
+         XSparkExplain("", message, notice, component);
+         if(level == XSPARK_LOG_WARN && notice.title == "Something needs attention")
+            XSparkSetNotice(notice, 2, "Update from " + component, XSparkReadableInputs(message), "Review these details if the change was unexpected.");
+         PrintFormat("%s [%s] [%s] %s. %s Next: %s | Technical details: %s",
+                     m_application, LevelName(level), component,
+                     notice.title, notice.detail, notice.action, message);
+         return;
+      }
 
       PrintFormat("%s [%s] [%s] %s",
                   m_application,
