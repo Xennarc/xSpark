@@ -51,6 +51,7 @@ private:
    CTrade m_trade;
    CXSparkStateStore m_store;
    XSparkTradeState m_states[];
+   XSparkTrailPlan m_trail_plan;
 
    datetime ServerTimeNow()
    {
@@ -142,6 +143,8 @@ private:
       ok = m_store.Set(PositionStateKey(state.identifier, "rd"), state.initial_risk_distance) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "mf"), state.mfe_price) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "ma"), state.mae_price) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "pk"), state.trail_peak) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "pt"), (double)state.trail_peak_time) && ok;
 
       if(!ok)
          m_last_reason = "Failed to persist XSpark position state to terminal global variables.";
@@ -193,6 +196,8 @@ private:
       state.initial_risk_distance = m_store.Get(PositionStateKey(state.identifier, "rd"), state.initial_risk_distance);
       state.mfe_price = m_store.Get(PositionStateKey(state.identifier, "mf"), state.mfe_price);
       state.mae_price = m_store.Get(PositionStateKey(state.identifier, "ma"), state.mae_price);
+      state.trail_peak = m_store.Get(PositionStateKey(state.identifier, "pk"), state.trail_peak);
+      state.trail_peak_time = (datetime)m_store.Get(PositionStateKey(state.identifier, "pt"), (double)state.trail_peak_time);
       return true;
    }
 
@@ -213,6 +218,8 @@ private:
       m_store.Delete(PositionStateKey(state.identifier, "bt"));
       m_store.Delete(PositionStateKey(state.identifier, "pi"));
       m_store.Delete(PositionStateKey(state.identifier, "rd"));
+      m_store.Delete(PositionStateKey(state.identifier, "pk"));
+      m_store.Delete(PositionStateKey(state.identifier, "pt"));
    }
 
    void RemoveStateAt(const int index)
@@ -998,6 +1005,7 @@ public:
       m_managed_position_count = 0;
       m_unmanaged_position_count = 0;
       m_last_reason = "Position manager is not initialized.";
+      XSparkResetTrailPlan(m_trail_plan);
       m_last_registration_bound_state = false;
       m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
@@ -1376,10 +1384,7 @@ public:
                         const bool use_weekend_close,
                         const int weekend_close_hour,
                         const int weekend_close_minute,
-                        CXSparkLogger &logger,
-                        const int trail_mode = XSPARK_TRAIL_ATR_AFTER_PARTIAL,
-                        const double anchor_sl_long = 0.0,
-                        const double anchor_sl_short = 0.0)
+                        CXSparkLogger &logger)
    {
       if(!m_initialized)
          return;
@@ -1463,18 +1468,56 @@ public:
 
          const double exit_side_price = direction == XSPARK_SIGNAL_BUY ? bid : ask;
 
-         // Candle-anchor mode. The stop follows an anchor the caller recomputes
-         // once per closed bar; there is no partial, no break-even step and no
-         // ATR trail. The ratchet is one-way by construction: a candidate that
-         // is not tighter than the live stop is discarded, so a re-anchor can
-         // never widen risk, and a missing anchor leaves the existing broker
-         // stop exactly where it is.
-         if(trail_mode == XSPARK_TRAIL_CANDLE_ANCHOR)
+         // Candle-anchor mode. No partial and no break-even step: the whole exit
+         // is the trail, composed from the candle anchor, an optional chandelier
+         // measured from the position's own closed-candle peak, and an optional
+         // breakeven lock. The ratchet is one-way by construction - a candidate
+         // that is not tighter than the live stop is discarded - so no layer can
+         // widen risk, and a pass that produces nothing leaves the broker stop
+         // exactly where it is.
+         if(m_trail_plan.mode == XSPARK_TRAIL_CANDLE_ANCHOR)
          {
-            const double anchor = direction == XSPARK_SIGNAL_BUY ? anchor_sl_long : anchor_sl_short;
+            // The peak advances once per candle, identified by its timestamp, so
+            // a tick storm inside one candle cannot ratchet it repeatedly and a
+            // restart mid-candle cannot double-count the same extreme.
+            if(m_trail_plan.closed_candle_ready &&
+               m_trail_plan.closed_time > 0 &&
+               m_states[index].trail_peak_time != m_trail_plan.closed_time)
+            {
+               const double advanced = XSparkTrailUpdatedPeak(direction,
+                                                              m_states[index].trail_peak,
+                                                              m_trail_plan.closed_high,
+                                                              m_trail_plan.closed_low);
 
-            if(anchor <= 0.0)
+               if(advanced > 0.0)
+               {
+                  m_states[index].trail_peak = advanced;
+                  m_states[index].trail_peak_time = m_trail_plan.closed_time;
+                  PersistStateChecked(m_states[index], logger);
+               }
+            }
+
+            const double anchor = direction == XSPARK_SIGNAL_BUY ? m_trail_plan.anchor_long
+                                                                 : m_trail_plan.anchor_short;
+
+            double candidate = 0.0;
+            double peak_r = 0.0;
+            string trail_reason = "";
+
+            if(!XSparkTrailCandidate(direction,
+                                     entry,
+                                     risk_distance,
+                                     exit_side_price,
+                                     m_trail_plan.atr,
+                                     anchor,
+                                     m_states[index].trail_peak,
+                                     m_trail_plan.tuning,
+                                     candidate,
+                                     peak_r,
+                                     trail_reason))
+            {
                continue;
+            }
 
             double adjusted_sl = 0.0;
             double ignored_tp = 0.0;
@@ -1483,7 +1526,7 @@ public:
             if(!XSparkAdjustProtectionLevels(m_symbol,
                                              direction,
                                              exit_side_price,
-                                             anchor,
+                                             candidate,
                                              0.0,
                                              m_use_stop_level_validation,
                                              adjusted_sl,
@@ -1501,11 +1544,14 @@ public:
             if(tighter && ModifyPositionStops(ticket, adjusted_sl, current_tp, "Candle trail", logger))
             {
                logger.Info("PositionManager",
-                           StringFormat("Candle trail ticket=%I64u oldSL=%s newSL=%s anchor=%s",
+                           StringFormat("Trail ticket=%I64u oldSL=%s newSL=%s anchor=%s peak=%s peakR=%.2f %s",
                                         ticket,
                                         DoubleToString(live_sl, digits),
                                         DoubleToString(adjusted_sl, digits),
-                                        DoubleToString(anchor, digits)));
+                                        DoubleToString(anchor, digits),
+                                        DoubleToString(m_states[index].trail_peak, digits),
+                                        peak_r,
+                                        trail_reason));
                m_states[index].current_trail_sl = adjusted_sl;
                PersistStateChecked(m_states[index], logger);
             }
@@ -1997,6 +2043,22 @@ public:
    // Replaces the exit deviation after auto-tune derives it for this symbol.
    // A setter rather than a re-Initialize: re-initialising would clear the
    // per-position state array and the R ledger, abandoning live positions.
+   // Set immediately before every ManagePositions call by a strategy that trails
+   // on candle anchors. A caller that never sets it keeps the default plan,
+   // which is the ATR-after-partial behaviour ScoreBot_v3 has always had.
+   bool SetTrailPlan(const XSparkTrailPlan &plan)
+   {
+      string reason = "";
+      if(!XSparkValidateTrailTuning(plan.tuning, reason))
+      {
+         m_last_reason = reason;
+         return false;
+      }
+
+      m_trail_plan = plan;
+      return true;
+   }
+
    bool SetExitDeviationScorePoints(const double deviation_score_points)
    {
       if(!MathIsValidNumber(deviation_score_points) || deviation_score_points <= 0.0)

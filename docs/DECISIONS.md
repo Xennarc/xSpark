@@ -262,3 +262,31 @@ The check is source analysis and knows nothing about MQL5 semantics. It cannot p
 One grouping change followed from the same review. XSparkFlow's ATR band sat under "Manual limits - only when auto-adapt is off", which was true but misleading: the band is read only by the volatility filter, which ships off. It now sits in a group with that filter, so an operator can see that turning the filter off makes both numbers inert.
 
 What this does NOT do is make the two bots independent of each other. They still share an account, and `InpFlowMaxAccountRiskPct` is still measured across all open positions including the other bot's. That coupling is deliberate and is the one that should exist.
+
+## ADR-029 - CandleFlow's Trailing Stop Is A Stack, And Its Floor Is A Safety Control
+
+CandleFlow has no take-profit. The trailing stop is not a feature of the strategy, it is the strategy's only exit, and the version that shipped was one line of arithmetic: the far wick of the last closed candle, plus a buffer, ratcheted one way. Three things were wrong with that for a strategy carrying the whole exit on it.
+
+The first is a defect rather than a design limit. `InpFlowMinStopATRMult` bounded the stop distance at ENTRY only; the trail branch validated against the broker's minimum stop level and nothing else. A doji or a narrow inside candle printing near the highs therefore placed the stop at roughly `price - 0.10 x ATR`, which on XAUUSD M30 is about thirty points - the spread, plus ordinary noise. The position was then removed by a tick while the move it was riding was still intact, and the journal would record it as a normal trailing-stop exit. A trailing stop that can sit inside the spread is a delayed market order.
+
+So the floor is now a property of the trail, not of the entry, and it is the one layer that ships on. Widening a candidate away from the market can only ever reduce the chance of being stopped, and the one-way ratchet still refuses anything looser than the live stop, so the floor cannot give back protection the trade has already banked. It is checked in both directions and against a candidate that has landed through the market entirely, which the tiered trail can produce when the peak is far above the current quote.
+
+The second is that anchoring to one candle throws away the room earlier candles earned. The answer chosen here is a chandelier: trail from the best price the position itself has seen, measured on closed candles, wicks included, because that is the price the market actually reached. That peak is per-position state and is persisted, because a terminal restart mid-trade that reset the peak to the current candle would hand back the entire trail in one pass.
+
+It is deliberately NOT the `mfe_price` PositionManager already records. That one is sampled on the exit-side quote at every management pass, so it moves intrabar; a trail built on it would depend on when a tick happened to arrive, which is not reproducible in the Tester and not what "on candle close" means. The peak also advances at most once per candle, keyed on the candle's timestamp, so a tick storm inside one candle cannot ratchet it repeatedly.
+
+The third is that a fixed trail is profit-blind: identical at +0.2R and +8R. Tiering shrinks the chandelier multiple linearly between two R marks, and a breakeven lock pins the stop once the trade has earned a configurable amount. Both key off maturity measured FROM THE PEAK rather than from the live price, and that choice is load-bearing: peak-based maturity is monotonic, so a tier once reached is never given back and a retracement can never loosen the trail. Current-price maturity would let a trade oscillate across a tier boundary and widen its own stop, which is the failure that turns a trailing stop into no stop.
+
+The interpolation is linear rather than stepped for the same reason a tier boundary is a bad place to be: a step means a small price change moves the stop a long way, and every position sitting near that boundary moves together.
+
+The layers compose by taking the most protective candidate rather than by precedence. Precedence would mean choosing, in advance and for every market, whether candle structure or volatility should win - a choice there is no evidence to make. "Whichever is tighter" needs no such claim and cannot be wrong in the direction that matters, since a layer proposing nothing simply does not win.
+
+Everything except the floor ships OFF. CandleFlow's documented rule is the plain candle trail, and turning three new layers on by default would mean the shipped behaviour is not the one the documentation describes. `presets/xauusd-m30-candleflow-advanced.set` carries the whole stack turned on, with the reasoning for each number written next to it.
+
+A refused configuration blocks new entries rather than being ignored. For a strategy whose only exit is this stop, a trailing setting the EA cannot honour is not something to proceed past - and positions already open keep trailing on the last accepted plan, because the alternative is abandoning a live position to fix a configuration error.
+
+Mechanically, the three positional trailing arguments on `ManagePositions` became one `XSparkTrailPlan` set immediately before each call. The anchors, the closed-candle extremes and the tuning all change together on a candle boundary, and a caller that set some and forgot the rest would trail against a mix of two different candles. ScoreBot_v3's ten-argument call site is unchanged and keeps the default plan, which is its existing ATR-after-partial behaviour.
+
+The arithmetic lives in `Trade/TrailingStop.mqh` rather than in the strategy, because a trailing stop is a property of an open position and PositionManager is what owns open positions. Putting it in the Strategy layer would have forced PositionManager to depend on a strategy header to trail a position it already owns.
+
+No profitability claim is made. The defaults in the advanced preset were chosen for plausibility and have not been measured against anything.
