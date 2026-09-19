@@ -9,52 +9,57 @@
 ; candle's far wick, and re-anchors to the far wick of every later closed M30
 ; candle, tightening only.
 ;
+; Every identifier below carries the InpFlow prefix, which is what keeps this
+; file and a ScoreBot_v3 .set from configuring each other: MetaTrader applies a
+; preset by identifier, so names that do not exist in the target EA are ignored.
+; Loading a ScoreBot preset into XSparkFlow now changes nothing at all.
+;
 ; TO CHANGE TIMEFRAME: attach the EA to a different chart period. Every distance
 ; here is a multiple of that period's own average range, so nothing in this file
 ; needs editing. Supported periods: M1, M5, M15, M30, H1, H2, H4.
 ;
-; Risk starts at 1% per trade with trading DISABLED. Set InpEnableTrading=true
+; Risk starts at 1% per trade with trading DISABLED. Set InpFlowEnableTrading=true
 ; only after a Strategy Tester run and a demo account have shown you what this
 ; rule actually does - it is in the market far more often than ScoreBot_v3.
 
-InpEnableTrading=false
-InpAutoTuneForSymbol=true
-InpMaxOpenTrades=1
+InpFlowEnableTrading=false
+InpFlowAutoTuneForSymbol=true
+InpFlowMaxOpenTrades=1
 
-InpBufferATRMult=0.10
-InpBufferRangePct=0.0
-InpBufferPoints=0.0
-InpMinStopATRMult=0.25
-InpMaxStopATRMult=0.0
-InpMinBodyATRMult=0.0
-InpUseVolatilityGate=false
+InpFlowBufferATRMult=0.10
+InpFlowBufferRangePct=0.0
+InpFlowBufferPoints=0.0
+InpFlowMinStopATRMult=0.25
+InpFlowMaxStopATRMult=0.0
+InpFlowMinBodyATRMult=0.0
+InpFlowUseVolatilityGate=false
 
-InpRiskPct=1.0
-InpMaxRiskPct=3.5
-InpMaxAccountRiskPct=6.0
-InpMaxDailyDDPct=15.0
-InpUseTotalDDKillSwitch=true
-InpMaxTotalDDPct=25.0
+InpFlowRiskPct=1.0
+InpFlowMaxRiskPct=3.5
+InpFlowMaxAccountRiskPct=6.0
+InpFlowMaxDailyDDPct=15.0
+InpFlowUseTotalDDKillSwitch=true
+InpFlowMaxTotalDDPct=25.0
 
-InpUseWeekendClose=true
-InpWeekendCloseHour=20
-InpWeekendCloseMinute=0
+InpFlowUseWeekendClose=true
+InpFlowWeekendCloseHour=20
+InpFlowWeekendCloseMinute=0
 
-InpVerboseLog=false
+InpFlowVerboseLog=false
 
-InpQuietMarketPct=60.0
-InpWildMarketPct=600.0
-InpEntrySlipPct=25.0
-InpExitSlipPct=85.0
-InpSpreadCapPct=40.0
-InpMaxSpreadATRPct=10.0
+InpFlowQuietMarketPct=60.0
+InpFlowWildMarketPct=600.0
+InpFlowEntrySlipPct=25.0
+InpFlowExitSlipPct=85.0
+InpFlowSpreadCapPct=40.0
+InpFlowMaxSpreadATRPct=10.0
 
-InpUseSpreadFilter=true
-InpUseStopLevelValidation=true
-InpUseMarginCheck=true
-InpMarginBufferPct=20.0
-InpMaxQuoteAgeSeconds=15
+InpFlowUseSpreadFilter=true
+InpFlowUseStopLevelValidation=true
+InpFlowUseMarginCheck=true
+InpFlowMarginBufferPct=20.0
+InpFlowMaxQuoteAgeSeconds=15
 
-InpMagicNumber=770332
-InpOrderComment=CandleFlow_v1
-InpClearKillswitchLatch=false
+InpFlowMagicNumber=770332
+InpFlowOrderComment=CandleFlow_v1
+InpFlowClearKillswitchLatch=false

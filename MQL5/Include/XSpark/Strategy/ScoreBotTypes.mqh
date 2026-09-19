@@ -1,9 +1,11 @@
 #ifndef XSPARK_STRATEGY_SCOREBOT_TYPES_MQH
 #define XSPARK_STRATEGY_SCOREBOT_TYPES_MQH
 
+#include <XSpark/Core/StrategyIdentity.mqh>
 #include <XSpark/Strategy/StrategyInterface.mqh>
 
-#define XSPARK_SCOREBOT_MAGIC_DEFAULT 770331
+// XSPARK_SCOREBOT_MAGIC_DEFAULT is declared in StrategyIdentity.mqh, which owns
+// every strategy's Magic Number so collisions between them are detectable.
 #define XSPARK_SCOREBOT_COMMENT_DEFAULT "ScoreBot_v3"
 // The timeframe pair the strategy was tested on. The EA now runs on any
 // supported base timeframe, but this pair remains the reference configuration.

@@ -30,69 +30,74 @@
 // Setup guide and settings: docs/STRATEGY_CANDLEFLOW.md.
 
 input group "01. Start here"
-input bool   InpEnableTrading = false; // Allow new trades (false = watch only)
-input bool   InpAutoTuneForSymbol = true; // Automatically adapt to this market
-input int    InpMaxOpenTrades = 1; // Maximum open trades for this bot (1-10)
+input bool   InpFlowEnableTrading = false; // Allow new trades (false = watch only)
+input bool   InpFlowAutoTuneForSymbol = true; // Automatically adapt to this market
+input int    InpFlowMaxOpenTrades = 1; // Maximum open trades for this bot (1-10)
 
 input group "02. The candle rule"
-input double InpBufferATRMult = 0.10; // Stop buffer beyond the wick (x average range)
-input double InpBufferRangePct = 0.0; // Extra buffer (% of the signal candle's range)
-input double InpBufferPoints = 0.0; // Extra buffer (strategy points)
-input double InpMinStopATRMult = 0.25; // Smallest allowed stop (x average range)
-input double InpMaxStopATRMult = 0.0; // Largest allowed stop (x average range; 0 = no limit)
-input double InpMinBodyATRMult = 0.0; // Ignore candles smaller than (x average range; 0 = off)
-input bool   InpUseVolatilityGate = false; // Only trade inside the calibrated movement band
+input double InpFlowBufferATRMult = 0.10; // Stop buffer beyond the wick (x average range)
+input double InpFlowBufferRangePct = 0.0; // Extra buffer (% of the signal candle's range)
+input double InpFlowBufferPoints = 0.0; // Extra buffer (strategy points)
+input double InpFlowMinStopATRMult = 0.25; // Smallest allowed stop (x average range)
+input double InpFlowMaxStopATRMult = 0.0; // Largest allowed stop (x average range; 0 = no limit)
+input double InpFlowMinBodyATRMult = 0.0; // Ignore candles smaller than (x average range; 0 = off)
 
 input group "03. Risk and account limits"
-input double InpRiskPct = 1.0; // Risk per trade (% of balance)
-input double InpMaxRiskPct = 3.5; // Maximum risk per trade (%)
-input double InpMaxAccountRiskPct = 6.0; // Maximum combined risk across the account (%)
-input double InpMaxDailyDDPct = 15.0; // Daily equity drop to pause new trades (%)
-input bool   InpUseTotalDDKillSwitch = true; // Use account drawdown emergency stop
-input double InpMaxTotalDDPct = 25.0; // Equity drop to trigger emergency stop (%)
+input double InpFlowRiskPct = 1.0; // Risk per trade (% of balance)
+input double InpFlowMaxRiskPct = 3.5; // Maximum risk per trade (%)
+input double InpFlowMaxAccountRiskPct = 6.0; // Maximum combined risk across the account (%)
+input double InpFlowMaxDailyDDPct = 15.0; // Daily equity drop to pause new trades (%)
+input bool   InpFlowUseTotalDDKillSwitch = true; // Use account drawdown emergency stop
+input double InpFlowMaxTotalDDPct = 25.0; // Equity drop to trigger emergency stop (%)
 
 input group "04. Trading hours"
-input bool   InpUseWeekendClose = false; // Close this bot's trades before the weekend
-input int    InpWeekendCloseHour = 20; // Friday closing hour (broker time, 0-23)
-input int    InpWeekendCloseMinute = 0; // Friday closing minute (0-59)
+input bool   InpFlowUseWeekendClose = false; // Close this bot's trades before the weekend
+input int    InpFlowWeekendCloseHour = 20; // Friday closing hour (broker time, 0-23)
+input int    InpFlowWeekendCloseMinute = 0; // Friday closing minute (0-59)
 
 input group "05. Chart panel and logs"
-input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER; // Chart panel corner
-input int    InpDashboardMarginX = 12; // Panel distance from left/right edge (pixels)
-input int    InpDashboardMarginY = 18; // Panel distance from top/bottom edge (pixels)
-input bool   InpVerboseLog = false; // Show detailed diagnostic logs
-input bool   InpDashboardCompact = false; // Start with a compact chart panel
-input bool   InpDashboardAnimate = true; // Animate live dashboard activity
-input int    InpDashboardSizePct = 125; // Dashboard size (125-200%; larger is easier to read)
+input ENUM_BASE_CORNER InpFlowDashboardCorner = CORNER_LEFT_UPPER; // Chart panel corner
+input int    InpFlowDashboardMarginX = 12; // Panel distance from left/right edge (pixels)
+input int    InpFlowDashboardMarginY = 18; // Panel distance from top/bottom edge (pixels)
+input bool   InpFlowVerboseLog = false; // Show detailed diagnostic logs
+input bool   InpFlowDashboardCompact = false; // Start with a compact chart panel
+input bool   InpFlowDashboardAnimate = true; // Animate live dashboard activity
+input int    InpFlowDashboardSizePct = 125; // Dashboard size (125-200%; larger is easier to read)
 
-input group "06. Advanced - market movement and costs"
-input double InpQuietMarketPct = 60.0; // Minimum market movement (% of normal)
-input double InpWildMarketPct = 600.0; // Maximum market movement (% of normal)
-input double InpEntrySlipPct = 25.0; // Entry price tolerance (% of smallest stop)
-input double InpExitSlipPct = 85.0; // Exit price tolerance (% of smallest stop)
-input double InpSpreadCapPct = 40.0; // Maximum spread (% of smallest stop)
-input double InpMaxSpreadATRPct = 10.0; // Maximum spread (% of average range)
+// The band below is read ONLY by the filter above it. Grouped together so an
+// operator can see that turning the filter off makes both numbers inert, rather
+// than finding them under a heading that implies they always apply.
+input group "06. Optional market-movement filter"
+input bool   InpFlowUseVolatilityGate = false; // Only trade inside the movement band
+input double InpFlowATRMinPoints = 80.0; // Filter: minimum movement (strategy points)
+input double InpFlowATRMaxPoints = 800.0; // Filter: maximum movement (strategy points)
 
-input group "07. Advanced - broker and price checks"
-input bool   InpUseSpreadFilter = true; // Block entries when the spread is too wide
-input bool   InpUseStopLevelValidation = true; // Check broker minimum stop distance
-input bool   InpUseMarginCheck = true; // Check available margin before entering
-input double InpMarginBufferPct = 20.0; // Extra margin required (% of order margin)
-input int    InpMaxQuoteAgeSeconds = 15; // Maximum price age before refusing (seconds)
+input group "07. Advanced - market calibration and costs"
+input double InpFlowQuietMarketPct = 60.0; // Minimum market movement (% of normal)
+input double InpFlowWildMarketPct = 600.0; // Maximum market movement (% of normal)
+input double InpFlowEntrySlipPct = 25.0; // Entry price tolerance (% of smallest stop)
+input double InpFlowExitSlipPct = 85.0; // Exit price tolerance (% of smallest stop)
+input double InpFlowSpreadCapPct = 40.0; // Maximum spread (% of smallest stop)
+input double InpFlowMaxSpreadATRPct = 10.0; // Maximum spread (% of average range)
 
-input group "08. Manual limits - only when auto-adapt is off"
-input double InpATRMinPoints = 80.0; // Minimum market movement (strategy points)
-input double InpATRMaxPoints = 800.0; // Maximum market movement (strategy points)
-input double InpMaxSpreadPoints = 50.0; // Maximum spread (strategy points)
-input double InpEntryDeviationPoints = XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS; // Entry price tolerance (strategy points)
-input double InpExitDeviationPoints = XSPARK_CLOSE_DEVIATION_SCORE_POINTS; // Exit price tolerance (strategy points)
+input group "08. Advanced - broker and price checks"
+input bool   InpFlowUseSpreadFilter = true; // Block entries when the spread is too wide
+input bool   InpFlowUseStopLevelValidation = true; // Check broker minimum stop distance
+input bool   InpFlowUseMarginCheck = true; // Check available margin before entering
+input double InpFlowMarginBufferPct = 20.0; // Extra margin required (% of order margin)
+input int    InpFlowMaxQuoteAgeSeconds = 15; // Maximum price age before refusing (seconds)
 
-input group "09. Advanced - bot identity"
-input ulong  InpMagicNumber = XSPARK_CANDLEFLOW_MAGIC_DEFAULT; // Unique bot ID (use a different ID per chart)
-input string InpOrderComment = XSPARK_CANDLEFLOW_COMMENT_DEFAULT; // Trade label shown in account history
+input group "09. Manual limits - only when auto-adapt is off"
+input double InpFlowMaxSpreadPoints = 50.0; // Maximum spread (strategy points)
+input double InpFlowEntryDeviationPoints = XSPARK_CANDLEFLOW_ENTRY_DEVIATION_POINTS; // Entry price tolerance (strategy points)
+input double InpFlowExitDeviationPoints = XSPARK_CANDLEFLOW_EXIT_DEVIATION_POINTS; // Exit price tolerance (strategy points)
 
-input group "10. Recovery - deliberate reset only"
-input bool   InpClearKillswitchLatch = false; // Reset emergency stop once (then set false)
+input group "10. Advanced - bot identity"
+input ulong  InpFlowMagicNumber = XSPARK_CANDLEFLOW_MAGIC_DEFAULT; // Unique bot ID (use a different ID per chart)
+input string InpFlowOrderComment = XSPARK_CANDLEFLOW_COMMENT_DEFAULT; // Trade label shown in account history
+
+input group "11. Recovery - deliberate reset only"
+input bool   InpFlowClearKillswitchLatch = false; // Reset emergency stop once (then set false)
 
 // CandleFlow sends no take-profit, so the execution engine's reward-ratio
 // bounds never apply to any plan it produces. The engine still validates its
@@ -186,9 +191,13 @@ bool XSparkFlowValidateInputs()
 
    g_base_timeframe = (ENUM_TIMEFRAMES)Period();
 
-   if(InpMagicNumber == 0)
+   // Zero and another shipped strategy's number are both refused: an EA that
+   // adopts a Magic Number already claimed by a different bot manages that
+   // bot's positions, which defeats every separation XSpark relies on.
+   string magic_reason = "";
+   if(!XSparkMagicIsAvailable(InpFlowMagicNumber, XSPARK_CANDLEFLOW_MAGIC_DEFAULT, magic_reason))
    {
-      g_logger.Critical("EA", "Magic Number must be explicit and non-zero.");
+      g_logger.Critical("EA", magic_reason);
       return false;
    }
 
@@ -201,43 +210,43 @@ bool XSparkFlowValidateInputs()
       return false;
    }
 
-   if(!XSparkTradeSlotsValid(InpMaxOpenTrades))
+   if(!XSparkTradeSlotsValid(InpFlowMaxOpenTrades))
    {
       g_logger.Critical("EA", "Maximum open trades must be between 1 and 10.");
       return false;
    }
 
-   if(!MathIsValidNumber(InpRiskPct) || InpRiskPct <= 0.0 ||
-      !MathIsValidNumber(InpMaxRiskPct) || InpMaxRiskPct <= 0.0 ||
-      InpRiskPct > InpMaxRiskPct)
+   if(!MathIsValidNumber(InpFlowRiskPct) || InpFlowRiskPct <= 0.0 ||
+      !MathIsValidNumber(InpFlowMaxRiskPct) || InpFlowMaxRiskPct <= 0.0 ||
+      InpFlowRiskPct > InpFlowMaxRiskPct)
    {
       g_logger.Critical("EA", "Risk per trade must be positive and no greater than the maximum risk per trade.");
       return false;
    }
 
-   if(InpMaxRiskPct > XSPARK_MAX_ALLOWED_RISK_PCT)
+   if(InpFlowMaxRiskPct > XSPARK_MAX_ALLOWED_RISK_PCT)
    {
       g_logger.Critical("EA",
                         StringFormat("Maximum risk per trade %.2f%% exceeds the hard ceiling of %.2f%%.",
-                                     InpMaxRiskPct,
+                                     InpFlowMaxRiskPct,
                                      XSPARK_MAX_ALLOWED_RISK_PCT));
       return false;
    }
 
-   if(!MathIsValidNumber(InpMaxAccountRiskPct) || InpMaxAccountRiskPct <= 0.0)
+   if(!MathIsValidNumber(InpFlowMaxAccountRiskPct) || InpFlowMaxAccountRiskPct <= 0.0)
    {
       g_logger.Critical("EA", "The account risk cap must be a positive percentage.");
       return false;
    }
 
-   if(InpWeekendCloseHour < 0 || InpWeekendCloseHour > 23 ||
-      InpWeekendCloseMinute < 0 || InpWeekendCloseMinute > 59)
+   if(InpFlowWeekendCloseHour < 0 || InpFlowWeekendCloseHour > 23 ||
+      InpFlowWeekendCloseMinute < 0 || InpFlowWeekendCloseMinute > 59)
    {
       g_logger.Critical("EA", "Weekend close time must be a valid hour and minute.");
       return false;
    }
 
-   if(InpEntryDeviationPoints <= 0.0 || InpExitDeviationPoints <= 0.0)
+   if(InpFlowEntryDeviationPoints <= 0.0 || InpFlowExitDeviationPoints <= 0.0)
    {
       g_logger.Critical("EA", "Entry and exit price tolerances must be positive.");
       return false;
@@ -318,14 +327,14 @@ string XSparkFlowStatusFromSafety()
 void XSparkFlowUpdateDashboard()
 {
    if(!g_dashboard.NeedsRefresh()) return;
-   const string mode = InpEnableTrading ? "TRADING" : "ANALYSIS ONLY";
+   const string mode = InpFlowEnableTrading ? "TRADING" : "ANALYSIS ONLY";
    XSparkDashboardLive live;
    live.symbol = _Symbol; live.timeframe = EnumToString(g_base_timeframe);
    StringReplace(live.timeframe, "PERIOD_", "");
    live.currency = AccountInfoString(ACCOUNT_CURRENCY); live.entry_style = g_ui_entry_style;
    live.digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    live.connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
-   live.animate = InpDashboardAnimate; live.bid = 0; live.ask = 0; live.quote_age = -1; live.quote_stamp = 0;
+   live.animate = InpFlowDashboardAnimate; live.bid = 0; live.ask = 0; live.quote_age = -1; live.quote_stamp = 0;
    MqlTick tick;
    live.quote_valid = SymbolInfoTick(_Symbol, tick) && tick.time > 0 &&
                       MathIsValidNumber(tick.bid) && MathIsValidNumber(tick.ask) && tick.bid > 0 && tick.ask >= tick.bid;
@@ -343,7 +352,7 @@ void XSparkFlowUpdateDashboard()
    {
       const ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !PositionSelectByTicket(ticket)) { live.positions_valid = false; continue; }
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol || (ulong)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol || (ulong)PositionGetInteger(POSITION_MAGIC) != InpFlowMagicNumber) continue;
       const double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
       live.open_profit += profit;
       if(live.position_count < 3)
@@ -380,19 +389,19 @@ void XSparkFlowUpdateDashboard()
    { dashboard_status = "CONFIG BLOCKED"; dashboard_reason = g_config_reason; }
    else if(!g_safety_manager.ScorePointSizeConforms())
    { dashboard_status = "POINT SIZE FAULT"; dashboard_reason = "Instrument price units are not trusted."; }
-   else if(!g_safety_manager.EntryDriftBoundUsable() && (!InpAutoTuneForSymbol || g_auto_tune_complete))
+   else if(!g_safety_manager.EntryDriftBoundUsable() && (!InpFlowAutoTuneForSymbol || g_auto_tune_complete))
    { dashboard_status = "DRIFT GATE FAULT"; dashboard_reason = "Entry price tolerance cannot safely bound risk."; }
    else if(g_safety_manager.DailyHaltLatched())
    { dashboard_status = "DD HALT"; dashboard_reason = "Daily DD halt is latched for the broker day."; }
    else if(!live.connected)
    { dashboard_status = "DISCONNECTED"; dashboard_reason = "Terminal is not connected."; }
-   else if(!live.quote_valid || live.quote_age < 0 || live.quote_age > InpMaxQuoteAgeSeconds)
+   else if(!live.quote_valid || live.quote_age < 0 || live.quote_age > InpFlowMaxQuoteAgeSeconds)
    { dashboard_status = "STALE QUOTE"; dashboard_reason = "Waiting for fresh broker prices."; }
    else if(!live.positions_valid)
    { dashboard_status = "STATE RECOVERY"; dashboard_reason = "Cannot read the broker position snapshot."; }
-   else if(InpEnableTrading && (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)))
+   else if(InpFlowEnableTrading && (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)))
    { dashboard_status = "TRADING PERMISSION"; dashboard_reason = "Terminal trading is not allowed."; }
-   else if(!InpEnableTrading)
+   else if(!InpFlowEnableTrading)
    { dashboard_status = "TRADING DISABLED"; dashboard_reason = "Trading disabled by input."; }
 
    g_dashboard.Update(g_last_report,
@@ -401,7 +410,7 @@ void XSparkFlowUpdateDashboard()
                       g_position_manager.TradesToday(),
                       g_position_manager.TradesLast24Hours(),
                       g_position_manager.ManagedPositionCount(),
-                      InpMaxOpenTrades,
+                      InpFlowMaxOpenTrades,
                       XSparkPriceToScorePoints(g_market_state.SpreadPrice(), g_score_point_size),
                       mode,
                       dashboard_status,
@@ -431,7 +440,7 @@ void XSparkFlowLogSignalRejection(const string stage,
 
 void XSparkFlowVerboseBlock(const string component, const string reason)
 {
-   if(InpVerboseLog)
+   if(InpFlowVerboseLog)
       g_logger.Debug(component, reason);
 }
 
@@ -470,8 +479,8 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
                             entry_reference,
                             signal.desired_stop,
                             signal.atr14,
-                            InpMinStopATRMult,
-                            InpMaxStopATRMult,
+                            InpFlowMinStopATRMult,
+                            InpFlowMaxStopATRMult,
                             bounded_stop,
                             bounded_distance,
                             bound_reason))
@@ -489,7 +498,7 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
                                     entry_reference,
                                     bounded_stop,
                                     0.0,
-                                    InpUseStopLevelValidation,
+                                    InpFlowUseStopLevelValidation,
                                     adjusted_sl,
                                     ignored_tp,
                                     adjust_reason))
@@ -546,7 +555,7 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
    string final_adjust_reason = "";
 
    if(!g_execution_engine.ValidateInitialProtection(plan,
-                                                    InpUseStopLevelValidation,
+                                                    InpFlowUseStopLevelValidation,
                                                     final_sl,
                                                     final_tp,
                                                     final_adjust_reason))
@@ -576,7 +585,7 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
       plan.volume = volume;
 
       if(!g_execution_engine.ValidateInitialProtection(plan,
-                                                       InpUseStopLevelValidation,
+                                                       InpFlowUseStopLevelValidation,
                                                        final_sl,
                                                        final_tp,
                                                        final_adjust_reason))
@@ -710,7 +719,7 @@ void XSparkFlowEnterStateRecovery(XSparkTradePlan &plan, XSparkExecutionResult &
 // which is what every derived tolerance is measured against.
 bool XSparkFlowCalibrateForSymbol()
 {
-   if(!InpAutoTuneForSymbol || g_auto_tune_complete)
+   if(!InpFlowAutoTuneForSymbol || g_auto_tune_complete)
       return true;
 
    double samples[];
@@ -736,12 +745,12 @@ bool XSparkFlowCalibrateForSymbol()
 
    string derive_reason = "";
    if(!XSparkDeriveAutoTune(reference_points,
-                            InpQuietMarketPct,
-                            InpWildMarketPct,
-                            InpMinStopATRMult,
-                            InpEntrySlipPct,
-                            InpExitSlipPct,
-                            InpSpreadCapPct,
+                            InpFlowQuietMarketPct,
+                            InpFlowWildMarketPct,
+                            InpFlowMinStopATRMult,
+                            InpFlowEntrySlipPct,
+                            InpFlowExitSlipPct,
+                            InpFlowSpreadCapPct,
                             g_auto_tune,
                             derive_reason))
    {
@@ -764,7 +773,7 @@ bool XSparkFlowCalibrateForSymbol()
    double bound_ratio = 0.0;
    string bound_reason = "";
    const int bound = XSparkEntryDriftBound(g_auto_tune.entry_deviation_points,
-                                           InpMinStopATRMult,
+                                           InpFlowMinStopATRMult,
                                            g_auto_tune.atr_min_points,
                                            bound_min_stop,
                                            bound_ratio,
@@ -873,7 +882,7 @@ void XSparkFlowEvaluateNewBarCore()
    XSparkScoreBotReport report;
    const bool eligible_signal = g_strategy.Evaluate(g_indicator_cache, signal, report);
    g_last_report = report;
-   g_last_report.selected_risk_pct = InpRiskPct;
+   g_last_report.selected_risk_pct = InpFlowRiskPct;
 
    g_logger.Info("CandleFlow",
                  StringFormat("bar=%s dir=%s O=%.8f H=%.8f L=%.8f C=%.8f atr=%.8f anchor=%.8f status=%s",
@@ -902,10 +911,10 @@ void XSparkFlowEvaluateNewBarCore()
       return;
    }
 
-   if(InpUseWeekendClose &&
+   if(InpFlowUseWeekendClose &&
       g_position_manager.ShouldWeekendClose(g_market_state.ServerTime(),
-                                            InpWeekendCloseHour,
-                                            InpWeekendCloseMinute))
+                                            InpFlowWeekendCloseHour,
+                                            InpFlowWeekendCloseMinute))
    {
       g_status = "WEEKEND CLOSE";
       g_last_block_reason = "Weekend close window is active; new entries are blocked.";
@@ -918,7 +927,7 @@ void XSparkFlowEvaluateNewBarCore()
    // trade exits on its trailing stop and nothing else, so an opposing signal is
    // refused here rather than hedged into a second position.
    string exposure_reason = "";
-   if(!XSparkDirectionIsUnopposed(_Symbol, InpMagicNumber, signal.direction, exposure_reason))
+   if(!XSparkDirectionIsUnopposed(_Symbol, InpFlowMagicNumber, signal.direction, exposure_reason))
    {
       g_status = "OPPOSING EXPOSURE"; g_last_block_reason = exposure_reason;
       XSparkFlowLogSignalRejection("exposure", exposure_reason, report);
@@ -989,11 +998,11 @@ void XSparkFlowEvaluateNewBarCore()
       string cap_reason = "";
 
       if(!prospective_known ||
-         !XSparkReadAccountExposure(_Symbol, InpMagicNumber, open_risk_cash, own_risk_cash, foreign_risk_cash, own_positions, account_risk_reason) ||
+         !XSparkReadAccountExposure(_Symbol, InpFlowMagicNumber, open_risk_cash, own_risk_cash, foreign_risk_cash, own_positions, account_risk_reason) ||
          !XSparkAccountRiskWithinCap(open_risk_cash,
                                      prospective_risk_cash,
                                      AccountInfoDouble(ACCOUNT_BALANCE),
-                                     InpMaxAccountRiskPct,
+                                     InpFlowMaxAccountRiskPct,
                                      projected_pct,
                                      cap_reason))
       {
@@ -1010,7 +1019,7 @@ void XSparkFlowEvaluateNewBarCore()
       }
    }
 
-   if(InpUseMarginCheck)
+   if(InpFlowUseMarginCheck)
    {
       double required_margin = 0.0;
       double free_margin = 0.0;
@@ -1020,7 +1029,7 @@ void XSparkFlowEvaluateNewBarCore()
                                                  plan.direction,
                                                  plan.volume,
                                                  plan.entry_reference,
-                                                 InpMarginBufferPct,
+                                                 InpFlowMarginBufferPct,
                                                  required_margin,
                                                  free_margin,
                                                  margin_reason))
@@ -1081,7 +1090,7 @@ int OnInit()
 {
    XSparkResetScoreBotReport(g_last_report);
    g_last_report.pattern_mode = "SINGLE FACTOR";
-   g_logger.Initialize("XSparkFlow", InpVerboseLog);
+   g_logger.Initialize("XSparkFlow", InpFlowVerboseLog);
    g_logger.Info("EA", "Starting XSparkFlow CandleFlow");
 
    if(!XSparkFlowValidateInputs())
@@ -1103,15 +1112,15 @@ int OnInit()
 
    XSparkCandleFlowConfig config;
    XSparkDefaultCandleFlowConfig(config);
-   config.buffer_atr_mult = InpBufferATRMult;
-   config.buffer_range_pct = InpBufferRangePct;
-   config.buffer_fixed_price = XSparkScorePointsToPrice(InpBufferPoints, g_score_point_size);
-   config.min_stop_atr_mult = InpMinStopATRMult;
-   config.max_stop_atr_mult = InpMaxStopATRMult;
-   config.min_body_atr_mult = InpMinBodyATRMult;
-   config.use_volatility_gate = InpUseVolatilityGate;
-   config.atr_min_points = InpATRMinPoints;
-   config.atr_max_points = InpATRMaxPoints;
+   config.buffer_atr_mult = InpFlowBufferATRMult;
+   config.buffer_range_pct = InpFlowBufferRangePct;
+   config.buffer_fixed_price = XSparkScorePointsToPrice(InpFlowBufferPoints, g_score_point_size);
+   config.min_stop_atr_mult = InpFlowMinStopATRMult;
+   config.max_stop_atr_mult = InpFlowMaxStopATRMult;
+   config.min_body_atr_mult = InpFlowMinBodyATRMult;
+   config.use_volatility_gate = InpFlowUseVolatilityGate;
+   config.atr_min_points = InpFlowATRMinPoints;
+   config.atr_max_points = InpFlowATRMaxPoints;
    config.score_point_size = g_score_point_size;
 
    g_config_valid = XSparkValidateCandleFlowConfig(config, g_config_reason);
@@ -1127,17 +1136,17 @@ int OnInit()
    }
 
    if(!g_safety_manager.Initialize(_Symbol,
-                                   InpMagicNumber,
-                                   InpEnableTrading,
-                                   InpMaxOpenTrades,
-                                   InpUseSpreadFilter,
-                                   InpMaxSpreadPoints,
-                                   InpMaxSpreadATRPct,
-                                   InpUseTotalDDKillSwitch,
-                                   InpMaxTotalDDPct,
-                                   InpMaxDailyDDPct,
-                                   InpMaxQuoteAgeSeconds,
-                                   InpClearKillswitchLatch,
+                                   InpFlowMagicNumber,
+                                   InpFlowEnableTrading,
+                                   InpFlowMaxOpenTrades,
+                                   InpFlowUseSpreadFilter,
+                                   InpFlowMaxSpreadPoints,
+                                   InpFlowMaxSpreadATRPct,
+                                   InpFlowUseTotalDDKillSwitch,
+                                   InpFlowMaxTotalDDPct,
+                                   InpFlowMaxDailyDDPct,
+                                   InpFlowMaxQuoteAgeSeconds,
+                                   InpFlowClearKillswitchLatch,
                                    g_score_point_size,
                                    g_score_point_size_conforms,
                                    g_score_point_size_reason,
@@ -1152,12 +1161,12 @@ int OnInit()
    // One risk percentage, presented to RiskManager as three identical tiers.
    // CandleFlow has no score to grade exposure by, so the tier lookup must not
    // be able to change the answer.
-   if(!g_risk_manager.Initialize(InpRiskPct,
-                                 InpRiskPct,
-                                 InpRiskPct,
-                                 InpMaxRiskPct,
-                                 InpMaxOpenTrades,
-                                 InpMaxAccountRiskPct))
+   if(!g_risk_manager.Initialize(InpFlowRiskPct,
+                                 InpFlowRiskPct,
+                                 InpFlowRiskPct,
+                                 InpFlowMaxRiskPct,
+                                 InpFlowMaxOpenTrades,
+                                 InpFlowMaxAccountRiskPct))
    {
       g_logger.Critical("RiskManager", g_risk_manager.LastReason());
       return INIT_FAILED;
@@ -1169,28 +1178,28 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   if(!g_execution_engine.Initialize(InpMagicNumber,
-                                     InpOrderComment,
-                                     InpEntryDeviationPoints,
+   if(!g_execution_engine.Initialize(InpFlowMagicNumber,
+                                     InpFlowOrderComment,
+                                     InpFlowEntryDeviationPoints,
                                      g_score_point_size,
-                                     InpUseStopLevelValidation,
-                                     InpUseMarginCheck,
-                                     InpMarginBufferPct,
+                                     InpFlowUseStopLevelValidation,
+                                     InpFlowUseMarginCheck,
+                                     InpFlowMarginBufferPct,
                                      XSPARK_FLOW_UNUSED_RR,
                                      XSPARK_FLOW_UNUSED_RR,
-                                     InpMaxQuoteAgeSeconds,
-                                     InpMaxOpenTrades,
-                                     InpMaxAccountRiskPct))
+                                     InpFlowMaxQuoteAgeSeconds,
+                                     InpFlowMaxOpenTrades,
+                                     InpFlowMaxAccountRiskPct))
    {
       g_logger.Critical("ExecutionEngine", g_execution_engine.LastReason());
       return INIT_FAILED;
    }
 
    if(!g_position_manager.Initialize(_Symbol,
-                                     InpMagicNumber,
+                                     InpFlowMagicNumber,
                                      g_score_point_size,
-                                     InpExitDeviationPoints,
-                                     InpUseStopLevelValidation))
+                                     InpFlowExitDeviationPoints,
+                                     InpFlowUseStopLevelValidation))
    {
       g_logger.Critical("PositionManager", g_position_manager.LastReason());
       return INIT_FAILED;
@@ -1205,26 +1214,26 @@ int OnInit()
    if(g_indicator_cache.IsValid())
       g_latest_closed_atr14 = g_indicator_cache.ATR14Base();
 
-   const double concurrent_cap = XSparkConcurrentRiskCap(InpMaxOpenTrades, InpMaxRiskPct, InpMaxAccountRiskPct);
+   const double concurrent_cap = XSparkConcurrentRiskCap(InpFlowMaxOpenTrades, InpFlowMaxRiskPct, InpFlowMaxAccountRiskPct);
    g_logger.Info("RiskManager",
                  StringFormat("Trade slots=%d; per-entry risk %.2f%%; per-entry ceiling %.3f%%; account cap %.2f%%.",
-                              InpMaxOpenTrades, InpRiskPct, concurrent_cap, InpMaxAccountRiskPct));
+                              InpFlowMaxOpenTrades, InpFlowRiskPct, concurrent_cap, InpFlowMaxAccountRiskPct));
 
    g_logger.Info("CandleFlow",
                  StringFormat("Rule: closed %s candle direction; no take-profit; stop beyond the wick by %.2f x range + %.2f%% of the candle + %.2f points; "
                               "stop floor %.2f x range; ceiling %s; body filter %s; movement gate %s.",
                               EnumToString(g_base_timeframe),
-                              InpBufferATRMult,
-                              InpBufferRangePct,
-                              InpBufferPoints,
-                              InpMinStopATRMult,
-                              InpMaxStopATRMult > 0.0 ? DoubleToString(InpMaxStopATRMult, 2) : "off",
-                              InpMinBodyATRMult > 0.0 ? DoubleToString(InpMinBodyATRMult, 2) : "off",
-                              XSparkFlowBoolToString(InpUseVolatilityGate)));
+                              InpFlowBufferATRMult,
+                              InpFlowBufferRangePct,
+                              InpFlowBufferPoints,
+                              InpFlowMinStopATRMult,
+                              InpFlowMaxStopATRMult > 0.0 ? DoubleToString(InpFlowMaxStopATRMult, 2) : "off",
+                              InpFlowMinBodyATRMult > 0.0 ? DoubleToString(InpFlowMinBodyATRMult, 2) : "off",
+                              XSparkFlowBoolToString(InpFlowUseVolatilityGate)));
 
    g_current_base_bar_time = iTime(_Symbol, g_base_timeframe, 0);
    EventSetTimer(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE) ? 5 : 1);
-   g_dashboard.Configure(InpDashboardCorner, InpDashboardMarginX, InpDashboardMarginY, InpDashboardCompact, InpDashboardAnimate, InpDashboardSizePct);
+   g_dashboard.Configure(InpFlowDashboardCorner, InpFlowDashboardMarginX, InpFlowDashboardMarginY, InpFlowDashboardCompact, InpFlowDashboardAnimate, InpFlowDashboardSizePct);
    g_dashboard.Initialize();
 
    g_logger.Info("EA", StringFormat("Symbol=%s digits=%d point=%s strategy_point_size=%s",
@@ -1348,9 +1357,9 @@ void OnTick()
                                       0.0,   // no partial close
                                       0.0,   // no partial close
                                       0.0,   // no ATR trail
-                                      InpUseWeekendClose,
-                                      InpWeekendCloseHour,
-                                      InpWeekendCloseMinute,
+                                      InpFlowUseWeekendClose,
+                                      InpFlowWeekendCloseHour,
+                                      InpFlowWeekendCloseMinute,
                                       g_logger,
                                       XSPARK_TRAIL_CANDLE_ANCHOR,
                                       g_anchor_long,

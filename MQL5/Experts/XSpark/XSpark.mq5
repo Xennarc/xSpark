@@ -229,9 +229,13 @@ bool XSparkValidateInputs()
 
    g_base_timeframe = (ENUM_TIMEFRAMES)Period();
 
-   if(InpMagicNumber == 0)
+   // Zero and another shipped strategy's number are both refused: an EA that
+   // adopts a Magic Number already claimed by a different bot manages that
+   // bot's positions, which defeats every separation XSpark relies on.
+   string magic_reason = "";
+   if(!XSparkMagicIsAvailable(InpMagicNumber, XSPARK_SCOREBOT_MAGIC_DEFAULT, magic_reason))
    {
-      g_logger.Critical("EA", "Magic Number must be explicit and non-zero.");
+      g_logger.Critical("EA", magic_reason);
       return false;
    }
 

@@ -42,14 +42,14 @@ rather than in points.
 
 | Input | Default | What it does |
 | --- | --- | --- |
-| `InpBufferATRMult` | 0.10 | Buffer beyond the wick, as a multiple of the average range. The component that rescales automatically across timeframes. |
-| `InpBufferRangePct` | 0.0 | Extra buffer as a percentage of the signal candle's own range. |
-| `InpBufferPoints` | 0.0 | Extra fixed buffer in strategy points. |
-| `InpMinStopATRMult` | 0.25 | Stop floor. A stop closer than this to the fill is widened to it. |
-| `InpMaxStopATRMult` | 0.0 | Stop ceiling. A wider stop refuses the entry. 0 disables it. |
-| `InpMinBodyATRMult` | 0.0 | Ignore candles whose body is smaller than this. 0 disables it, keeping the rule literally single-factor. |
-| `InpUseVolatilityGate` | false | Only enter while the average range is inside the auto-calibrated band. Off by default. |
-| `InpRiskPct` | 1.0 | Risk per trade, as a percentage of balance. |
+| `InpFlowBufferATRMult` | 0.10 | Buffer beyond the wick, as a multiple of the average range. The component that rescales automatically across timeframes. |
+| `InpFlowBufferRangePct` | 0.0 | Extra buffer as a percentage of the signal candle's own range. |
+| `InpFlowBufferPoints` | 0.0 | Extra fixed buffer in strategy points. |
+| `InpFlowMinStopATRMult` | 0.25 | Stop floor. A stop closer than this to the fill is widened to it. |
+| `InpFlowMaxStopATRMult` | 0.0 | Stop ceiling. A wider stop refuses the entry. 0 disables it. |
+| `InpFlowMinBodyATRMult` | 0.0 | Ignore candles whose body is smaller than this. 0 disables it, keeping the rule literally single-factor. |
+| `InpFlowUseVolatilityGate` | false | Only enter while the average range is inside the auto-calibrated band. Off by default. |
+| `InpFlowRiskPct` | 1.0 | Risk per trade, as a percentage of balance. |
 
 The three buffer components add together, so `0.10` ATR plus `20`% of the candle
 range plus a fixed pad is a valid configuration.
@@ -58,7 +58,7 @@ range plus a fixed pad is a valid configuration.
 
 The buffer alone does not bound the stop distance. A very small candle produces
 a very small stop, and a very small stop produces a very large position for the
-same percentage risk. `InpMinStopATRMult` widens such a stop to a floor measured
+same percentage risk. `InpFlowMinStopATRMult` widens such a stop to a floor measured
 from the fill price. Widening a stop always *reduces* the volume, so the floor
 can never increase realised risk — it only prevents the size blow-up.
 
@@ -66,12 +66,32 @@ The floor is also what the auto-calibration measures every derived tolerance
 against: it is genuinely the smallest stop this configuration can produce, which
 is exactly what the entry-slippage bound in ADR-024 needs.
 
-### Why there is no reversal
+### Why there is no reversal, and no hedge
 
 Every candle has a direction, so an opposing signal arrives constantly while a
-position is open. CandleFlow does not reverse and does not hedge: an opposing
-signal is refused by the existing opposing-exposure check, and the open trade
-exits on its trailing stop alone.
+position is open. CandleFlow never opens a trade against a position it is
+already holding: the open trade exits on its trailing stop and nothing else.
+
+This is enforced twice, because one check is not enough when the two moments are
+seconds apart:
+
+1. When the candle closes, `XSparkFlowEvaluateNewBarCore` refuses the signal if
+   any XSparkFlow position on this symbol is on the other side. The panel shows
+   `OPPOSING EXPOSURE` and the journal records the refused candle.
+2. `ExecutionEngine` re-checks before **every** send attempt, so a position that
+   appears between planning and the order reaching the broker still blocks it.
+
+Both read live broker positions rather than XSpark's own state, and both fail
+closed: a position that cannot be read refuses the entry rather than assuming
+the bot is flat.
+
+The check is scoped to this bot's Magic Number, so ScoreBot_v3 holding an
+opposite position on the same symbol does not block CandleFlow. They are
+separate bots and each may take its own side.
+
+Note that with `InpFlowMaxOpenTrades = 1` the slot limit already blocks a second
+trade of any direction. This check is what holds the rule when that limit is
+raised to let same-direction trades stack.
 
 ## Running it next to ScoreBot_v3
 
@@ -82,13 +102,25 @@ it: position reconciliation, the per-position state store, the trailing stop, th
 weekend close and the killswitch flatten. Neither bot can see, modify or close
 the other's positions.
 
-The one thing they *do* share is the account. `InpMaxAccountRiskPct` is checked
+The one thing they *do* share is the account. `InpFlowMaxAccountRiskPct` is checked
 against **all** open positions, including the other bot's, so each EA refuses an
 entry that would push total open risk past its own cap. Set both caps with the
 combined account in mind.
 
 Use a different Magic Number again if you want two CandleFlow instances on
-different charts.
+different charts. Either EA refuses to start on a Magic Number the other one
+ships with, so the arrangement cannot be broken by a typo.
+
+### Settings do not cross between them
+
+MetaTrader applies a `.set` file by input identifier, so two EAs that named an
+input the same way would silently configure each other. They do not share a
+single name: XSparkFlow's inputs all carry the `InpFlow` prefix, XSpark's keep
+the bare `Inp` prefix its existing presets rely on. Loading a ScoreBot_v3 preset
+into XSparkFlow now changes nothing at all, and vice versa.
+
+This is a repository rule rather than a one-off (AGENTS.md rules 41-45), and
+`tools/check_ea_inputs.py` enforces it in CI for every EA added later.
 
 ## What it reuses, and what it changed
 
