@@ -56,8 +56,10 @@ XSpark is a live-money MetaTrader 5 Expert Advisor. Mistakes can cause real fina
 43. An input default must never read through another strategy's constant. Declare the strategy's own.
 44. Every strategy's Magic Number default belongs in `Core/StrategyIdentity.mqh`, and every EA must refuse to start on a Magic Number another shipped strategy claims.
 45. Inputs that only take effect when a switch is on belong in a group with that switch, and the group name must say so.
+46. Every input needs a display label a non-trader can act on, within MetaTrader's 63-character limit. Name the thing, not the jargon: "typical candle size", not "ATR"; "the amount risked", not "R"; "buy/sell gap", not "spread".
+47. Shipped defaults must be the configuration you would actually recommend, and must pass their own validation. A default that blocks trading or needs editing before first use is a broken default.
 
-Rules 41 to 44 are enforced by `tools/check_ea_inputs.py`, which runs in CI.
+Rules 41 to 46 are enforced by `tools/check_ea_inputs.py`, which runs in CI.
 
 ## Change Workflow
 
@@ -84,6 +86,8 @@ So a strategy's settings are part of that strategy, not of the platform:
 - An EA exposes an input only if its own code reads it. "The other strategy has one" is not a reason, and neither is "it might be useful later".
 - Defaults are declared by the strategy that uses them. An input whose default reads through another strategy's constant silently changes when that strategy is retuned.
 - Conditional inputs are grouped with the switch that enables them, so an operator can see what turning the switch off makes inert.
+- Labels are written for someone who does not know the terminology. MetaTrader shows the trailing comment as the input's name, so that comment is the entire user interface: it has to say what the setting does in words the reader already has.
+- Defaults are the recommended configuration, not the inert one. Shipping a feature switched off so that nothing changes is a reasonable step while it is unproven, but it is a step, not a destination.
 
 `tools/check_ea_inputs.py` enforces the mechanical parts of this and runs in CI. It is source analysis, not a compiler.
 

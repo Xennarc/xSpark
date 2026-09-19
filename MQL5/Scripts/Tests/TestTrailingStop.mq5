@@ -193,6 +193,15 @@ void RunTrailingStopTests()
    TrailTuning(tuning, 0.25, 3.0, 1.0, 1.0, 3.0, 1.0, 0.0);
    TrailCheck("a complete configuration is accepted", XSparkValidateTrailTuning(tuning, reason));
 
+   // The numbers the EA's inputs actually default to. A default that failed
+   // validation would block every entry on a fresh chart, silently.
+   XSparkDefaultTrailTuning(tuning);
+   TrailCheck("the shipped defaults are a valid configuration",
+              XSparkValidateTrailTuning(tuning, reason));
+   TrailCheck("the shipped defaults turn the trail and both refinements on",
+              tuning.min_trail_atr_mult > 0.0 && tuning.chandelier_atr_mult > 0.0 &&
+              tuning.tighten_start_r > 0.0 && tuning.breakeven_at_r > 0.0);
+
    TrailTuning(tuning, 0.25, 1.0, 3.0, 1.0, 3.0, 0.0, 0.0);
    TrailCheck("a tightened trail wider than the base one is refused",
               !XSparkValidateTrailTuning(tuning, reason));
