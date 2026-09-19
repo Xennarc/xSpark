@@ -155,3 +155,30 @@ See [V2_IMPLEMENTATION.md](V2_IMPLEMENTATION.md) for the stage matrix, portable
 logic checks, Windows compile helper, observe-mode control, persistence tests
 and outstanding MT5 acceptance sequence. Portable test success is not a native
 compiler result or a profitability result.
+
+## Backtest conventions: the drawdown killswitch
+
+`InpUseTotalDDKillSwitch=false` in a Strategy Tester report is a **deliberate
+testing choice, not a misconfiguration and not a bug.** The killswitch latches
+permanently once total drawdown crosses `InpMaxTotalDDPct`, which ends the run
+early and truncates the sample. Long-horizon tests are run with it off so the
+strategy is measured over the full period rather than up to its first deep
+drawdown. The mechanism itself is verified separately and works as designed.
+
+When reading a report, keep the two apart:
+
+- **Test runs.** The killswitch may legitimately be off. Treat the drawdown
+  figures as the strategy's unmanaged drawdown - that is the point of the run.
+  A 99% drawdown in such a report describes the sizing, not a broken rail.
+- **Live and preset defaults.** The killswitch stays on. Every shipped preset in
+  `presets/` sets `InpUseTotalDDKillSwitch=true`, and the EA's own default is
+  `true`.
+
+Do not "fix" a test preset by re-arming the killswitch, and do not read its
+absence in a report as evidence of a defect. Equally, do not carry a test
+preset's killswitch setting into a live preset.
+
+Related: `OnInit` logs how many consecutive full-stop rounds latch the killswitch
+at the configured risk, and warns when that count falls below
+`XSPARK_MIN_LOSS_STREAK_TOLERANCE`. That warning is a sizing signal and is worth
+reading even on runs where the killswitch is disabled.
