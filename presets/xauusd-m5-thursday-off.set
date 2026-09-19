@@ -1,0 +1,55 @@
+; XSpark - XAUUSD M5 "Thursday-off" profile  *** REQUIRES A CODE CHANGE ***
+; Derived from the 2026.01.01-2026.09.18 real-tick backtest (1162 positions).
+;
+; WHY THE REFERENCE RUN COLLAPSED
+; That run was +73R gross yet lost 91% of the account. Cause was sizing, not
+; signals: 3% risk per trade with up to 5 SIMULTANEOUS positions that were in
+; the same direction 100% of the time - one bet of up to 15% of equity - while
+; InpUseTotalDDKillSwitch was set to false. Measured edge is +0.063R per trade
+; (t = 1.17), which is not significant and cannot carry that sizing.
+; Growth-optimal (full Kelly) risk on this R distribution is ~2.0% for ONE
+; position; the run was effectively 7x past that.
+;
+; WHAT THIS PROFILE CHANGES: position sizing and the safety rails ONLY.
+; Entry logic and stop/target geometry are left exactly as tested, so the
+; measured R distribution still applies.
+; Sizing is slightly larger than the survival profile because removing Thursday
+; removes a large share of the drawdown that forced sizing down.
+; THIS PROFILE ONLY WORKS IF ENTRIES ARE BLOCKED ON THURSDAY.
+; The EA has no day-of-week entry filter today (only weekend close), so this
+; preset does nothing extra until that filter is added.
+; Thursday was the one robust signal in the data: 214 trades at -0.416R average,
+; 28 of 35 Thursdays lost, negative in 7 of 9 months, and it held in BOTH halves
+; of the sample independently (-0.549R first half, -0.282R second).
+; Removing it lifts the edge from +0.063R (t=1.17, noise) to +0.171R (t=2.80,
+; significant). It is not outlier-driven: the worst 3 Thursdays are only 25% of
+; the damage.
+; Replay with Thursday skipped: 5,000 -> 7,542 (+51%), max DD 24.2%.
+
+InpEnableTrading=true
+InpEntryStyle=0
+InpAutoTuneForSymbol=true
+InpMinScore=3.0
+
+; --- the core fix: one small bet, not five stacked correlated ones ---
+InpMaxOpenTrades=3
+InpRiskPctTier1=0.5
+InpRiskPctTier2=0.5
+InpRiskPctTier3=0.5
+InpMaxRiskPct=0.75
+InpMaxAccountRiskPct=1.5
+
+; --- restore the rails the EA ships with ---
+InpMaxDailyDDPct=6.0
+InpUseTotalDDKillSwitch=true
+InpMaxTotalDDPct=25.0
+
+; --- UNCHANGED from the reference run (do not tune these in the same test) ---
+InpATRMultSL=3.0
+InpMinRR=3.0
+InpMaxRR=10.0
+InpPartialTPRatio=2.5
+InpPartialClosePct=50.0
+InpATRMultTrail=1.0
+InpUsePinBars=true
+InpPatternMaxChaseATR=1

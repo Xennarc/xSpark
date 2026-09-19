@@ -1,0 +1,47 @@
+; XSpark - XAUUSD M5 "survival" profile
+; Derived from the 2026.01.01-2026.09.18 real-tick backtest (1162 positions).
+;
+; WHY THE REFERENCE RUN COLLAPSED
+; That run was +73R gross yet lost 91% of the account. Cause was sizing, not
+; signals: 3% risk per trade with up to 5 SIMULTANEOUS positions that were in
+; the same direction 100% of the time - one bet of up to 15% of equity - while
+; InpUseTotalDDKillSwitch was set to false. Measured edge is +0.063R per trade
+; (t = 1.17), which is not significant and cannot carry that sizing.
+; Growth-optimal (full Kelly) risk on this R distribution is ~2.0% for ONE
+; position; the run was effectively 7x past that.
+;
+; WHAT THIS PROFILE CHANGES: position sizing and the safety rails ONLY.
+; Entry logic and stop/target geometry are left exactly as tested, so the
+; measured R distribution still applies.
+; Replay on the same trade sequence: 5,000 -> 5,183, max DD 22.6% (was 99.8%).
+; This is deliberately near-breakeven. It is a survival profile: it proves the
+; account lives through the full period. See xauusd-m5-thursday-off.set for the
+; version that actually makes money, and the notes on what still needs testing.
+
+InpEnableTrading=true
+InpEntryStyle=0
+InpAutoTuneForSymbol=true
+InpMinScore=3.0
+
+; --- the core fix: one small bet, not five stacked correlated ones ---
+InpMaxOpenTrades=2
+InpRiskPctTier1=0.35
+InpRiskPctTier2=0.35
+InpRiskPctTier3=0.35
+InpMaxRiskPct=0.5
+InpMaxAccountRiskPct=1.0
+
+; --- restore the rails the EA ships with ---
+InpMaxDailyDDPct=6.0
+InpUseTotalDDKillSwitch=true
+InpMaxTotalDDPct=25.0
+
+; --- UNCHANGED from the reference run (do not tune these in the same test) ---
+InpATRMultSL=3.0
+InpMinRR=3.0
+InpMaxRR=10.0
+InpPartialTPRatio=2.5
+InpPartialClosePct=50.0
+InpATRMultTrail=1.0
+InpUsePinBars=true
+InpPatternMaxChaseATR=1
