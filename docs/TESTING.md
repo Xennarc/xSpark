@@ -88,6 +88,7 @@ MQL5/Experts/XSparkFlow/XSparkFlow.mq5
 MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5
 MQL5/Scripts/Tests/TestExecutionHardening.mq5
 MQL5/Scripts/Tests/TestCandleFlow.mq5
+MQL5/Scripts/Tests/TestStrategyIdentity.mq5
 ```
 
 `tools/compile_mt5.ps1` compiles both EAs and every script under
@@ -134,6 +135,8 @@ The following cannot be proven outside MT5 and must be checked in the Strategy T
 Reading real ATR history, and whether the derived numbers actually produce trades on a given symbol, are Strategy Tester questions and are NOT covered here.
 
 ## Dashboard Layout Script
+
+`python3 tools/check_ea_inputs.py` enforces per-strategy input isolation across every Expert Advisor: that no input identifier is declared by two EAs, that every declared input is actually read by its own EA, that each EA's Magic Number default comes from the `StrategyIdentity` registry, and that no EA takes a default from another strategy's constants. It is source analysis, not a compiler, and it runs in CI ahead of the logic suites. `MQL5/Scripts/Tests/TestStrategyIdentity.mq5` covers the registry itself: that the shipped Magic Numbers differ, that each strategy accepts its own and refuses the other's by name, that zero is refused, and that an operator's own unclaimed number stays usable on any strategy.
 
 `MQL5/Scripts/Tests/TestCandleFlow.mq5` covers the CandleFlow rules: candle direction including the doji and body-filter cases, the three-component wick buffer, the anchor arithmetic in both directions, and the stop floor and ceiling - including a price that has already moved through the anchor, which the floor rescues and which refuses outright when no floor is configured. The one-way ratchet itself is covered by the `ManagePositions` fixtures in `tools/portable_position_tests.hpp`, long and short, together with the case where a missing anchor must leave the broker stop untouched.
 

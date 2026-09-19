@@ -51,6 +51,13 @@ XSpark is a live-money MetaTrader 5 Expert Advisor. Mistakes can cause real fina
 38. Keep functions focused.
 39. Avoid giant monolithic `.mq5` files.
 40. Preserve separation between market state, strategy/signals, risk, position sizing, execution, position management, safety, and logging.
+41. Each strategy's Expert Advisor must expose only the inputs its own code path reads. An input is never carried into a new EA because another strategy has one.
+42. No input identifier may be declared by more than one Expert Advisor. Give each EA its own input prefix.
+43. An input default must never read through another strategy's constant. Declare the strategy's own.
+44. Every strategy's Magic Number default belongs in `Core/StrategyIdentity.mqh`, and every EA must refuse to start on a Magic Number another shipped strategy claims.
+45. Inputs that only take effect when a switch is on belong in a group with that switch, and the group name must say so.
+
+Rules 41 to 44 are enforced by `tools/check_ea_inputs.py`, which runs in CI.
 
 ## Change Workflow
 
@@ -66,6 +73,19 @@ For every future implementation task:
 8. Update documentation when appropriate.
 
 Never claim more validation than actually occurred.
+
+## Strategy Input Isolation
+
+MetaTrader applies a `.set` file by input IDENTIFIER, not by which EA wrote it. Two Expert Advisors that declare the same identifier are one careless "Load" away from cross-configuring each other, silently and with no warning anywhere. When the shared identifier is the Magic Number the consequence is not cosmetic: both bots then manage the same broker positions, which defeats position reconciliation, the per-position state store, the opposing-exposure check, the weekend close and the killswitch flatten simultaneously.
+
+So a strategy's settings are part of that strategy, not of the platform:
+
+- Each EA declares its own inputs under its own prefix. `XSpark.mq5` keeps the bare `Inp` prefix for `.set` compatibility with everything already shipped; `XSparkFlow.mq5` uses `InpFlow`. A new strategy takes a new prefix.
+- An EA exposes an input only if its own code reads it. "The other strategy has one" is not a reason, and neither is "it might be useful later".
+- Defaults are declared by the strategy that uses them. An input whose default reads through another strategy's constant silently changes when that strategy is retuned.
+- Conditional inputs are grouped with the switch that enables them, so an operator can see what turning the switch off makes inert.
+
+`tools/check_ea_inputs.py` enforces the mechanical parts of this and runs in CI. It is source analysis, not a compiler.
 
 ## Trading Safety Boundaries
 

@@ -2,6 +2,7 @@
 #define XSPARK_STRATEGY_CANDLE_FLOW_MQH
 
 #include <XSpark/Core/IndicatorCache.mqh>
+#include <XSpark/Core/StrategyIdentity.mqh>
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
 #include <XSpark/Strategy/StrategyInterface.mqh>
 
@@ -19,8 +20,21 @@
 // script and what keeps the strategy inside the boundary AGENTS.md draws:
 // strategies produce signals only.
 
-#define XSPARK_CANDLEFLOW_MAGIC_DEFAULT 770332
+// XSPARK_CANDLEFLOW_MAGIC_DEFAULT is declared in StrategyIdentity.mqh, which
+// owns every strategy's Magic Number so collisions between them are detectable.
 #define XSPARK_CANDLEFLOW_COMMENT_DEFAULT "CandleFlow_v1"
+
+// CandleFlow's own price tolerances, in strategy points.
+//
+// Numerically these are what ScoreBot_v3 ships, because both were derived from
+// the same XAUUSD reference range - but they are declared here rather than
+// borrowed from XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS. A default that reads
+// through another strategy's constant is a default that changes when that
+// strategy is retuned, silently and for reasons that have nothing to do with
+// this one. On any instrument other than gold both are replaced by the
+// auto-calibration anyway.
+#define XSPARK_CANDLEFLOW_ENTRY_DEVIATION_POINTS 30.0
+#define XSPARK_CANDLEFLOW_EXIT_DEVIATION_POINTS 100.0
 
 // CandleFlow has no score. RiskManager grades exposure by score, so every
 // CandleFlow signal presents the same one and the EA sets all three risk tiers

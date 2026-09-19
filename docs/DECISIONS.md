@@ -240,3 +240,25 @@ CandleFlow carries one control that is not in the user's rule. A stop is placed 
 CandleFlow does not reverse on an opposing candle. Every candle has a direction, so an opposing signal arrives constantly while a position is open; it is refused by the existing opposing-exposure check and the open trade exits on its trailing stop alone. Reversing would be a different strategy, and adding it as a default-on behaviour would mean the shipped rule is not the one described.
 
 No profitability claim is made or implied. CandleFlow has not been backtested, forward-tested or traded, and it ships with trading disabled.
+
+## ADR-028 - A Strategy's Settings Belong To That Strategy
+
+Reported from the terminal: opening XSparkFlow's Inputs tab showed ScoreBot_v3's settings. The cause is not cosmetic and the fix is not a UI change.
+
+MetaTrader applies a `.set` file by input IDENTIFIER. It does not record, or care, which Expert Advisor wrote the file. XSparkFlow shipped with 45 inputs, 37 of which were byte-identical in name to XSpark's, because the EA was written by starting from the existing one and deleting what did not apply. Loading any ScoreBot preset into XSparkFlow therefore applied 37 values silently: `InpEnableTrading`, `InpMaxRiskPct`, `InpMaxOpenTrades` - and `InpMagicNumber`.
+
+That last one is the whole defect. Every separation between the two bots is keyed on the Magic Number: PositionManager reconciles on symbol plus Magic, the per-position state store is keyed on account, symbol and Magic, and the opposing-exposure check, the weekend close and the killswitch flatten all filter the same way. A preset that set XSparkFlow's Magic Number to 770331 would not have produced an error anywhere. It would have produced two Expert Advisors managing one set of positions, each trailing the other's stops, on a live account.
+
+Three changes, in increasing order of how much they actually prevent.
+
+Namespacing is the one that closes the hole. XSparkFlow's inputs now all carry an `InpFlow` prefix. MetaTrader ignores an identifier the target EA does not declare, so a ScoreBot preset loaded into XSparkFlow now changes nothing at all - not "warns", not "is discouraged": has no effect. XSpark keeps the bare `Inp` prefix, because `docs/INPUT_SETTINGS.md` promised existing `.set` identifiers would be preserved and every shipped preset depends on it. The cost is that the CandleFlow preset had to be rewritten; it had never been run, so nothing was lost.
+
+A registry makes the collision detectable. Each strategy previously declared its own Magic Number default in its own header, which means no strategy could know what any other had claimed. `Core/StrategyIdentity.mqh` now owns all of them, and both EAs refuse to initialise on a number another shipped strategy claims. This catches the case namespacing cannot - an operator typing 770331 into XSparkFlow's Magic Number box by hand. An operator's own number, claimed by nobody, stays usable by any strategy, because running several instances of one strategy on different charts is the reason that input is exposed at all.
+
+A CI check makes it a rule rather than a habit. `tools/check_ea_inputs.py` fails the build when any input identifier is declared by two EAs, when a declared input is never read by its own EA, when a Magic Number default does not come from the registry, or when an input default reads through a different strategy's constant. That last rule caught a real instance: XSparkFlow's entry tolerance defaulted to `XSPARK_SCOREBOT_DEVIATION_SCORE_POINTS`, so retuning ScoreBot would have moved CandleFlow's default for reasons having nothing to do with CandleFlow. Both strategies now declare their own, numerically identical today and independent from here.
+
+The check is source analysis and knows nothing about MQL5 semantics. It cannot prove an input is *meaningful*, only that something reads it - so the rule that an EA exposes only what its own code path uses stays a review obligation, with the checker catching the crude half.
+
+One grouping change followed from the same review. XSparkFlow's ATR band sat under "Manual limits - only when auto-adapt is off", which was true but misleading: the band is read only by the volatility filter, which ships off. It now sits in a group with that filter, so an operator can see that turning the filter off makes both numbers inert.
+
+What this does NOT do is make the two bots independent of each other. They still share an account, and `InpFlowMaxAccountRiskPct` is still measured across all open positions including the other bot's. That coupling is deliberate and is the one that should exist.

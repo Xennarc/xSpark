@@ -13,6 +13,7 @@ enum {TIME_DATE=1, TIME_MINUTES=2};
 string TimeToString(datetime t, int=0) {return std::to_string(t);}
 double MathLog(double x) {return std::log(x);}
 int StringLen(const string& s) {return int(s.size());}
+int StringFind(const string& s, const string& sub) {auto p=s.find(sub); return p==string::npos?-1:int(p);}
 int StringGetCharacter(const string& s,int i) {return s.at(i);}
 std::map<string,double> gv;
 bool fail_write = false, fail_read = false, fail_cas = false;
