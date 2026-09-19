@@ -1,0 +1,70 @@
+; XSpark - XAUUSD M5 "reachable targets" profile
+; STATUS: UNTESTED HYPOTHESIS. No Strategy Tester run has been performed on this
+; preset. The reasoning below is measured; the outcome is not. Test before use.
+;
+; PROBLEM THIS ADDRESSES
+; The 810-trade run of xauusd-m5-survival.set produced a 19.01% win rate against
+; an 80.99% loss rate, PF 0.94, and 38 consecutive losses. Two measured causes:
+;
+; 1. THE PARTIAL CLOSE IS THE WIN-RATE ENGINE, AND IT WAS DISABLED.
+;    In the earlier 3%-risk run, 81.5% of ALL winning positions involved a
+;    partial close. Positions that fired a partial won 96.5% of the time;
+;    positions that did not won 7.1%.
+;    That run's deals/trades ratio was 2.25 (partials firing). The survival
+;    run's was exactly 2.00 - zero partials fired, in 810 trades.
+;    Cause: LegalPartialCloseVolume() returns 0 when a 50% close would leave a
+;    residual below SYMBOL_VOLUME_MIN. At 0.35% risk on $5,000 with a 3.0 x ATR
+;    stop, every position sizes to the 0.01 minimum, so no partial is ever legal.
+;    The threshold is ~0.37% risk at ATR 3.1 - the survival preset sat just under
+;    the cliff at 0.35%.
+;
+; 2. THE TARGETS WERE UNREACHABLE.
+;    With InpATRMultSL=3.0 and InpMaxRR=10.0, the median planned target was 6.94R
+;    - about 21 ATR of M5 gold movement. Only 2.6% of positions ever exceeded 4R.
+;    A 7:1 reward:risk geometry cannot produce a high win rate: even with no edge
+;    at all, expected win rate is ~1/(1+7) = 12.5%.
+;
+; WHAT THIS CHANGES
+; Stop and target geometry back to the EA's shipped defaults, which were never
+; actually tested. Effect is twofold:
+;   - Target:stop ratio moves from ~7:1 to ~3:1, so targets are reachable.
+;   - A 1.5 x ATR stop is half as wide, so the same risk % buys ~2x the lots,
+;     lifting size clear of the 0.02-lot floor and re-enabling partial closes.
+;     At 0.5% risk on $5,000, ATR 3.1: ~0.05 lots. At ATR 6.0: ~0.02 lots.
+;     Above roughly ATR 10 the partial goes illegal again - watch for it.
+;
+; HONEST EXPECTATION
+; This should raise win rate, because win rate is mostly a function of the
+; target:stop ratio. It does NOT by itself create edge - a tighter target earns
+; less per win. Whether expectancy improves is exactly what the test decides.
+; Note also that a narrower stop makes the fixed spread a larger fraction of R,
+; so costs rise as a share of risk.
+
+InpEnableTrading=true
+InpEntryStyle=0
+InpAutoTuneForSymbol=true
+InpMinScore=3.0
+
+; --- sizing: conservative, and kept clear of the 0.02-lot partial-close floor ---
+InpMaxOpenTrades=2
+InpRiskPctTier1=0.5
+InpRiskPctTier2=0.5
+InpRiskPctTier3=0.5
+InpMaxRiskPct=0.75
+InpMaxAccountRiskPct=1.5
+
+; --- safety rails stay armed ---
+InpMaxDailyDDPct=6.0
+InpUseTotalDDKillSwitch=true
+InpMaxTotalDDPct=25.0
+
+; --- THE CHANGE: shipped-default stop/target geometry, reachable targets ---
+InpATRMultSL=1.5
+InpMinRR=1.5
+InpMaxRR=3.0
+InpPartialTPRatio=2.5
+InpPartialClosePct=50.0
+InpATRMultTrail=2.0
+
+InpUsePinBars=true
+InpPatternMaxChaseATR=0.5
