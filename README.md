@@ -10,6 +10,9 @@ XSpark has implemented its first strategy, ScoreBot_v3 MAX_SHARPE, behind safety
 
 The EA is still under development and not production-approved. Trading is disabled by default with `InpEnableTrading = false`.
 
+See the [live chart dashboard](docs/DASHBOARD.md) for the visual console, status
+messages, display settings and validation limits.
+
 ## Purpose
 
 The long-term goal is a production-grade MT5 Expert Advisor that can operate continuously during forex market hours while remaining simple enough for one retail trader to understand, test, deploy, and maintain.

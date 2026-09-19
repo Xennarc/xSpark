@@ -43,3 +43,6 @@ MQL5/Files/*.log
 *.opt
 *.gen
 *.dat
+
+# Portable test cache
+__pycache__/

@@ -132,7 +132,15 @@ Reading real ATR history, and whether the derived numbers actually produce trade
 
 `MQL5/Scripts/Tests/TestDashboardLayout.mq5` covers the chart panel's pure presentation rules: status-to-severity mapping (including that an unmapped status renders as a FAULT rather than as healthy), bar fill in pixels against each component's own maximum, the session tag, panel placement for all four corners including a window smaller than the panel, and reason trimming.
 
-Rendering itself - object creation, fonts, colours, paint order - is NOT covered and must be checked visually on a chart. In particular, confirm on first attach that the panel does not overlap the price scale, that no text is clipped at the panel edge, and that the panel background paints over candles rather than behind them.
+`TestDashboardExperience.mq5` additionally checks readable notices, configuration
+versus waiting states, countdown boundaries and wrapping. The portable runner
+`python3 tools/test_dashboard.py` runs both scripts and production drawing methods
+with chart-object doubles (103 assertions). It checks object reuse, throttling,
+compact toggling, stale feeds, position rows, cleanup and readable logger output.
+The existing trading logic runner has 151 assertions. Both run in CI.
+
+Native rendering, fonts, colours and paint order are NOT validated by these
+doubles and must be checked visually on a chart. See [dashboard acceptance](DASHBOARD.md#validation). In particular, confirm on first attach that the panel does not overlap the price scale, that no text is clipped at the panel edge, and that the panel background paints over candles rather than behind them.
 - The weekend-close entry block.
 - Stale-quote rejection against a real feed, including weekend and rollover behaviour.
 

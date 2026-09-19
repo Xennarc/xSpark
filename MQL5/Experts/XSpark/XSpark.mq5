@@ -63,6 +63,8 @@ input ENUM_BASE_CORNER InpDashboardCorner = CORNER_LEFT_UPPER; // Chart panel co
 input int    InpDashboardMarginX = 12; // Panel distance from left/right edge (pixels)
 input int    InpDashboardMarginY = 18; // Panel distance from top/bottom edge (pixels)
 input bool   InpVerboseLog = false; // Show detailed diagnostic logs
+input bool InpDashboardCompact = false; // Start with a compact chart panel
+input bool InpDashboardAnimate = true; // Animate live dashboard activity
 
 input group "07. Advanced - momentum and setup filters"
 input double InpLongScoreExtra = 0.0; // Extra setup score required for buys
@@ -164,6 +166,8 @@ int g_tester_sequence = 0;
 datetime g_current_base_bar_time = 0;
 datetime g_last_evaluated_signal_bar_time = 0;
 double   g_latest_closed_atr14 = 0.0;
+string g_ui_decision_status = "", g_ui_decision_reason = "";
+string g_ui_entry_style = "Loading settings";
 string   g_status = "SCANNING";
 string   g_last_block_reason = "Waiting for the next closed base timeframe bar.";
 long     g_state_recovery_position_id = 0;
@@ -503,14 +507,55 @@ string XSparkStatusFromSafety()
 
 void XSparkUpdateDashboard()
 {
+   if(!g_dashboard.NeedsRefresh()) return;
    const string mode = InpEnableTrading ? "TRADING" : "ANALYSIS ONLY";
+   XSparkDashboardLive live;
+   live.symbol = _Symbol; live.timeframe = EnumToString(g_base_timeframe);
+   StringReplace(live.timeframe, "PERIOD_", "");
+   live.currency = AccountInfoString(ACCOUNT_CURRENCY); live.entry_style = g_ui_entry_style;
+   live.digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   live.connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
+   live.animate = InpDashboardAnimate; live.bid = 0; live.ask = 0; live.quote_age = -1; live.quote_stamp = 0;
+   MqlTick tick;
+   live.quote_valid = SymbolInfoTick(_Symbol, tick) && tick.time > 0 &&
+                      MathIsValidNumber(tick.bid) && MathIsValidNumber(tick.ask) && tick.bid > 0 && tick.ask >= tick.bid;
+   datetime now = TimeTradeServer(); if(now == 0) now = TimeCurrent();
+   if(live.quote_valid)
+   {
+      live.bid = tick.bid; live.ask = tick.ask; live.quote_stamp = tick.time_msc;
+      live.quote_age = now >= tick.time ? (long)(now - tick.time) : -1;
+   }
+   live.bar_seconds = PeriodSeconds(g_base_timeframe);
+   live.seconds_to_close = XSparkDashboardSecondsLeft(now, iTime(_Symbol, g_base_timeframe, 0), live.bar_seconds);
+   live.position_count = 0; live.open_profit = 0; live.positions_valid = true;
+   for(int i = 0; i < 3; i++) { live.positions[i] = ""; live.position_profit[i] = 0; }
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) { live.positions_valid = false; continue; }
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol || (ulong)PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      const double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      live.open_profit += profit;
+      if(live.position_count < 3)
+      {
+         const string side = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? "BUY" : "SELL";
+         const int volume_digits = XSparkVolumeDigitsFromStep(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP));
+         live.positions[live.position_count] = StringFormat("#%I64u  %s  %s lots", ticket, side,
+                                                          DoubleToString(PositionGetDouble(POSITION_VOLUME), volume_digits));
+         live.position_profit[live.position_count] = profit;
+      }
+      live.position_count++;
+   }
 
    // The unmanaged-exposure alarm is DERIVED here rather than stored in g_status.
    // Stored, it latches (nothing clears it once the position closes) and every
    // OnTick early return bypasses it. Derived, it does neither: it is recomputed
    // from the live count on every render and clears with the condition.
-   string dashboard_status = g_status;
-   string dashboard_reason = g_last_block_reason;
+   const bool show_entry_decision = g_status == "MANAGING" && g_ui_decision_status != "";
+   string dashboard_status = show_entry_decision ? g_ui_decision_status : g_status;
+   string dashboard_reason = show_entry_decision ? g_ui_decision_reason : g_last_block_reason;
+   if(dashboard_status == "MANAGING" && live.positions_valid && live.position_count == 0)
+   { dashboard_status = "SCANNING"; dashboard_reason = "Waiting for the next closed candle."; }
 
    const int unmanaged = g_position_manager.UnmanagedPositionCount();
    if(unmanaged > 0 && !g_safety_manager.TotalDDKillSwitchLatched())
@@ -520,6 +565,31 @@ void XSparkUpdateDashboard()
                                       unmanaged,
                                       g_position_manager.ManagedPositionCount());
    }
+   // Recompute hard conditions every render: a later MANAGING tick must not
+   // conceal an entry fault, disconnected feed, or a latched safety stop.
+   if(g_safety_manager.TotalDDKillSwitchLatched())
+   { dashboard_status = "KILLSWITCH"; dashboard_reason = "Total DD killswitch is latched."; }
+   else if(g_safety_manager.StateRecoveryLatched())
+   { dashboard_status = "STATE RECOVERY"; dashboard_reason = g_safety_manager.StateRecoveryReason(); }
+   else if(unmanaged > 0) { /* Keep the detailed unmanaged-position notice above. */ }
+   else if(!g_v2_config_valid)
+   { dashboard_status = "V2 CONFIG BLOCKED"; dashboard_reason = g_v2_config_reason; }
+   else if(!g_safety_manager.ScorePointSizeConforms())
+   { dashboard_status = "POINT SIZE FAULT"; dashboard_reason = "Instrument price units are not trusted."; }
+   else if(!g_safety_manager.EntryDriftBoundUsable() && (!InpAutoTuneForSymbol || g_auto_tune_complete))
+   { dashboard_status = "DRIFT GATE FAULT"; dashboard_reason = "Entry price tolerance cannot safely bound risk."; }
+   else if(g_safety_manager.DailyHaltLatched())
+   { dashboard_status = "DD HALT"; dashboard_reason = "Daily DD halt is latched for the broker day."; }
+   else if(!live.connected)
+   { dashboard_status = "DISCONNECTED"; dashboard_reason = "Terminal is not connected."; }
+   else if(!live.quote_valid || live.quote_age < 0 || live.quote_age > InpMaxQuoteAgeSeconds)
+   { dashboard_status = "STALE QUOTE"; dashboard_reason = "Waiting for fresh broker prices."; }
+   else if(!live.positions_valid)
+   { dashboard_status = "STATE RECOVERY"; dashboard_reason = "Cannot read the broker position snapshot."; }
+   else if(InpEnableTrading && (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)))
+   { dashboard_status = "TRADING PERMISSION"; dashboard_reason = "Terminal trading is not allowed."; }
+   else if(!InpEnableTrading)
+   { dashboard_status = "TRADING DISABLED"; dashboard_reason = "Trading disabled by input."; }
    g_dashboard.Update(g_last_report,
                       g_safety_manager,
                       AccountInfoDouble(ACCOUNT_EQUITY),
@@ -530,7 +600,7 @@ void XSparkUpdateDashboard()
                       XSparkPriceToScorePoints(g_market_state.SpreadPrice(), g_score_point_size),
                       mode,
                       dashboard_status,
-                      dashboard_reason);
+                      dashboard_reason, live);
 }
 
 // Machine-greppable record of a signal that did NOT become a trade.
@@ -1046,7 +1116,7 @@ bool XSparkCalibrateForSymbol()
    return true;
 }
 
-void XSparkEvaluateNewBar()
+void XSparkEvaluateNewBarCore()
 {
    if(!g_indicator_cache.RefreshClosedData())
    {
@@ -1339,6 +1409,13 @@ void XSparkEvaluateNewBar()
    XSparkEnterStateRecovery(plan, execution_result);
 }
 
+// Preserve the latest entry decision separately from per-tick management.
+void XSparkEvaluateNewBar()
+{
+   XSparkEvaluateNewBarCore();
+   g_ui_decision_status = g_status; g_ui_decision_reason = g_last_block_reason;
+}
+
 // Resolves the ScoreBot point size for the chart symbol and decides whether it
 // can be trusted for new exposure. The decision itself lives in the pure
 // XSparkSelectOperatingPointSize so it is testable from a script; this wrapper
@@ -1434,6 +1511,8 @@ int OnInit()
    string entry_style_reason;
    const bool entry_style_valid = XSparkApplyEntryStyle(InpEntryStyle, gates, patterns, entry_style_reason);
    g_observe_entries = gates.observe_only;
+   g_ui_entry_style = gates.observe_only ? (patterns.enabled ? "Preview: original entries" : "Original entries") :
+                      (patterns.enabled ? "Chart-pattern entries" : (gates.use_continuation ? "Trend-pullback entries" : "Original entries"));
    g_strategy.ConfigurePatterns(patterns);
    g_v2_config_valid = XSparkValidateGateConfig(gates, g_v2_config_reason);
    if(!entry_style_valid)
@@ -1561,8 +1640,8 @@ int OnInit()
       g_latest_closed_atr14 = g_indicator_cache.ATR14Base();
 
    g_current_base_bar_time = iTime(_Symbol, g_base_timeframe, 0);
-   EventSetTimer(5);
-   g_dashboard.Configure(InpDashboardCorner, InpDashboardMarginX, InpDashboardMarginY);
+   EventSetTimer(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE) ? 5 : 1);
+   g_dashboard.Configure(InpDashboardCorner, InpDashboardMarginX, InpDashboardMarginY, InpDashboardCompact, InpDashboardAnimate);
    g_dashboard.Initialize();
 
    g_logger.Info("EA", StringFormat("Symbol=%s digits=%d point=%s score_point_size=%s spread_score_points=%.2f",
@@ -1657,6 +1736,11 @@ void OnDeinit(const int reason)
    g_logger.Info("EA", StringFormat("Shutdown reason=%s (%d)",
                                     XSparkDeinitReasonToString(reason),
                                     reason));
+}
+
+void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
+{
+   if(g_dashboard.HandleEvent(id, sparam)) XSparkUpdateDashboard();
 }
 
 void OnTimer()
