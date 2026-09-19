@@ -50,6 +50,16 @@ rather than in points.
 | `InpFlowMinBodyATRMult` | 0.0 | Ignore candles whose body is smaller than this. 0 disables it, keeping the rule literally single-factor. |
 | `InpFlowUseVolatilityGate` | false | Only enter while the average range is inside the auto-calibrated band. Off by default. |
 | `InpFlowRiskPct` | 1.0 | Risk per trade, as a percentage of balance. |
+| `InpFlowUseWeekendClose` | true | Flatten this bot's trades before the Friday close. On by default: a position held on a trailing stop with no target carries the weekend gap. |
+
+### A note on the wording in MetaTrader
+
+The Inputs tab shows each setting's trailing comment as its name, so that
+comment is the whole user interface. CandleFlow's labels avoid the trade jargon
+the identifiers still carry: **"typical candle size"** is ATR, **"the amount
+risked"** is R — the distance from entry to the first stop — and **"buy/sell
+gap"** is the spread. `tools/check_ea_inputs.py` fails the build on an input
+with no label or one past MetaTrader's 63-character limit.
 
 The trailing-stop settings have their own section below.
 
@@ -66,14 +76,21 @@ floor and by a one-way ratchet that refuses anything looser than the live stop.
 | Layer | Input | Default | What it proposes |
 | --- | --- | --- | --- |
 | Candle anchor | always on | — | the far wick of the last closed candle, plus the buffer |
-| Chandelier | `InpFlowTrailATRMult` | 0.0 (off) | this many ATRs back from the best price the trade has seen |
-| Tiering | `InpFlowTrailTightenStartR` / `FullR` / `InpFlowTrailTightATRMult` | 0.0 (off) | shrinks the chandelier multiple linearly as the trade matures |
-| Breakeven lock | `InpFlowBreakevenAtR` / `InpFlowBreakevenOffsetR` | 0.0 (off) | entry ± offset, once the trade has been that far in front |
-| Floor | `InpFlowMinTrailATRMult` | 0.25 | not a proposer — it pushes the winner away from the market if it landed too close |
+| Chandelier | `InpFlowTrailATRMult` | **3.0** | this many ATRs back from the best price the trade has seen |
+| Tiering | `InpFlowTrailTightenStartR` / `FullR` / `InpFlowTrailTightATRMult` | **1.0 / 4.0 / 1.5** | shrinks the chandelier multiple linearly as the trade matures |
+| Breakeven lock | `InpFlowBreakevenAtR` / `InpFlowBreakevenOffsetR` | **1.2 / 0.1** | entry ± offset, once the trade has been that far in front |
+| Floor | `InpFlowMinTrailATRMult` | **0.35** | not a proposer — it pushes the winner away from the market if it landed too close |
 
-Everything except the floor ships **off**, so the shipped default is the plain
-candle trail this strategy started with. `presets/xauusd-m30-candleflow-advanced.set`
-turns the whole stack on.
+**The whole stack is on by default.** The numbers live in
+`Trade/TrailingStop.mqh` as `XSPARK_TRAIL_DEFAULT_*`, which is what the EA's
+inputs read and what `TestTrailingStop.mq5` validates — so a default that would
+block trading cannot reach a chart.
+
+They were chosen for plausibility, not measured. To find out whether the stack
+earns its complexity, run `presets/xauusd-m30-candleflow-plain-trail.set`
+against `presets/xauusd-m30-candleflow.set` over the same period: the plain file
+turns every layer off and leaves only the candle trail. If the full
+configuration does not beat it, turn the layers off rather than tuning them.
 
 ### The floor is not optional
 

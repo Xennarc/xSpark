@@ -30,88 +30,99 @@
 // Setup guide and settings: docs/STRATEGY_CANDLEFLOW.md.
 
 input group "01. Start here"
-input bool   InpFlowEnableTrading = false; // Allow new trades (false = watch only)
-input bool   InpFlowAutoTuneForSymbol = true; // Automatically adapt to this market
-input int    InpFlowMaxOpenTrades = 1; // Maximum open trades for this bot (1-10)
+input bool   InpFlowEnableTrading = false; // Place real trades (off = watch and log only)
+input bool   InpFlowAutoTuneForSymbol = true; // Auto-adjust settings to this market (leave on)
+input int    InpFlowMaxOpenTrades = 1; // How many trades this bot may hold at once (1-10)
 
-input group "02. The candle rule"
-input double InpFlowBufferATRMult = 0.10; // Stop buffer beyond the wick (x average range)
-input double InpFlowBufferRangePct = 0.0; // Extra buffer (% of the signal candle's range)
-input double InpFlowBufferPoints = 0.0; // Extra buffer (strategy points)
-input double InpFlowMinStopATRMult = 0.25; // Smallest allowed stop (x average range)
-input double InpFlowMaxStopATRMult = 0.0; // Largest allowed stop (x average range; 0 = no limit)
-input double InpFlowMinBodyATRMult = 0.0; // Ignore candles smaller than (x average range; 0 = off)
+// WHAT THIS BOT DOES, in one paragraph. When a candle finishes higher than it
+// started, it buys. When a candle finishes lower than it started, it sells.
+// There is no profit target: the trade is closed by a stop-loss that follows
+// the price and only ever moves in your favour. Group 02 decides which candles
+// count, group 03 decides where the stop starts, and group 04 decides how it
+// follows. Everything after that is risk, safety and display.
+input group "02. Which candles count as a signal"
+input double InpFlowMinBodyATRMult = 0.0; // Ignore candles smaller than this x typical size (0 = all)
 
-// Every setting below is read only by the trailing stop. The candle anchor is
-// always active; the chandelier, the maturity tiering and the breakeven lock are
-// additional layers that ship OFF, and the most protective of whichever layers
-// are enabled wins. Load presets/xauusd-m30-candleflow-advanced.set for a
-// configuration with all of them turned on.
-input group "03. Trailing stop"
-input double InpFlowMinTrailATRMult = 0.25; // Trail never closer to price than (x average range)
-input double InpFlowTrailATRMult = 0.0; // Trail from the peak by (x average range; 0 = off)
-input double InpFlowTrailTightATRMult = 0.0; // Tightened trail distance (x average range)
-input double InpFlowTrailTightenStartR = 0.0; // Start tightening at this profit (x initial risk; 0 = off)
-input double InpFlowTrailTightenFullR = 0.0; // Fully tightened at this profit (x initial risk)
-input double InpFlowBreakevenAtR = 0.0; // Lock in breakeven at this profit (x initial risk; 0 = off)
-input double InpFlowBreakevenOffsetR = 0.0; // Where the locked stop sits (x initial risk from entry)
+// The stop-loss starts just beyond the signal candle's far end - below the low
+// when buying, above the high when selling - so the trade is wrong only if the
+// candle that triggered it is undone. The gap settings below add together.
+input group "03. Where the stop-loss starts"
+input double InpFlowBufferATRMult = 0.10; // Gap past the candle's end, as x typical candle size
+input double InpFlowBufferRangePct = 0.0; // Extra gap, as % of the signal candle's own height
+input double InpFlowBufferPoints = 0.0; // Extra gap in price points (0 = none)
+input double InpFlowMinStopATRMult = 0.25; // Smallest stop allowed, as x typical candle size
+input double InpFlowMaxStopATRMult = 0.0; // Widest stop allowed; a wider one skips the trade (0 = off)
 
-input group "04. Risk and account limits"
-input double InpFlowRiskPct = 1.0; // Risk per trade (% of balance)
-input double InpFlowMaxRiskPct = 3.5; // Maximum risk per trade (%)
-input double InpFlowMaxAccountRiskPct = 6.0; // Maximum combined risk across the account (%)
-input double InpFlowMaxDailyDDPct = 15.0; // Daily equity drop to pause new trades (%)
-input bool   InpFlowUseTotalDDKillSwitch = true; // Use account drawdown emergency stop
-input double InpFlowMaxTotalDDPct = 25.0; // Equity drop to trigger emergency stop (%)
+// HOW THE STOP FOLLOWS. Each setting below suggests a place for the stop on
+// every finished candle, and the safest suggestion is used. The stop only ever
+// moves towards profit, never away. "The amount risked" means the distance from
+// your entry to your first stop - so "2 x the amount risked" is twice that.
+input group "04. Trailing stop - protects open profit"
+input double InpFlowMinTrailATRMult = XSPARK_TRAIL_DEFAULT_FLOOR_ATR; // Never park the stop closer than this x typical size
+input double InpFlowTrailATRMult = XSPARK_TRAIL_DEFAULT_ATR; // Follow this far behind the best price reached (0 = off)
+input double InpFlowTrailTightATRMult = XSPARK_TRAIL_DEFAULT_TIGHT_ATR; // Once the trade matures, follow this close instead
+input double InpFlowTrailTightenStartR = XSPARK_TRAIL_DEFAULT_TIGHTEN_START_R; // Start tightening at this much profit x amount risked
+input double InpFlowTrailTightenFullR = XSPARK_TRAIL_DEFAULT_TIGHTEN_FULL_R; // Fully tightened at this much profit x amount risked
+input double InpFlowBreakevenAtR = XSPARK_TRAIL_DEFAULT_BREAKEVEN_R; // Protect your entry at this much profit x amount risked
+input double InpFlowBreakevenOffsetR = XSPARK_TRAIL_DEFAULT_BREAKEVEN_OFFSET_R; // Park that stop this far past entry x amount risked
 
-input group "05. Trading hours"
-input bool   InpFlowUseWeekendClose = false; // Close this bot's trades before the weekend
-input int    InpFlowWeekendCloseHour = 20; // Friday closing hour (broker time, 0-23)
+input group "05. How much money to risk"
+input double InpFlowRiskPct = 1.0; // Money risked on one trade (% of your balance)
+input double InpFlowMaxRiskPct = 3.5; // Hard ceiling on one trade, whatever else is set (%)
+input double InpFlowMaxAccountRiskPct = 6.0; // Ceiling on all open risk, this bot and any other (%)
+input double InpFlowMaxDailyDDPct = 15.0; // Stop opening trades if the account falls this much today
+input bool   InpFlowUseTotalDDKillSwitch = true; // Use the emergency stop that closes everything
+input double InpFlowMaxTotalDDPct = 25.0; // Account fall that triggers the emergency stop (%)
+
+input group "06. Weekend protection"
+input bool   InpFlowUseWeekendClose = true; // Close this bot's trades before the market shuts Friday
+input int    InpFlowWeekendCloseHour = 20; // Friday closing hour on the broker's clock (0-23)
 input int    InpFlowWeekendCloseMinute = 0; // Friday closing minute (0-59)
 
-input group "06. Chart panel and logs"
-input ENUM_BASE_CORNER InpFlowDashboardCorner = CORNER_LEFT_UPPER; // Chart panel corner
-input int    InpFlowDashboardMarginX = 12; // Panel distance from left/right edge (pixels)
-input int    InpFlowDashboardMarginY = 18; // Panel distance from top/bottom edge (pixels)
-input bool   InpFlowVerboseLog = false; // Show detailed diagnostic logs
-input bool   InpFlowDashboardCompact = false; // Start with a compact chart panel
-input bool   InpFlowDashboardAnimate = true; // Animate live dashboard activity
-input int    InpFlowDashboardSizePct = 125; // Dashboard size (125-200%; larger is easier to read)
+input group "07. On-screen panel and logging"
+input ENUM_BASE_CORNER InpFlowDashboardCorner = CORNER_LEFT_UPPER; // Which corner the panel sits in
+input int    InpFlowDashboardMarginX = 12; // Panel gap from the left or right edge (pixels)
+input int    InpFlowDashboardMarginY = 18; // Panel gap from the top or bottom edge (pixels)
+input bool   InpFlowVerboseLog = false; // Write detailed logs (for troubleshooting)
+input bool   InpFlowDashboardCompact = false; // Start with the small panel instead of the full one
+input bool   InpFlowDashboardAnimate = true; // Animate the panel so you can see it is running
+input int    InpFlowDashboardSizePct = 125; // Panel size, 125-200% (bigger is easier to read)
 
-// The band below is read ONLY by the filter above it. Grouped together so an
-// operator can see that turning the filter off makes both numbers inert, rather
-// than finding them under a heading that implies they always apply.
-input group "07. Optional market-movement filter"
-input bool   InpFlowUseVolatilityGate = false; // Only trade inside the movement band
-input double InpFlowATRMinPoints = 80.0; // Filter: minimum movement (strategy points)
-input double InpFlowATRMaxPoints = 800.0; // Filter: maximum movement (strategy points)
+// The two limits below are read ONLY by the filter above them, and only when
+// auto-adjust is off. Turning the filter off makes both numbers do nothing.
+input group "08. Optional filter - skip quiet or wild markets"
+input bool   InpFlowUseVolatilityGate = false; // Only trade when the market is moving a normal amount
+input double InpFlowATRMinPoints = 80.0; // Filter: quietest market allowed (price points)
+input double InpFlowATRMaxPoints = 800.0; // Filter: wildest market allowed (price points)
 
-input group "08. Advanced - market calibration and costs"
-input double InpFlowQuietMarketPct = 60.0; // Minimum market movement (% of normal)
-input double InpFlowWildMarketPct = 600.0; // Maximum market movement (% of normal)
-input double InpFlowEntrySlipPct = 25.0; // Entry price tolerance (% of smallest stop)
-input double InpFlowExitSlipPct = 85.0; // Exit price tolerance (% of smallest stop)
-input double InpFlowSpreadCapPct = 40.0; // Maximum spread (% of smallest stop)
-input double InpFlowMaxSpreadATRPct = 10.0; // Maximum spread (% of average range)
+// "Buy/sell gap" is the spread: the difference between the price you can buy at
+// and the price you can sell at. It is a cost you pay on every trade.
+input group "09. Advanced - auto-adjust percentages"
+input double InpFlowQuietMarketPct = 60.0; // Quiet limit, as % of this market's normal movement
+input double InpFlowWildMarketPct = 600.0; // Wild limit, as % of this market's normal movement
+input double InpFlowEntrySlipPct = 25.0; // Price drift allowed when opening (% of smallest stop)
+input double InpFlowExitSlipPct = 85.0; // Price drift allowed when closing (% of smallest stop)
+input double InpFlowSpreadCapPct = 40.0; // Widest buy/sell gap allowed (% of smallest stop)
+input double InpFlowMaxSpreadATRPct = 10.0; // Widest buy/sell gap allowed (% of typical candle)
 
-input group "09. Advanced - broker and price checks"
-input bool   InpFlowUseSpreadFilter = true; // Block entries when the spread is too wide
-input bool   InpFlowUseStopLevelValidation = true; // Check broker minimum stop distance
-input bool   InpFlowUseMarginCheck = true; // Check available margin before entering
-input double InpFlowMarginBufferPct = 20.0; // Extra margin required (% of order margin)
-input int    InpFlowMaxQuoteAgeSeconds = 15; // Maximum price age before refusing (seconds)
+input group "10. Advanced - broker safety checks"
+input bool   InpFlowUseSpreadFilter = true; // Skip trades when the buy/sell gap is too wide
+input bool   InpFlowUseStopLevelValidation = true; // Respect the broker's minimum stop distance
+input bool   InpFlowUseMarginCheck = true; // Check there is enough free margin before opening
+input double InpFlowMarginBufferPct = 20.0; // Spare margin wanted on top of the trade's own (%)
+input int    InpFlowMaxQuoteAgeSeconds = 15; // Refuse to trade on prices older than this (seconds)
 
-input group "10. Manual limits - only when auto-adapt is off"
-input double InpFlowMaxSpreadPoints = 50.0; // Maximum spread (strategy points)
-input double InpFlowEntryDeviationPoints = XSPARK_CANDLEFLOW_ENTRY_DEVIATION_POINTS; // Entry price tolerance (strategy points)
-input double InpFlowExitDeviationPoints = XSPARK_CANDLEFLOW_EXIT_DEVIATION_POINTS; // Exit price tolerance (strategy points)
+input group "11. Advanced - manual limits, only when auto-adjust is off"
+input double InpFlowMaxSpreadPoints = 50.0; // Widest buy/sell gap allowed (price points)
+input double InpFlowEntryDeviationPoints = XSPARK_CANDLEFLOW_ENTRY_DEVIATION_POINTS; // Price drift allowed when opening (price points)
+input double InpFlowExitDeviationPoints = XSPARK_CANDLEFLOW_EXIT_DEVIATION_POINTS; // Price drift allowed when closing (price points)
 
-input group "11. Advanced - bot identity"
-input ulong  InpFlowMagicNumber = XSPARK_CANDLEFLOW_MAGIC_DEFAULT; // Unique bot ID (use a different ID per chart)
-input string InpFlowOrderComment = XSPARK_CANDLEFLOW_COMMENT_DEFAULT; // Trade label shown in account history
+input group "12. Advanced - bot identity"
+input ulong  InpFlowMagicNumber = XSPARK_CANDLEFLOW_MAGIC_DEFAULT; // This bot's ID tag - a different one per chart
+input string InpFlowOrderComment = XSPARK_CANDLEFLOW_COMMENT_DEFAULT; // Label shown beside these trades in your history
 
-input group "12. Recovery - deliberate reset only"
-input bool   InpFlowClearKillswitchLatch = false; // Reset emergency stop once (then set false)
+input group "13. Recovery - use once, then switch back off"
+input bool   InpFlowClearKillswitchLatch = false; // Clear the emergency stop once, then set back to false
 
 // CandleFlow sends no take-profit, so the execution engine's reward-ratio
 // bounds never apply to any plan it produces. The engine still validates its
