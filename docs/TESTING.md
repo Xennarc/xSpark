@@ -89,6 +89,7 @@ MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5
 MQL5/Scripts/Tests/TestExecutionHardening.mq5
 MQL5/Scripts/Tests/TestCandleFlow.mq5
 MQL5/Scripts/Tests/TestStrategyIdentity.mq5
+MQL5/Scripts/Tests/TestTrailingStop.mq5
 ```
 
 `tools/compile_mt5.ps1` compiles both EAs and every script under
@@ -135,6 +136,8 @@ The following cannot be proven outside MT5 and must be checked in the Strategy T
 Reading real ATR history, and whether the derived numbers actually produce trades on a given symbol, are Strategy Tester questions and are NOT covered here.
 
 ## Dashboard Layout Script
+
+`MQL5/Scripts/Tests/TestTrailingStop.mq5` covers the composed trailing stop, which is CandleFlow's only exit and therefore carries the whole strategy: peak tracking in both directions, maturity in R measured from the peak, the linear interpolation of the tiered multiple and that it neither jumps at a boundary nor keeps shrinking past full tightening, the chandelier and breakeven prices, which layer wins when several propose a stop, and the floor - including a candidate that has landed through the market. The manager fixtures then exercise the same logic through `ManagePositions`: that a candle advances a position's peak exactly once, that a lower high never lowers it, that the peak is persisted for a restart, and that a tightened trail landing through the market is rescued by the floor rather than sent to the broker.
 
 The `ManagePositions` fixtures in `tools/portable_position_tests.hpp` also cover `XSparkDirectionIsUnopposed`, which is what stops either strategy from opening a trade against a position it already holds: that a held long admits another long but refuses a short and vice versa, that a flat bot may take either side, that another bot's or another symbol's opposite position is not this bot's exposure, and that an unreadable position refuses rather than assuming flat.
 

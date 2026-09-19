@@ -49,6 +49,9 @@ class CXSparkLogger {public:
  void Info(const string&,const string&) {} void Warn(const string&,const string&) {} void Error(const string&,const string&) {}
 };
 // ACCOUNT_EXPOSURE_SOURCE
+XSparkTrailPlan MakeTrailPlan(int mode = XSPARK_TRAIL_ATR_AFTER_PARTIAL) {
+ XSparkTrailPlan plan; XSparkResetTrailPlan(plan); plan.mode = mode; return plan;
+}
 class Manager {
 public:
  bool m_initialized=true, m_use_stop_level_validation=true;
@@ -57,6 +60,7 @@ public:
  int m_managed_position_count=0,m_unmanaged_position_count=0,m_flatten_attempts=0;
  std::vector<XSparkTradeState> m_states;
  std::vector<ulong> partial_calls, modify_calls;
+ XSparkTrailPlan m_trail_plan = MakeTrailPlan();
  bool close_first_fully=false;
  bool LoadPersistedState(XSparkTradeState& s) {
   if(!saved.count(s.identifier)) return false;
@@ -107,6 +111,32 @@ void SeedShort() {
   s.initial_sl=b.stop;s.initial_tp=90;s.initial_lots=1;s.initial_risk_distance=2;
   saved[b.id]=s;
  }
+}
+void TrailOnce(Manager& m, double bid, double ask, double anchor_long, double anchor_short, CXSparkLogger& logger) {
+ XSparkTrailPlan plan = MakeTrailPlan(XSPARK_TRAIL_CANDLE_ANCHOR);
+ plan.anchor_long = anchor_long; plan.anchor_short = anchor_short;
+ m.SetTrailPlan(plan);
+ m.ManagePositions(bid,ask,1,0,0,0,false,20,0,logger);
+}
+void TrailPlanned(Manager& m, double bid, double ask, CXSparkLogger& logger,
+                  double anchor_long, double anchor_short,
+                  double closed_high, double closed_low, datetime closed_time, double atr,
+                  double floor_mult, double trail_mult, double tight_mult,
+                  double start_r, double full_r, double be_r, double be_offset) {
+ XSparkTrailPlan plan = MakeTrailPlan(XSPARK_TRAIL_CANDLE_ANCHOR);
+ plan.anchor_long = anchor_long; plan.anchor_short = anchor_short;
+ plan.closed_candle_ready = closed_time > 0;
+ plan.closed_high = closed_high; plan.closed_low = closed_low; plan.closed_time = closed_time;
+ plan.atr = atr;
+ plan.tuning.min_trail_atr_mult = floor_mult;
+ plan.tuning.chandelier_atr_mult = trail_mult;
+ plan.tuning.chandelier_tight_atr_mult = tight_mult;
+ plan.tuning.tighten_start_r = start_r;
+ plan.tuning.tighten_full_r = full_r;
+ plan.tuning.breakeven_at_r = be_r;
+ plan.tuning.breakeven_offset_r = be_offset;
+ m.SetTrailPlan(plan);
+ m.ManagePositions(bid,ask,1,0,0,0,false,20,0,logger);
 }
 void Run() {
  CXSparkLogger logger;
@@ -160,20 +190,64 @@ void Run() {
 
  // Candle-anchor trailing, exercising the manager loop itself.
  Seed();Manager anchor;
- anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,99,0);
+ TrailOnce(anchor,106,106.1,99,0,logger);
  Check("candle anchor trails every position without a partial close",anchor.partial_calls.empty() && live[0].stop==99 && live[1].stop==99);
- anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,97,0);
+ TrailOnce(anchor,106,106.1,97,0,logger);
  Check("a looser candle anchor never widens a live stop",live[0].stop==99 && live[1].stop==99);
- anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,101,0);
+ TrailOnce(anchor,106,106.1,101,0,logger);
  Check("a tighter candle anchor moves the stop up",live[0].stop==101 && live[1].stop==101);
- anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,0,0);
+ TrailOnce(anchor,106,106.1,0,0,logger);
  Check("a missing candle anchor leaves the broker stop alone",live[0].stop==101 && live[1].stop==101);
  Check("candle anchor mode records the trail it applied",anchor.m_states[0].current_trail_sl==101 && saved.at(101).current_trail_sl==101);
  SeedShort();Manager anchor_short;
- anchor_short.ManagePositions(94,94.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,0,101);
+ TrailOnce(anchor_short,94,94.1,0,101,logger);
  Check("candle anchor trails a short down",live[0].stop==101 && live[1].stop==101);
- anchor_short.ManagePositions(94,94.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,0,103);
+ TrailOnce(anchor_short,94,94.1,0,103,logger);
  Check("a looser candle anchor never widens a short stop",live[0].stop==101 && live[1].stop==101);
+
+ // The composed trail: peak tracking, the chandelier, the breakeven lock and
+ // the floor, applied through the same one-way ratchet. Seeded positions are
+ // long from 100 with 2.0 of initial risk and a stop at 98.
+ Seed();Manager chandelier;
+ TrailPlanned(chandelier,106,106.1,logger,0,0,/*peak candle*/110,105,1,/*atr*/2,/*floor*/0.25,/*trail*/3,0,0,0,0,0);
+ Check("the chandelier trails from the closed candle's peak",live[0].stop==104 && live[1].stop==104);
+ TrailPlanned(chandelier,106,106.1,logger,0,0,110,105,1,2,0.25,3,0,0,0,0,0);
+ Check("the same candle cannot advance the peak twice",live[0].stop==104 && chandelier.m_states[0].trail_peak==110);
+ TrailPlanned(chandelier,106,106.1,logger,0,0,108,104,2,2,0.25,3,0,0,0,0,0);
+ Check("a lower high never lowers the peak",live[0].stop==104 && chandelier.m_states[0].trail_peak==110);
+ TrailPlanned(chandelier,112,112.1,logger,0,0,114,109,3,2,0.25,3,0,0,0,0,0);
+ Check("a higher high raises the peak and the stop with it",live[0].stop==108 && chandelier.m_states[0].trail_peak==114);
+ Check("the advanced peak is persisted for a restart",saved.at(101).trail_peak==114);
+
+ // Tiering: 5R of maturity with tightening complete at 3R uses the tight
+ // multiple, so the stop sits one ATR under the peak rather than three.
+ // Quoted at 109 rather than 106: a 1 x ATR trail under a peak of 110 sits at
+ // 108, which is only a legal stop while the market is above it. At 106 the
+ // floor would rescue it instead, which the case below that one proves.
+ Seed();Manager tiered;
+ TrailPlanned(tiered,109,109.1,logger,0,0,110,105,1,2,0.25,3,1,1,3,0,0);
+ Check("a mature trade trails at the tightened multiple",live[0].stop==108);
+ Seed();Manager tiered_through;
+ TrailPlanned(tiered_through,106,106.1,logger,0,0,110,105,1,2,0.25,3,1,1,3,0,0);
+ Check("a tightened trail that lands through the market is rescued by the floor",live[0].stop==105.5);
+
+ // Breakeven: the candle high reaches exactly 1R and the lock engages, even
+ // with the chandelier disabled.
+ Seed();Manager be;
+ TrailPlanned(be,101,101.1,logger,0,0,102,100.5,1,2,0.25,0,0,0,0,1,0);
+ Check("the breakeven lock moves the stop to entry",live[0].stop==100);
+ Seed();Manager be_early;
+ TrailPlanned(be_early,101,101.1,logger,0,0,101.5,100.5,1,2,0.25,0,0,0,0,1,0);
+ Check("below the trigger the breakeven lock leaves the stop alone",live[0].stop==98);
+
+ // The floor is what stops a tight candle from parking the stop inside the
+ // spread. The anchor at 105.99 is 0.01 from the bid; the floor is 0.5.
+ Seed();Manager floored;
+ TrailPlanned(floored,106,106.1,logger,105.99,0,0,0,0,2,0.25,0,0,0,0,0,0);
+ Check("an anchor inside the floor is widened away from the market",live[0].stop==105.5);
+ Seed();Manager unfloored;
+ TrailPlanned(unfloored,106,106.1,logger,105.99,0,0,0,0,2,0,0,0,0,0,0,0);
+ Check("with the floor off the same anchor is used as given",live[0].stop==105.99);
  Seed();double all=0,own=0,other=0;int count=0;string reason;
  live.push_back({33,303});live.back().symbol="OTHER";
  Check("exposure includes foreign trades but counts own slots",XSparkReadAccountExposure("TEST",999,all,own,other,count,reason) && all==6 && own==4 && other==2 && count==2);

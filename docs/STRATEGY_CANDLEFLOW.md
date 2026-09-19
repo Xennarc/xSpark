@@ -51,8 +51,72 @@ rather than in points.
 | `InpFlowUseVolatilityGate` | false | Only enter while the average range is inside the auto-calibrated band. Off by default. |
 | `InpFlowRiskPct` | 1.0 | Risk per trade, as a percentage of balance. |
 
+The trailing-stop settings have their own section below.
+
 The three buffer components add together, so `0.10` ATR plus `20`% of the candle
 range plus a fixed pad is a valid configuration.
+
+## The trailing stop
+
+CandleFlow has no take-profit, so the trailing stop **is** the strategy's exit.
+It is built from four layers. On each closed candle every enabled layer proposes
+a stop, the **most protective** one wins, and the result is then bounded by the
+floor and by a one-way ratchet that refuses anything looser than the live stop.
+
+| Layer | Input | Default | What it proposes |
+| --- | --- | --- | --- |
+| Candle anchor | always on | — | the far wick of the last closed candle, plus the buffer |
+| Chandelier | `InpFlowTrailATRMult` | 0.0 (off) | this many ATRs back from the best price the trade has seen |
+| Tiering | `InpFlowTrailTightenStartR` / `FullR` / `InpFlowTrailTightATRMult` | 0.0 (off) | shrinks the chandelier multiple linearly as the trade matures |
+| Breakeven lock | `InpFlowBreakevenAtR` / `InpFlowBreakevenOffsetR` | 0.0 (off) | entry ± offset, once the trade has been that far in front |
+| Floor | `InpFlowMinTrailATRMult` | 0.25 | not a proposer — it pushes the winner away from the market if it landed too close |
+
+Everything except the floor ships **off**, so the shipped default is the plain
+candle trail this strategy started with. `presets/xauusd-m30-candleflow-advanced.set`
+turns the whole stack on.
+
+### The floor is not optional
+
+A trailing stop that can land a few points from the bid is a delayed market
+order. A narrow candle, or a tightened chandelier late in a move, will do
+exactly that, and the spread alone then closes a position whose move was still
+intact. `InpFlowMinTrailATRMult` widens any such candidate back to a survivable
+distance from the market.
+
+Widening can only ever *reduce* the chance of being stopped, and the ratchet
+still refuses anything looser than the live stop, so the floor cannot give back
+protection the trade has already banked.
+
+### The peak is measured on closed candles
+
+The chandelier trails from the highest high (long) or lowest low (short) the
+position has seen since entry, taken from **closed candles only** and stored
+per position so a restart mid-trade does not reset it. Wicks count, because
+that is the price the market actually reached.
+
+This is deliberately not the `mfe_price` the position manager already tracks:
+that one is sampled on the exit-side quote at every management pass, so it moves
+intrabar and would make the trail depend on when a tick happened to arrive.
+
+### Maturity is measured from the peak, not the current price
+
+Tiering and the breakeven lock both key off how far the trade has been in front,
+in units of its own initial risk. Measuring that from the peak rather than the
+live price makes it **monotonic**: a tier once reached is never given back, so a
+retracement can never loosen the trail.
+
+Between `InpFlowTrailTightenStartR` and `InpFlowTrailTightenFullR` the chandelier
+multiple moves *linearly* from the wide value to the tight one. There is no tier
+boundary at which a small price change jumps the stop.
+
+### What a bad configuration does
+
+`XSparkValidateTrailTuning` refuses a tightened multiple wider than the base one,
+tiering with no trail to tier, a tiering span too narrow to interpolate across,
+and a breakeven offset that gives back more than its own trigger earns. A refused
+configuration blocks **new entries** — the trailing stop is the only exit, so a
+setting the EA cannot honour is not something to proceed past. Positions already
+open keep trailing on the last accepted plan.
 
 ### Why there is a stop floor
 

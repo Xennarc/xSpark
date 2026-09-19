@@ -2,6 +2,7 @@
 #define XSPARK_TRADE_TRADE_STATE_MQH
 
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
+#include <XSpark/Trade/TrailingStop.mqh>
 
 // How PositionManager moves a stop once a position is live.
 //
@@ -277,8 +278,46 @@ struct XSparkTradeState
    double                 initial_risk_distance;
    double                 mfe_price;              // best exit-side price seen while open
    double                 mae_price;              // worst exit-side price seen while open
+   // Best CLOSED-CANDLE extreme since entry, which is what a chandelier trail
+   // measures from. Deliberately separate from mfe_price: that one is sampled
+   // per management pass on the exit-side quote, so it moves intrabar and would
+   // make a candle-close trail depend on when a tick happened to arrive.
+   double                 trail_peak;
+   datetime               trail_peak_time;        // the candle the peak was last advanced on
    bool                   partial_block_logged;   // RAM-only: throttles the "no legal partial" warning
 };
+
+// What the caller wants done to open stops on this pass.
+//
+// Passed as one object rather than as more positional arguments: the candle
+// anchors, the closed-candle extremes and the tuning all change together, and a
+// caller that set some of them and forgot the rest would trail against a mix of
+// two different candles.
+struct XSparkTrailPlan
+{
+   int      mode;                // EXSparkTrailMode
+   double   anchor_long;         // candle anchor for a long, zero when absent
+   double   anchor_short;
+   bool     closed_candle_ready; // true once the closed-candle extremes below are trustworthy
+   double   closed_high;
+   double   closed_low;
+   datetime closed_time;         // identifies the candle, so one candle updates a peak once
+   double   atr;
+   XSparkTrailTuning tuning;
+};
+
+void XSparkResetTrailPlan(XSparkTrailPlan &plan)
+{
+   plan.mode = XSPARK_TRAIL_ATR_AFTER_PARTIAL;
+   plan.anchor_long = 0.0;
+   plan.anchor_short = 0.0;
+   plan.closed_candle_ready = false;
+   plan.closed_high = 0.0;
+   plan.closed_low = 0.0;
+   plan.closed_time = 0;
+   plan.atr = 0.0;
+   XSparkResetTrailTuning(plan.tuning);
+}
 
 void XSparkResetTradeState(XSparkTradeState &state)
 {
@@ -299,6 +338,8 @@ void XSparkResetTradeState(XSparkTradeState &state)
    state.initial_risk_distance = 0.0;
    state.mfe_price = 0.0;
    state.mae_price = 0.0;
+   state.trail_peak = 0.0;
+   state.trail_peak_time = 0;
    state.partial_block_logged = false;
 }
 
