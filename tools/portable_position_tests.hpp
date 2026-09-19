@@ -14,6 +14,7 @@ enum {POSITION_IDENTIFIER, POSITION_TIME, POSITION_MAGIC, POSITION_TYPE,
  POSITION_PRICE_OPEN, POSITION_SL, POSITION_VOLUME, POSITION_TP, POSITION_SYMBOL,
  SYMBOL_DIGITS, SYMBOL_TRADE_TICK_SIZE, SYMBOL_TRADE_TICK_VALUE, SYMBOL_TRADE_TICK_VALUE_LOSS,
  TERMINAL_CONNECTED, POSITION_TYPE_BUY=100, POSITION_TYPE_SELL=101};
+using ENUM_POSITION_TYPE = long;
 int PositionsTotal() {return int(live.size());}
 ulong PositionGetTicket(int i) {selected=i; return i==unreadable ? 0 : live.at(i).ticket;}
 bool PositionSelectByTicket(ulong t) {
@@ -41,6 +42,7 @@ double SymbolInfoDouble(const string&,int) {return 1;}
 long TerminalInfoInteger(int) {return connected;}
 string DoubleToString(double v,int) {return std::to_string(v);}
 // IDENTITY_SOURCE
+// UNOPPOSED_SOURCE
 bool XSparkAdjustProtectionLevels(const string&,EXSparkSignalDirection,double,double sl,double tp,bool,
                                   double& out_sl,double& out_tp,string&) {out_sl=sl;out_tp=tp;return true;}
 class CXSparkLogger {public:
@@ -133,6 +135,29 @@ void Run() {
  Check("ticket identity mismatch cannot overwrite recorded state",!collision.Reconcile(logger) && collision.m_states[0].identifier==101);
  collision.ManagePositions(106,106.1,1,2.5,50,2,false,20,0,logger);
  Check("mismatched ticket is never managed as the old trade",collision.partial_calls.size()==1 && collision.partial_calls[0]==22);
+ // Opposite-direction exposure. Both strategies refuse to hold a position and
+ // open its opposite: XSparkFlow because the open trade must exit on its own
+ // trailing stop rather than be hedged, ScoreBot for the same reason. The EA
+ // checks this when it plans, and ExecutionEngine re-checks it before every
+ // send attempt, so a position that appears in between still blocks the entry.
+ Seed();string opposed;
+ Check("a held long admits another long",XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_BUY,opposed));
+ Check("a held long refuses a short",!XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_SELL,opposed) && opposed.find("OPPOSING EXPOSURE")!=string::npos);
+ live[0].type=POSITION_TYPE_SELL;live[1].type=POSITION_TYPE_SELL;
+ Check("a held short refuses a long",!XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_BUY,opposed));
+ Check("a held short admits another short",XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_SELL,opposed));
+ live.clear();
+ Check("a flat bot may open either direction",XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_BUY,opposed) && XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_SELL,opposed));
+ Seed();live.push_back({33,303});live.back().magic=770331;live.back().type=POSITION_TYPE_SELL;
+ Check("another bot's opposite position is not this bot's exposure",XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_BUY,opposed));
+ Check("this bot's own long still refuses a short beside it",!XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_SELL,opposed));
+ Seed();live.push_back({44,404});live.back().symbol="OTHER";live.back().type=POSITION_TYPE_SELL;
+ Check("an opposite position on another symbol does not block",XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_BUY,opposed));
+ Seed();unreadable=0;
+ Check("an unreadable position refuses rather than assumes flat",!XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_BUY,opposed));
+ unreadable=-1;
+ Check("a NONE direction is never unopposed",!XSparkDirectionIsUnopposed("TEST",999,XSPARK_SIGNAL_NONE,opposed));
+
  // Candle-anchor trailing, exercising the manager loop itself.
  Seed();Manager anchor;
  anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,99,0);

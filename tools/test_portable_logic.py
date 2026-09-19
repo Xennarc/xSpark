@@ -54,6 +54,10 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     identity_start = execution_math.index('bool XSparkPositionIdentityMatches(')
     identity_end = execution_math.index('\n}', identity_start) + 2
     position_tests = position_tests.replace('// IDENTITY_SOURCE', adapt(execution_math[identity_start:identity_end]))
+    safety = (ROOT / 'MQL5/Include/XSpark/Core/SafetyManager.mqh').read_text()
+    unopposed_start = safety.index('bool XSparkDirectionIsUnopposed(')
+    unopposed_end = safety.index('\n}', unopposed_start) + 2
+    position_tests = position_tests.replace('// UNOPPOSED_SOURCE', adapt(safety[unopposed_start:unopposed_end]))
     for marker, value in [('// PRODUCTION_METHODS', '\n'.join(methods)),
                           ('// TRADE_STATE_SOURCE', adapt((ROOT / 'MQL5/Include/XSpark/Trade/TradeState.mqh').read_text())),
                           ('// ACCOUNT_EXPOSURE_SOURCE', adapt((ROOT / 'MQL5/Include/XSpark/Risk/AccountExposure.mqh').read_text()))]:

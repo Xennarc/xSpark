@@ -66,12 +66,32 @@ The floor is also what the auto-calibration measures every derived tolerance
 against: it is genuinely the smallest stop this configuration can produce, which
 is exactly what the entry-slippage bound in ADR-024 needs.
 
-### Why there is no reversal
+### Why there is no reversal, and no hedge
 
 Every candle has a direction, so an opposing signal arrives constantly while a
-position is open. CandleFlow does not reverse and does not hedge: an opposing
-signal is refused by the existing opposing-exposure check, and the open trade
-exits on its trailing stop alone.
+position is open. CandleFlow never opens a trade against a position it is
+already holding: the open trade exits on its trailing stop and nothing else.
+
+This is enforced twice, because one check is not enough when the two moments are
+seconds apart:
+
+1. When the candle closes, `XSparkFlowEvaluateNewBarCore` refuses the signal if
+   any XSparkFlow position on this symbol is on the other side. The panel shows
+   `OPPOSING EXPOSURE` and the journal records the refused candle.
+2. `ExecutionEngine` re-checks before **every** send attempt, so a position that
+   appears between planning and the order reaching the broker still blocks it.
+
+Both read live broker positions rather than XSpark's own state, and both fail
+closed: a position that cannot be read refuses the entry rather than assuming
+the bot is flat.
+
+The check is scoped to this bot's Magic Number, so ScoreBot_v3 holding an
+opposite position on the same symbol does not block CandleFlow. They are
+separate bots and each may take its own side.
+
+Note that with `InpFlowMaxOpenTrades = 1` the slot limit already blocks a second
+trade of any direction. This check is what holds the rule when that limit is
+raised to let same-direction trades stack.
 
 ## Running it next to ScoreBot_v3
 
