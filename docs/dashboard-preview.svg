@@ -14,7 +14,7 @@
 <rect x="358" y="136" width="54" height="24" fill="#121e2a" stroke="#899bab"/>
 <text x="373.46875" y="151.2" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Less</text>
 <text x="44" y="179.6" fill="#899bab" font-size="12.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">XAUUSD  /  M15</text>
-<text x="44" y="216.66666666666669" fill="#ecf0f4" font-size="33.333333333333336" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">2634.89</text>
+<text x="44" y="215.6" fill="#ecf0f4" font-size="32.0" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">2634.89</text>
 <text x="44" y="234.46666666666667" fill="#899bab" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">NEW TRADES ENABLED</text>
 <rect x="271" y="216" width="4" height="3" fill="#f7b955" stroke="#0a1119"/>
 <rect x="277" y="212" width="4" height="7" fill="#f7b955" stroke="#0a1119"/>
@@ -44,10 +44,9 @@
 <rect x="40" y="250" width="376" height="124" fill="#0f1924" stroke="#223140"/>
 <rect x="40" y="250" width="3" height="124" fill="#3dce83" stroke="#3dce83"/>
 <text x="52" y="273.8" fill="#3dce83" font-size="16.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">Managing open trades</text>
-<text x="52" y="293.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">The EA is monitoring each position and its configured</text>
+<text x="52" y="293.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">The EA is monitoring each position and its configured exit</text>
 <text x="52" y="339.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Keep the terminal connected for EA-managed exits.</text>
-<text x="52" y="307.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">exit rules.</text>
-<text x="52" y="353.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start"></text>
+<text x="52" y="307.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">rules.</text>
 <text x="52" y="324.46666666666664" fill="#f7b955" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">NEXT STEP</text>
 <rect x="40" y="386" width="376" height="116" fill="#0f1924" stroke="#223140"/>
 <text x="52" y="405.46666666666664" fill="#899bab" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">LATEST CLOSED-CANDLE CHECK</text>
@@ -83,8 +82,6 @@
 <text x="404" y="676.5333333333333" fill="#3dce83" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end">+24.50</text>
 <text x="52" y="695.5333333333333" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">#192847526  BUY  0.01 lots</text>
 <text x="404" y="695.5333333333333" fill="#3dce83" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end">+14.22</text>
-<text x="52" y="714.5333333333333" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start"></text>
-<text x="404" y="714.5333333333333" fill="#3dce83" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end"></text>
 <text x="44" y="762.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">Next candle 08:32</text>
 <text x="412" y="761.4666666666667" fill="#899bab" font-size="9.333333333333334" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="end">Chart-pattern entries</text>
 <rect x="44" y="770" width="368" height="3" fill="#1c2a37" stroke="#1c2a37"/>
@@ -101,7 +98,7 @@
 <rect x="788" y="136" width="54" height="24" fill="#121e2a" stroke="#899bab"/>
 <text x="803.46875" y="151.2" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Less</text>
 <text x="474" y="179.6" fill="#899bab" font-size="12.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">XAUUSD  /  M15</text>
-<text x="474" y="216.66666666666669" fill="#899bab" font-size="33.333333333333336" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">2634.89</text>
+<text x="474" y="215.6" fill="#899bab" font-size="32.0" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">2634.89</text>
 <text x="474" y="234.46666666666667" fill="#899bab" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">NEW TRADES ENABLED</text>
 <rect x="701" y="216" width="4" height="3" fill="#1c2a37" stroke="#0a1119"/>
 <rect x="707" y="212" width="4" height="7" fill="#1c2a37" stroke="#0a1119"/>
@@ -132,9 +129,8 @@
 <rect x="470" y="250" width="3" height="124" fill="#f08c34" stroke="#f08c34"/>
 <text x="482" y="273.8" fill="#f08c34" font-size="16.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">Waiting for fresh prices</text>
 <text x="482" y="293.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">The price feed is missing or too old for a new entry.</text>
-<text x="482" y="339.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Check the connection and market hours; entries wait</text>
-<text x="482" y="307.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start"></text>
-<text x="482" y="353.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">for fresh quotes.</text>
+<text x="482" y="339.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Check the connection and market hours; entries wait for</text>
+<text x="482" y="353.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">fresh quotes.</text>
 <text x="482" y="324.46666666666664" fill="#f7b955" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">NEXT STEP</text>
 <rect x="470" y="386" width="376" height="116" fill="#0f1924" stroke="#223140"/>
 <text x="482" y="405.46666666666664" fill="#899bab" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">LATEST CLOSED-CANDLE CHECK</text>
@@ -170,8 +166,6 @@
 <text x="834" y="676.5333333333333" fill="#3dce83" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end">+24.50</text>
 <text x="482" y="695.5333333333333" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">#192847526  BUY  0.01 lots</text>
 <text x="834" y="695.5333333333333" fill="#3dce83" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end">+14.22</text>
-<text x="482" y="714.5333333333333" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start"></text>
-<text x="834" y="714.5333333333333" fill="#3dce83" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end"></text>
 <text x="474" y="762.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">Next candle 08:32</text>
 <text x="842" y="761.4666666666667" fill="#899bab" font-size="9.333333333333334" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="end">Chart-pattern entries</text>
 <rect x="474" y="770" width="368" height="3" fill="#1c2a37" stroke="#1c2a37"/>
@@ -188,7 +182,7 @@
 <rect x="1218" y="136" width="54" height="24" fill="#121e2a" stroke="#899bab"/>
 <text x="1225.3671875" y="151.2" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Expand</text>
 <text x="904" y="179.6" fill="#899bab" font-size="12.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">XAUUSD  /  M15</text>
-<text x="904" y="216.66666666666669" fill="#899bab" font-size="33.333333333333336" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">2634.89</text>
+<text x="904" y="215.6" fill="#899bab" font-size="32.0" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">2634.89</text>
 <text x="904" y="234.46666666666667" fill="#899bab" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">NEW TRADES ENABLED</text>
 <rect x="1131" y="216" width="4" height="3" fill="#1c2a37" stroke="#0a1119"/>
 <rect x="1137" y="212" width="4" height="7" fill="#1c2a37" stroke="#0a1119"/>
@@ -219,9 +213,8 @@
 <rect x="900" y="250" width="3" height="124" fill="#f08c34" stroke="#f08c34"/>
 <text x="912" y="273.8" fill="#f08c34" font-size="16.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">Waiting for fresh prices</text>
 <text x="912" y="293.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">The price feed is missing or too old for a new entry.</text>
-<text x="912" y="339.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Check the connection and market hours; entries wait</text>
-<text x="912" y="307.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start"></text>
-<text x="912" y="353.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">for fresh quotes.</text>
+<text x="912" y="339.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Check the connection and market hours; entries wait for</text>
+<text x="912" y="353.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">fresh quotes.</text>
 <text x="912" y="324.46666666666664" fill="#f7b955" font-size="9.333333333333334" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">NEXT STEP</text>
 <text x="904" y="388.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">Next candle 08:32</text>
 <text x="1272" y="387.46666666666664" fill="#899bab" font-size="9.333333333333334" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="end">Chart-pattern entries</text>

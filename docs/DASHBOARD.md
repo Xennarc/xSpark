@@ -63,6 +63,38 @@ quiet periods. Resize/collapse events refresh immediately. Native chart objects
 are reused. Nonvisual tester runs skip the panel and annotations. No external
 runtime, image asset or network service is used by the EA.
 
+## Text sizing and the Mac/Wine overflow correction
+
+Text is fitted to explicit pixel boxes. Font point sizes account for the reported
+screen DPI, then native font measurements check line height and available width.
+This also handles wider fallback fonts without letting a title collide with a
+score or the live-feed label run into the button. Notice text wraps at measured
+word boundaries; overflow ends in an ellipsis and full text remains in tooltips.
+Empty fields are hidden and contain a space, avoiding MT5's default `Label` text.
+Reinitialization rebuilds the panel's paint order while preserving entry and
+pattern annotations and other indicators' objects.
+
+The implementation uses [TextSetFont](https://www.mql5.com/en/docs/objects/textsetfont)
+with the documented negative point conversion for label matching and
+[TextGetSize](https://www.mql5.com/en/docs/objects/textgetsize) for pixel bounds.
+Arial is the fallback if the configured font cannot be selected. If no usable
+metrics are available, affected text stays hidden until measurement recovers.
+
+![Illustrative correction for the reported empty/stale-price panel](dashboard-text-fit.svg)
+
+The fixture above uses 192 DPI (200% scaling), XAUUSDm/M5, a stale quote and no
+open positions. It is an illustrative source render, not a native terminal capture.
+The regression suite models 96, 120, 144, 192 and 288 DPI, narrow/full layouts,
+incorrectly reported DPI, wider substituted glyphs, long values, empty rows and
+measurement failure/recovery. The previous implementation fails the new layout
+regressions. These font doubles still cannot prove native Mac/Wine rendering.
+
+After updating **all** include files (including `UI/DashboardText.mqh`), compile
+`XSpark.mq5` and reattach/reinitialize the EA. Check the same chart and display
+scale from the reported screenshot: no overlapping labels, no default `Label`
+placeholders, visible account values, and working Less/Expand. Native compilation
+and this terminal-side check remain required.
+
 ## Error messages
 
 Warnings, errors and critical journal entries now include a readable title,
@@ -79,7 +111,7 @@ component to inspect; they are never presented as successful operations.
 
 ## Validation
 
-`python3 tools/test_dashboard.py` runs 103 assertions against adapted production
+`python3 tools/test_dashboard.py` runs 134 assertions against adapted production
 presentation code and chart-object doubles, including logger output, countdown,
 clamping, compact toggling, stale feed, multiple-position display and cleanup.
 This is C++ portability testing, **not native MQL5 compilation or MT5 execution**.
@@ -90,6 +122,7 @@ Generate the illustrative preview with:
 ```sh
 python3 tools/test_dashboard.py --scene /tmp/xspark-scenes.txt
 python3 tools/render_dashboard_preview.py /tmp/xspark-scenes.txt docs/dashboard-preview.svg /tmp/dashboard-preview.png
+python3 tools/render_dashboard_preview.py /tmp/xspark-scenes.txt docs/dashboard-text-fit.svg /tmp/dashboard-text-fit.png --scene screenshot_fixed_192 --dpi 192
 ```
 
 The PNG review renderer requires Pillow and DejaVu fonts. These are tooling-only
