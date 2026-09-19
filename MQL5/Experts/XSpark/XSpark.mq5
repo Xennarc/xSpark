@@ -65,6 +65,7 @@ input int    InpDashboardMarginY = 18; // Panel distance from top/bottom edge (p
 input bool   InpVerboseLog = false; // Show detailed diagnostic logs
 input bool InpDashboardCompact = false; // Start with a compact chart panel
 input bool InpDashboardAnimate = true; // Animate live dashboard activity
+input int InpDashboardSizePct = 125; // Dashboard size (125-200%; larger is easier to read)
 
 input group "07. Advanced - momentum and setup filters"
 input double InpLongScoreExtra = 0.0; // Extra setup score required for buys
@@ -1641,7 +1642,7 @@ int OnInit()
 
    g_current_base_bar_time = iTime(_Symbol, g_base_timeframe, 0);
    EventSetTimer(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE) ? 5 : 1);
-   g_dashboard.Configure(InpDashboardCorner, InpDashboardMarginX, InpDashboardMarginY, InpDashboardCompact, InpDashboardAnimate);
+   g_dashboard.Configure(InpDashboardCorner, InpDashboardMarginX, InpDashboardMarginY, InpDashboardCompact, InpDashboardAnimate, InpDashboardSizePct);
    g_dashboard.Initialize();
 
    g_logger.Info("EA", StringFormat("Symbol=%s digits=%d point=%s score_point_size=%s spread_score_points=%.2f",

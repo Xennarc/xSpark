@@ -135,11 +135,13 @@ Reading real ATR history, and whether the derived numbers actually produce trade
 `TestDashboardExperience.mq5` additionally checks readable notices, configuration
 versus waiting states, countdown boundaries and wrapping. The portable runner
 `python3 tools/test_dashboard.py` runs both scripts and production drawing methods
-with chart-object doubles (134 assertions). It checks object reuse, throttling,
+with chart-object doubles (145 assertions). It checks object reuse, throttling,
 compact toggling, stale feeds, position rows, cleanup and readable logger output.
 Font doubles exercise 100–300% display scaling, narrow charts, font substitution,
 incorrect reported DPI, label overlap, empty-field visibility and metric failure
-recovery. See `DashboardText.mqh` for the native measurement adapter.
+recovery. Checks also require readable point sizes, panel growth on high-DPI
+displays, immediate +/− resizing and bounded size preferences. See
+`DashboardText.mqh` for the native measurement adapter.
 The existing trading logic runner has 151 assertions. Both run in CI.
 
 Native rendering, fonts, colours and paint order are NOT validated by these
