@@ -39,7 +39,8 @@ private:
    int    m_origin_x;
    int    m_origin_y;
 
-   double m_scale;
+   double m_scale, m_width_scale;
+   int m_size_percent;
    int m_dpi;
    bool m_compact, m_last_compact, m_animate, m_force_refresh;
    ulong m_last_render;
@@ -91,9 +92,9 @@ private:
          ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
       }
 
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, m_origin_x + (int)(x * m_scale));
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, m_origin_x + (int)(x * m_width_scale));
       ObjectSetInteger(0, name, OBJPROP_YDISTANCE, m_origin_y + (int)(y * m_scale));
-      ObjectSetInteger(0, name, OBJPROP_XSIZE, (int)MathMax(1, width * m_scale));
+      ObjectSetInteger(0, name, OBJPROP_XSIZE, (int)MathMax(1, width * m_width_scale));
       ObjectSetInteger(0, name, OBJPROP_YSIZE, (int)MathMax(1, height * m_scale));
       ObjectSetInteger(0, name, OBJPROP_BGCOLOR, fill);
       ObjectSetInteger(0, name, OBJPROP_COLOR, border);
@@ -123,10 +124,10 @@ private:
       }
 
       ObjectSetInteger(0, name, OBJPROP_ANCHOR, right_aligned ? ANCHOR_RIGHT_UPPER : ANCHOR_LEFT_UPPER);
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, m_origin_x + (int)(x * m_scale));
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, m_origin_x + (int)(x * m_width_scale));
       ObjectSetInteger(0, name, OBJPROP_YDISTANCE, m_origin_y + (int)(y * m_scale));
       // Every field has a pixel budget, including columns sharing a row.
-      const int width = (int)((box_width > 0 ? box_width : (right_aligned ? x - 24 : 376 - x)) * m_scale);
+      const int width = (int)((box_width > 0 ? box_width : (right_aligned ? x - 24 : 376 - x)) * m_width_scale);
       const int height = (int)((box_height > 0 ? box_height : font_size * 1.6) * m_scale);
       string actual_font = font;
       const int points = XSparkDashboardFont(actual_font, font_size, m_scale, m_dpi, height);
@@ -164,11 +165,34 @@ private:
                        filled > 0 ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
    }
 
+   void Button(const string suffix, const int x, const int width, const string caption, const string tooltip)
+   {
+      const string name = Name(suffix);
+      if(ObjectFind(0, name) < 0) ObjectCreate(0, name, OBJ_BUTTON, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, m_origin_x + (int)(x * m_width_scale));
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, m_origin_y + (int)(14 * m_scale));
+      ObjectSetInteger(0, name, OBJPROP_XSIZE, (int)(width * m_width_scale));
+      ObjectSetInteger(0, name, OBJPROP_YSIZE, (int)(24 * m_scale));
+      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, XSPARK_UI_BG_BAND);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, XSPARK_UI_TEXT);
+      ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, XSPARK_UI_BORDER);
+      ObjectSetInteger(0, name, OBJPROP_ZORDER, 10);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      string font = XSPARK_UI_FONT_TEXT;
+      const int points = XSparkDashboardFont(font, 8, m_scale, m_dpi, (int)(16 * m_scale));
+      const string text = points > 0 ? XSparkDashboardFitText(caption, (int)((width - 4) * m_width_scale)) : "";
+      ObjectSetString(0, name, OBJPROP_FONT, font);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, (int)MathMax(9, points));
+      ObjectSetString(0, name, OBJPROP_TEXT, text == "" ? " " : text);
+      ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
+   }
+
    string NoticeLine(const string text, const int row)
    {
       string font = XSPARK_UI_FONT_TEXT;
       if(XSparkDashboardFont(font, 8, m_scale, m_dpi, (int)(13 * m_scale)) == 0) return "";
-      return XSparkDashboardPixelLine(text, row, (int)(352 * m_scale), row == 1);
+      return XSparkDashboardPixelLine(text, row, (int)(352 * m_width_scale), row == 1);
    }
 
    // Drawdown is read against the budget it is spending, so the colour crosses
@@ -200,14 +224,16 @@ public:
       m_margin_y = 18;
       m_origin_x = 12;
       m_origin_y = 18;
-      m_dpi = 96;
-      m_scale = 1.0; m_compact = false; m_last_compact = false; m_animate = true;
+      m_dpi = 96; m_width_scale = 1.25; m_size_percent = 125;
+      m_scale = 1.25; m_compact = false; m_last_compact = false; m_animate = true;
       m_force_refresh = true; m_last_render = 0; m_quote_stamp = 0; m_price_count = 0;
    }
 
-   void Configure(const int corner, const int margin_x, const int margin_y, const bool compact = false, const bool animate = true)
+   void Configure(const int corner, const int margin_x, const int margin_y, const bool compact = false, const bool animate = true, const int size_percent = 125)
    {
       m_compact = compact; m_animate = animate;
+      m_size_percent = (int)MathMax(125, MathMin(200, size_percent));
+      m_force_refresh = true;
       m_corner = corner;
       m_margin_x = margin_x;
       m_margin_y = margin_y;
@@ -221,6 +247,12 @@ public:
 
    bool HandleEvent(const int id, const string object_name)
    {
+      if(id == CHARTEVENT_OBJECT_CLICK && (object_name == Name("larger") || object_name == Name("smaller")))
+      {
+         m_size_percent = (int)MathMax(125, MathMin(200, m_size_percent + (object_name == Name("larger") ? 25 : -25)));
+         ObjectSetInteger(0, object_name, OBJPROP_STATE, false);
+         m_force_refresh = true; return true;
+      }
       if(id == CHARTEVENT_OBJECT_CLICK && object_name == Name("toggle"))
       {
          m_compact = !m_compact;
@@ -290,11 +322,12 @@ public:
       if(m_dpi <= 0) m_dpi = 96;
       const int chart_width = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
       const int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
-      m_scale = MathMin(1.0, MathMax(0.75, (double)(chart_width - 2 * m_margin_x) / 400.0));
-      const bool compact = m_compact || chart_height < (int)(660 * m_scale) + 2 * m_margin_y;
+      m_scale = XSparkDashboardReadableScale(m_dpi, m_size_percent);
+      m_width_scale = MathMin(m_scale, MathMax(0.75, (double)(chart_width - 2 * m_margin_x) / 400.0));
+      const bool compact = m_compact || chart_height < (int)(660 * m_scale) + 2 * m_margin_y || m_width_scale < m_scale * 0.85;
       const int height = compact ? 286 : 660;
       XSparkDashboardPanelOrigin(m_corner, chart_width, chart_height, m_margin_x, m_margin_y,
-                                 m_origin_x, m_origin_y, (int)(400 * m_scale), (int)(height * m_scale));
+                                 m_origin_x, m_origin_y, (int)(400 * m_width_scale), (int)(height * m_scale));
       if(compact != m_last_compact)
          for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
          {
@@ -318,29 +351,14 @@ public:
       Rect("topline", 1, 1, 398, 2, XSPARK_UI_BRAND, XSPARK_UI_BRAND);
       Rect("logo_a", 16, 18, 6, 17, XSPARK_UI_BRAND, XSPARK_UI_BRAND);
       Rect("logo_b", 25, 12, 6, 23, XSPARK_UI_BRAND, XSPARK_UI_BRAND);
-      Text("brand", 41, 12, "xspark", XSPARK_UI_TEXT, 18, XSPARK_UI_FONT_BOLD, false, 155, 28);
-      Text("feed", 220, 20, fresh ? "LIVE PRICES" : "FEED PAUSED", fresh ? XSPARK_UI_GREEN : XSPARK_UI_ORANGE, 8, XSPARK_UI_FONT_BOLD, false, 100, 14);
+      Text("brand", 41, 12, "xspark", XSPARK_UI_TEXT, 16, XSPARK_UI_FONT_BOLD, false, 115, 28);
+      Text("feed", 232, 20, fresh ? "LIVE PRICES" : "FEED PAUSED", fresh ? XSPARK_UI_GREEN : XSPARK_UI_ORANGE, 8, XSPARK_UI_FONT_BOLD, false, 88, 14);
       const bool pulse = !m_animate || !live.animate || (clock / 1000) % 2 == 0;
-      Rect("pulse", 206, 23, 5, 5, fresh ? (pulse ? XSPARK_UI_GREEN : XSPARK_UI_TRACK) : XSPARK_UI_ORANGE, XSPARK_UI_BG);
-      const string button = Name("toggle");
-      if(ObjectFind(0, button) < 0) ObjectCreate(0, button, OBJ_BUTTON, 0, 0, 0);
-      ObjectSetInteger(0, button, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-      ObjectSetInteger(0, button, OBJPROP_XDISTANCE, m_origin_x + (int)(330 * m_scale));
-      ObjectSetInteger(0, button, OBJPROP_YDISTANCE, m_origin_y + (int)(14 * m_scale));
-      ObjectSetInteger(0, button, OBJPROP_XSIZE, (int)(54 * m_scale));
-      ObjectSetInteger(0, button, OBJPROP_YSIZE, (int)(24 * m_scale));
-      ObjectSetInteger(0, button, OBJPROP_BGCOLOR, XSPARK_UI_BG_BAND);
-      ObjectSetInteger(0, button, OBJPROP_COLOR, XSPARK_UI_TEXT_DIM);
-      ObjectSetInteger(0, button, OBJPROP_BORDER_COLOR, XSPARK_UI_BORDER);
-      string button_font = XSPARK_UI_FONT_TEXT;
-      const int button_points = XSparkDashboardFont(button_font, 8, m_scale, m_dpi, (int)(16 * m_scale));
-      const string button_text = button_points > 0 ? XSparkDashboardFitText(compact ? "Expand" : "Less", (int)(46 * m_scale)) : "";
-      ObjectSetInteger(0, button, OBJPROP_FONTSIZE, (int)MathMax(1, button_points));
-      ObjectSetInteger(0, button, OBJPROP_ZORDER, 10);
-      ObjectSetInteger(0, button, OBJPROP_HIDDEN, true);
-      ObjectSetString(0, button, OBJPROP_FONT, button_font);
-      ObjectSetString(0, button, OBJPROP_TEXT, button_text == "" ? " " : button_text);
-      ObjectSetString(0, button, OBJPROP_TOOLTIP, "Show or collapse details. Small chart windows use compact view.");
+      Rect("pulse", 220, 23, 5, 5, fresh ? (pulse ? XSPARK_UI_GREEN : XSPARK_UI_TRACK) : XSPARK_UI_ORANGE, XSPARK_UI_BG);
+      Button("smaller", 164, 22, "-", "Smaller text and panel (minimum 125%).");
+      Button("larger", 190, 22, "+", "Larger text and panel (maximum 200%).");
+      Button("toggle", 330, 54, compact ? "Expand" : "Less",
+             StringFormat("Panel size %d%%. Small windows use compact view; enlarge the chart to show all details.", m_size_percent));
       Text("symbol", 16, 48, live.symbol + "  /  " + live.timeframe, XSPARK_UI_TEXT_DIM, 9, XSPARK_UI_FONT_BOLD);
       Text("price", 16, 68, live.quote_valid ? DoubleToString(live.bid, live.digits) : "--", fresh ? XSPARK_UI_TEXT : XSPARK_UI_TEXT_DIM, 25, XSPARK_UI_FONT_NUM, false, 218, 34);
       Text("mode", 16, 105, mode == "TRADING" ? "NEW TRADES ENABLED" : "WATCH ONLY", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD, false, 188, 12);

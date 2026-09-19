@@ -79,6 +79,7 @@ string XSparkReadableInputs(string text)
    StringReplace(text, "InpMaxRR", "Maximum target (x initial stop distance)");
    StringReplace(text, "InpDashboardCompact", "Start with a compact chart panel");
    StringReplace(text, "InpDashboardAnimate", "Animate live dashboard activity");
+   StringReplace(text, "InpDashboardSizePct", "Dashboard size (125-200%)");
    return text;
 }
 

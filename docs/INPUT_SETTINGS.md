@@ -113,5 +113,8 @@ ADRs 022, 024 and 026 in `docs/DECISIONS.md`.
 ## Chart panel
 
 The panel now has **Start with a compact chart panel** and **Animate live dashboard
-activity** in the display group. **Less / Expand** changes the view on the chart.
+activity** in the display group. **Dashboard size** starts at 125% and accepts
+125–200%; larger values enlarge both text and panel. The on-chart **+ / −** buttons
+adjust the current display without restarting the EA. The selected input value
+returns after reinitialization. **Less / Expand** changes the view on the chart.
 See the [dashboard guide](DASHBOARD.md) for live activity, trade totals and messages.

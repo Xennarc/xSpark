@@ -17,6 +17,7 @@ bool TextFitsPanel(){
   for(auto& a:labels)if(b.left<a.right && b.right>a.left && b.top<a.bottom && b.bottom>a.top){Print("OVERLAP: ",a.name," / ",b.name);return false;}
   labels.push_back(b);
  }
+ for(auto& o:objects)if(o.type==OBJ_LABEL&&IsVisible(o)&&o.integers[OBJPROP_FONTSIZE]<9)return false;
  auto& button=UIObject("toggle");uint w=0,h=0;
  TextSetFont(button.strings[OBJPROP_FONT],-10*int(button.integers[OBJPROP_FONTSIZE]),0);TextGetSize(button.strings[OBJPROP_TEXT],w,h);
  return w<=button.integers[OBJPROP_XSIZE]&&h<=button.integers[OBJPROP_YSIZE];
@@ -33,6 +34,7 @@ int main(){
  UICheck("logger retains exact technical details",log.str().find("Technical details: Computed volume is below broker minimum: InpMaxRiskPct=1")!=string::npos);
  UICheck("forecast warning does not say emergency stop is active",log.str().find("Emergency stop is active")==string::npos);
  UICheck("informational records remain intact",log.str().find("XSpark [INFO] [EA] MACHINE_RECORD field=42")!=string::npos);
+ chart_height=1200;
  CXSparkDashboard panel; CXSparkSafetyManager safety;
  XSparkScoreBotReport report{}; XSparkDashboardLive live{};
  live.symbol="XAUUSD";live.timeframe="M15";live.currency="USD";live.entry_style="Chart-pattern entries";
@@ -63,12 +65,12 @@ int main(){
  UICheck("collapse requests immediate refresh",panel.HandleEvent(CHARTEVENT_OBJECT_CLICK,"ScoreBotV3_Dashboard_toggle")&&panel.NeedsRefresh());
  update("STALE QUOTE","");
  UICheck("compact hides all detail objects",UIObject("detail_account").integers[OBJPROP_TIMEFRAMES]==OBJ_NO_PERIODS);
- UICheck("compact reduces panel height",UIObject("bg").integers[OBJPROP_YSIZE]==286);
+ UICheck("compact reduces panel height",UIObject("bg").integers[OBJPROP_YSIZE]==357);
  DumpScene("compact");
  panel.HandleEvent(CHARTEVENT_OBJECT_CLICK,"ScoreBotV3_Dashboard_toggle");update("STALE QUOTE","");
  UICheck("expand restores details without object growth",UIObject("detail_account").integers[OBJPROP_TIMEFRAMES]==OBJ_ALL_PERIODS&&objects.size()==count);
  chart_width=340;chart_height=450;panel.HandleEvent(CHARTEVENT_CHART_CHANGE,"");update("STALE QUOTE","");
- UICheck("small chart automatically compacts",UIObject("bg").integers[OBJPROP_YSIZE]<286);
+ UICheck("small chart automatically compacts",UIObject("bg").integers[OBJPROP_YSIZE]==357);
  DumpScene("small");
  // Reproduce the supplied Mac/Wine chart: stale price, no setup, no positions.
  XSparkResetScoreBotReport(report);mode="ANALYSIS ONLY";live.position_count=0;
@@ -78,12 +80,12 @@ int main(){
  for(int dpi: {96,120,144,192,288}){
   reported_dpi=dpi;actual_dpi=dpi;
   for(int width: {1200,340}){
-   chart_width=width;chart_height=800;panel.HandleEvent(CHARTEVENT_CHART_CHANGE,"");update("STALE QUOTE","");
+   chart_width=width;chart_height=2600;panel.HandleEvent(CHARTEVENT_CHART_CHANGE,"");update("STALE QUOTE","");
    UICheck(StringFormat("screenshot labels fit without overlap at DPI %d width %d",dpi,width),TextFitsPanel());
    UICheck(StringFormat("unused fields hidden at DPI %d width %d",dpi,width),!IsVisible(UIObject("detail_pnl0"))&&!IsVisible(UIObject("detail_trade1"))&&UIObject("detail_trade1").strings[OBJPROP_TEXT]==" ");
   }
  }
- chart_width=1200;chart_height=800;reported_dpi=96;actual_dpi=192;glyph_scale=1.35;missing_font=true;
+ chart_width=2400;chart_height=2600;reported_dpi=96;actual_dpi=192;glyph_scale=1.35;missing_font=true;
  panel.HandleEvent(CHARTEVENT_CHART_CHANGE,"");update("STALE QUOTE","");
  UICheck("measured fonts cope with incorrect DPI and wider fallback glyphs",TextFitsPanel());
  UICheck("missing platform font falls back to Arial",UIObject("brand").strings[OBJPROP_FONT]=="Arial");
@@ -106,6 +108,30 @@ int main(){
  clock_ms+=1000;update("STALE QUOTE","");DumpScene("screenshot_fixed_192");
  UICheck("zero positions hide stale snapshot rows",!IsVisible(UIObject("detail_trade1"))&&!IsVisible(UIObject("detail_trade2")));
  UICheck("font measurement recovers on the next refresh",IsVisible(UIObject("notice_title"))&&TextFitsPanel());
+ // Readability assertions: fitting inside a box is insufficient if text is tiny.
+ UICheck("high-DPI panel grows instead of shrinking fonts",UIObject("bg").integers[OBJPROP_XSIZE]==1000);
+ UICheck("default body remains readable at 200 percent display scaling",UIObject("notice_body0").integers[OBJPROP_FONTSIZE]>=10);
+ const long initial_height=UIObject("bg").integers[OBJPROP_YSIZE];
+ const long initial_font=UIObject("notice_body0").integers[OBJPROP_FONTSIZE];
+ UICheck("on-chart plus requests immediate refresh",panel.HandleEvent(CHARTEVENT_OBJECT_CLICK,"ScoreBotV3_Dashboard_larger")&&panel.NeedsRefresh());
+ update("STALE QUOTE","");
+ UICheck("plus enlarges both panel and text",UIObject("bg").integers[OBJPROP_YSIZE]>initial_height&&UIObject("notice_body0").integers[OBJPROP_FONTSIZE]>initial_font);
+ UICheck("larger dashboard keeps labels separate",TextFitsPanel());
+ panel.HandleEvent(CHARTEVENT_OBJECT_CLICK,"ScoreBotV3_Dashboard_smaller");update("STALE QUOTE","");
+ UICheck("minus restores initial readable size",UIObject("bg").integers[OBJPROP_YSIZE]==initial_height);
+ for(int i=0;i<10;i++){panel.HandleEvent(CHARTEVENT_OBJECT_CLICK,"ScoreBotV3_Dashboard_smaller");}
+ update("STALE QUOTE","");
+ UICheck("minus cannot shrink below the readable minimum",UIObject("notice_body0").integers[OBJPROP_FONTSIZE]>=10&&UIObject("bg").integers[OBJPROP_XSIZE]==1000);
+ for(int i=0;i<10;i++){panel.HandleEvent(CHARTEVENT_OBJECT_CLICK,"ScoreBotV3_Dashboard_larger");}
+ update("STALE QUOTE","");
+ UICheck("plus respects maximum size",UIObject("bg").integers[OBJPROP_XSIZE]==1600);
+ panel.Configure(CORNER_LEFT_UPPER,12,18,false,true,125);update("STALE QUOTE","");
+ UICheck("configured size is applied on reinitialization",UIObject("bg").integers[OBJPROP_XSIZE]==1000);
+ panel.Configure(CORNER_LEFT_UPPER,12,18,false,true,-100);update("STALE QUOTE","");
+ UICheck("invalid small preference is clamped without changing trading",UIObject("bg").integers[OBJPROP_XSIZE]==1000);
+ panel.Configure(CORNER_LEFT_UPPER,12,18,false,true,1000);update("STALE QUOTE","");
+ UICheck("invalid large preference is clamped",UIObject("bg").integers[OBJPROP_XSIZE]==1600);
+ panel.Configure(CORNER_LEFT_UPPER,12,18,false,true,125);update("STALE QUOTE","");
  ObjectCreate(0,"ScoreBotV3_Dashboard_obsolete",OBJ_LABEL,0,0,0);
  ObjectCreate(0,"ScoreBotV3_Trade_preserve",OBJ_HLINE,0,0,0);
  ObjectCreate(0,"OtherIndicator_preserve",OBJ_LABEL,0,0,0);

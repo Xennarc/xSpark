@@ -52,11 +52,25 @@ activity** controls the heartbeat; disabling it leaves real values updating.
 **Less / Expand** changes the current view without restarting the EA. The initial
 view preference is reapplied when the EA is reinitialized.
 
-The full panel is 400 × 660 logical pixels; compact is 400 × 286. Narrow charts
-scale to 75% minimum, and short charts automatically compact. Allow at least
-324 × 255 chart pixels with default margins for the smallest view. Windows below
-that may clip the panel; enlarge the chart or reduce the margins. Chart dimensions
-exclude surrounding terminal panes. Verify actual font/DPI fit on your platform.
+**Dashboard size** starts at **125%**, with a supported range of 125–200%.
+Use the **+ / −** buttons in the header to change size immediately in 25-point
+steps. This changes only the display; it does not restart the EA. The Inputs
+value is the startup preference and is reapplied after reinitialization.
+
+The whole panel now grows with display DPI and measured font height. Visible
+panel text never uses a font below 9 points. The earlier overflow fix kept the
+panel at a fixed pixel size and reduced fonts on high-DPI displays; that made
+otherwise non-overlapping text unreadably small. This version retains measured
+wrapping and column bounds while enlarging the space available for the text.
+
+The design uses 400 × 660 logical pixels (compact: 400 × 286), multiplied by
+native display scale and the chosen size. At typical 192 DPI and 125%, the full
+panel is about 1000 × 1650 chart pixels; compact is 1000 × 715, before margins.
+Font substitution can require more space. Narrow windows constrain width and
+truncate text instead of reducing its point size; narrow/short windows use
+compact view. To show the full detail cards, enlarge the chart or hide the
+Strategy Tester/Toolbox panes. Extremely small windows can still clip the panel;
+they cannot contain readable text and all details at once.
 
 Ticks may refresh the panel at most twice per second, with a one-second timer for
 quiet periods. Resize/collapse events refresh immediately. Native chart objects
@@ -85,14 +99,15 @@ metrics are available, affected text stays hidden until measurement recovers.
 The fixture above uses 192 DPI (200% scaling), XAUUSDm/M5, a stale quote and no
 open positions. It is an illustrative source render, not a native terminal capture.
 The regression suite models 96, 120, 144, 192 and 288 DPI, narrow/full layouts,
-incorrectly reported DPI, wider substituted glyphs, long values, empty rows and
-measurement failure/recovery. The previous implementation fails the new layout
+incorrectly reported DPI, wider substituted glyphs, long values, empty rows,
+measurement failure/recovery, minimum visible font size, and +/− size bounds. The previous implementation fails the new layout
 regressions. These font doubles still cannot prove native Mac/Wine rendering.
 
 After updating **all** include files (including `UI/DashboardText.mqh`), compile
 `XSpark.mq5` and reattach/reinitialize the EA. Check the same chart and display
 scale from the reported screenshot: no overlapping labels, no default `Label`
-placeholders, visible account values, and working Less/Expand. Native compilation
+placeholders, readable text, visible account values in expanded view, and working
+Less/Expand and +/− controls. Native compilation
 and this terminal-side check remain required.
 
 ## Error messages
@@ -111,7 +126,7 @@ component to inspect; they are never presented as successful operations.
 
 ## Validation
 
-`python3 tools/test_dashboard.py` runs 134 assertions against adapted production
+`python3 tools/test_dashboard.py` runs 145 assertions against adapted production
 presentation code and chart-object doubles, including logger output, countdown,
 clamping, compact toggling, stale feed, multiple-position display and cleanup.
 This is C++ portability testing, **not native MQL5 compilation or MT5 execution**.

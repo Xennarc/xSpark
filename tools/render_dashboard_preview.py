@@ -23,7 +23,14 @@ for line in args.source.read_text().splitlines():
         current = line[6:]; scenes[current] = []
     elif line.startswith('OBJECT '):
         scenes[current].append(shlex.split(line)[1:])
-W,H=(448,802) if args.scene else (1316,802)
+def panel_size(scene):
+    bg=next(o for o in scenes[scene] if o[-1]=='ScoreBotV3_Dashboard_bg')
+    return int(bg[3]),int(bg[4])
+choices=[(args.scene,f'READABLE SIZE / {args.dpi} DPI FIXTURE')] if args.scene else [('live','01  LIVE / MANAGING'),('stale','02  PRICE FEED PAUSED'),('compact','03  COMPACT VIEW')]
+layout=[];offset=12
+for scene,label in choices:
+    layout.append((scene,offset,label));offset+=panel_size(scene)[0]+32
+W=offset+12;H=max(panel_size(scene)[1] for scene,label in choices)+150
 S=2
 im=Image.new('RGB',(W*S,H*S),'#080e16');draw=ImageDraw.Draw(im)
 svg=[f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">',f'<rect width="{W}" height="{H}" fill="#080e16"/>']
@@ -41,7 +48,6 @@ def rect(x,y,w,h,fill,border):
     svg.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{fill}" stroke="{border}"/>')
 text(28,22,'XSPARK  /  CHART CONSOLE',18 if args.scene else 24,'#ecf0f4','Arial Bold')
 text(28,57,'Illustrative source render; not a native MT5 screenshot.' if args.scene else 'Illustrative source render with sample data. Native MT5 appearance remains to be verified.',10 if args.scene else 12,'#899bab')
-layout=[(args.scene,12,f'TEXT FIT / {args.dpi} DPI FIXTURE')] if args.scene else [('live',16,'01  LIVE / MANAGING'),('stale',446,'02  PRICE FEED PAUSED'),('compact',876,'03  COMPACT VIEW')]
 for scene,offset,label in layout:
     text(offset+12,90,label,10,'#f7b955','Arial Bold')
     for o in scenes[scene]:
@@ -53,9 +59,10 @@ for scene,offset,label in layout:
             if kind==12:x-=draw.textlength(value,font=font(pt*args.dpi/72,face))/S/2
             text(x,y,value,pt*args.dpi/72,f'#{fg:06x}',face,bool(right))
 if not args.scene:
-    text(892,448,'CONNECTED TO REAL STATE',12,'#f7b955','Arial Bold')
+    notes_x=layout[-1][1]+12;notes_y=panel_size('compact')[1]+180
+    text(notes_x,notes_y,'CONNECTED TO REAL STATE',12,'#f7b955','Arial Bold')
     for i,line in enumerate(['Sampled bid activity and candle countdown.','Latest setup, score and entry-filter results.','Per-position profit and available trade slots.','Clear reason for waiting, plus the next step.','Compact mode for smaller chart windows.']):
-        text(892,478+i*27,line,12,'#899bab')
+        text(notes_x,notes_y+30+i*27,line,12,'#899bab')
 svg.append('</svg>')
 args.svg.write_text('\n'.join(svg)+'\n')
 im.save(args.png)
