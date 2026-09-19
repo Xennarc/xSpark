@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="448" height="802" viewBox="0 0 448 802">
+<rect width="448" height="802" fill="#080e16"/>
+<text x="28" y="36.4" fill="#ecf0f4" font-size="18" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">XSPARK  /  CHART CONSOLE</text>
+<text x="28" y="65.0" fill="#899bab" font-size="10" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Illustrative source render; not a native MT5 screenshot.</text>
+<text x="24" y="98.0" fill="#f7b955" font-size="10" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">TEXT FIT / 192 DPI FIXTURE</text>
+<rect x="28" y="127" width="400" height="660" fill="#050a10" stroke="#050a10"/>
+<rect x="24" y="122" width="400" height="660" fill="#0a1119" stroke="#223140"/>
+<rect x="25" y="123" width="398" height="2" fill="#f7b955" stroke="#f7b955"/>
+<rect x="40" y="140" width="6" height="17" fill="#f7b955" stroke="#f7b955"/>
+<rect x="49" y="134" width="6" height="23" fill="#f7b955" stroke="#f7b955"/>
+<text x="65" y="153.2" fill="#ecf0f4" font-size="24.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">xspark</text>
+<text x="244" y="150.53333333333333" fill="#f08c34" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">FEED PAUSED</text>
+<rect x="230" y="145" width="5" height="5" fill="#f08c34" stroke="#0a1119"/>
+<rect x="354" y="136" width="54" height="24" fill="#121e2a" stroke="#899bab"/>
+<text x="369.46875" y="151.2" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Less</text>
+<text x="40" y="178.53333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">XAUUSDm  /  M5</text>
+<text x="40" y="215.6" fill="#899bab" font-size="32.0" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">4378.062</text>
+<text x="40" y="235.53333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">WATCH ONLY</text>
+<rect x="267" y="216" width="4" height="3" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="273" y="212" width="4" height="7" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="279" y="211" width="4" height="8" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="285" y="212" width="4" height="7" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="291" y="214" width="4" height="5" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="297" y="213" width="4" height="6" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="303" y="210" width="4" height="9" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="309" y="205" width="4" height="14" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="315" y="203" width="4" height="16" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="321" y="203" width="4" height="16" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="327" y="205" width="4" height="14" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="333" y="205" width="4" height="14" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="339" y="203" width="4" height="16" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="345" y="198" width="4" height="21" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="351" y="195" width="4" height="24" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="357" y="195" width="4" height="24" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="363" y="197" width="4" height="22" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="369" y="198" width="4" height="21" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="375" y="196" width="4" height="23" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="381" y="191" width="4" height="28" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="387" y="188" width="4" height="31" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="393" y="186" width="4" height="33" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="399" y="188" width="4" height="31" fill="#1c2a37" stroke="#0a1119"/>
+<rect x="405" y="189" width="4" height="30" fill="#1c2a37" stroke="#0a1119"/>
+<text x="408" y="235.53333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="end">Last quote 10879s ago</text>
+<rect x="36" y="250" width="376" height="124" fill="#0f1924" stroke="#223140"/>
+<rect x="36" y="250" width="3" height="124" fill="#f08c34" stroke="#f08c34"/>
+<text x="48" y="273.8" fill="#f08c34" font-size="16.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">Waiting for fresh prices</text>
+<text x="48" y="293.53333333333336" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">The price feed is missing or too old for a new entry.</text>
+<text x="48" y="339.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Check the connection and market hours; entries wait for</text>
+<text x="48" y="353.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">fresh quotes.</text>
+<text x="48" y="323.4" fill="#f7b955" font-size="8.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">NEXT STEP</text>
+<rect x="36" y="386" width="376" height="116" fill="#0f1924" stroke="#223140"/>
+<text x="48" y="406.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">LATEST CLOSED-CANDLE CHECK</text>
+<text x="400" y="406.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end">--:--</text>
+<text x="48" y="430.8" fill="#ecf0f4" font-size="16.0" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">Looking for a setup</text>
+<text x="400" y="433.8" fill="#f7b955" font-size="16.0" font-family="Consolas, monospace" font-weight="normal" text-anchor="end">-- / 9</text>
+<rect x="48" y="445" width="352" height="5" fill="#1c2a37" stroke="#1c2a37"/>
+<rect x="48" y="442" width="2" height="11" fill="#899bab" stroke="#899bab"/>
+<text x="48" y="463.4" fill="#899bab" font-size="8.0" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Score available after a setup is evaluated</text>
+<text x="48" y="489.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Trend: Off</text>
+<text x="168" y="489.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Entry area: Off</text>
+<text x="288" y="489.53333333333336" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Momentum: Off</text>
+<rect x="36" y="514" width="376" height="108" fill="#0f1924" stroke="#223140"/>
+<text x="48" y="534.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">ACCOUNT EQUITY</text>
+<text x="194" y="534.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">OPEN PROFIT</text>
+<text x="334" y="534.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">TRADES</text>
+<text x="48" y="562.0666666666667" fill="#ecf0f4" font-size="21.333333333333332" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">10248.60</text>
+<text x="194" y="562.0666666666667" fill="#3dce83" font-size="21.333333333333332" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">+0.00</text>
+<text x="334" y="562.0666666666667" fill="#ecf0f4" font-size="21.333333333333332" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">0/3</text>
+<text x="48" y="579.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">USD</text>
+<text x="194" y="577.4" fill="#899bab" font-size="8.0" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">4 today / 7 in 24h</text>
+<text x="48" y="596.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Daily loss 0.8 / 15.0%</text>
+<text x="232" y="596.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">Peak loss 2.4 / 25.0%</text>
+<rect x="48" y="606" width="166" height="4" fill="#1c2a37" stroke="#1c2a37"/>
+<rect x="48" y="606" width="9" height="4" fill="#3dce83" stroke="#3dce83"/>
+<rect x="232" y="606" width="166" height="4" fill="#1c2a37" stroke="#1c2a37"/>
+<rect x="232" y="606" width="16" height="4" fill="#3dce83" stroke="#3dce83"/>
+<rect x="36" y="634" width="376" height="100" fill="#0f1924" stroke="#223140"/>
+<text x="48" y="654.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Arial Bold, sans-serif" font-weight="bold" text-anchor="start">THIS BOT&#x27;S OPEN TRADES</text>
+<text x="400" y="654.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="end">Spread 2.0 pts</text>
+<text x="48" y="676.5333333333333" fill="#ecf0f4" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="start">No open trades. Waiting for a new entry.</text>
+<text x="40" y="762.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Consolas, monospace" font-weight="normal" text-anchor="start">Awaiting next tick</text>
+<text x="408" y="762.5333333333333" fill="#899bab" font-size="10.666666666666666" font-family="Segoe UI, sans-serif" font-weight="normal" text-anchor="end">Original entries</text>
+<rect x="40" y="770" width="368" height="3" fill="#1c2a37" stroke="#1c2a37"/>
+<rect x="40" y="770" width="368" height="3" fill="#1c2a37" stroke="#1c2a37"/>
+</svg>

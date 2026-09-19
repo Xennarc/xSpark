@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     'Strategy/StrategyInterface.mqh', 'Strategy/ScoreBotTypes.mqh',
     'Core/UserMessages.mqh', 'Core/Logger.mqh',
-    'UI/DashboardLayout.mqh', 'UI/Dashboard.mqh',
+    'UI/DashboardLayout.mqh', 'UI/DashboardText.mqh', 'UI/Dashboard.mqh',
 ]
 
 def main():

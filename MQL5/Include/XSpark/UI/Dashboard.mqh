@@ -4,6 +4,7 @@
 #include <XSpark/Core/SafetyManager.mqh>
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
 #include <XSpark/UI/DashboardLayout.mqh>
+#include <XSpark/UI/DashboardText.mqh>
 
 // Panel palette. The panel paints its own opaque background rather than
 // inheriting the chart's, so it is legible on a light chart, a dark chart and
@@ -39,6 +40,7 @@ private:
    int    m_origin_y;
 
    double m_scale;
+   int m_dpi;
    bool m_compact, m_last_compact, m_animate, m_force_refresh;
    ulong m_last_render;
    long m_quote_stamp;
@@ -104,7 +106,9 @@ private:
              const color text_color,
              const int font_size,
              const string font,
-             const bool right_aligned = false)
+             const bool right_aligned = false,
+             const int box_width = 0,
+             const int box_height = 0)
    {
       const string name = Name(suffix);
 
@@ -121,9 +125,18 @@ private:
       ObjectSetInteger(0, name, OBJPROP_ANCHOR, right_aligned ? ANCHOR_RIGHT_UPPER : ANCHOR_LEFT_UPPER);
       ObjectSetInteger(0, name, OBJPROP_XDISTANCE, m_origin_x + (int)(x * m_scale));
       ObjectSetInteger(0, name, OBJPROP_YDISTANCE, m_origin_y + (int)(y * m_scale));
-      ObjectSetString(0, name, OBJPROP_FONT, font);
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, (int)MathMax(6, font_size * m_scale));
-      ObjectSetString(0, name, OBJPROP_TEXT, content);
+      // Every field has a pixel budget, including columns sharing a row.
+      const int width = (int)((box_width > 0 ? box_width : (right_aligned ? x - 24 : 376 - x)) * m_scale);
+      const int height = (int)((box_height > 0 ? box_height : font_size * 1.6) * m_scale);
+      string actual_font = font;
+      const int points = XSparkDashboardFont(actual_font, font_size, m_scale, m_dpi, height);
+      const string fitted = points > 0 ? XSparkDashboardFitText(content, width) : "";
+      ObjectSetString(0, name, OBJPROP_FONT, actual_font);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, (int)MathMax(1, points));
+      // MT5 can display the default "Label" for empty OBJ_LABEL text.
+      // Set a space AND hide it; restore visibility when real content returns.
+      ObjectSetString(0, name, OBJPROP_TEXT, fitted == "" ? " " : fitted);
+      ObjectSetInteger(0, name, OBJPROP_TIMEFRAMES, fitted == "" ? OBJ_NO_PERIODS : OBJ_ALL_PERIODS);
       ObjectSetString(0, name, OBJPROP_TOOLTIP, content);
       ObjectSetInteger(0, name, OBJPROP_COLOR, text_color);
    }
@@ -151,29 +164,11 @@ private:
                        filled > 0 ? OBJ_ALL_PERIODS : OBJ_NO_PERIODS);
    }
 
-   void SectionLabel(const string suffix, const int y, const string title)
+   string NoticeLine(const string text, const int row)
    {
-      Text(suffix, XSPARK_UI_PAD, y, title, XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD);
-      Rect(suffix + "_rule", XSPARK_UI_PAD, y + 12,
-           XSPARK_UI_PANEL_WIDTH - XSPARK_UI_PAD * 2, 1,
-           XSPARK_UI_BORDER, XSPARK_UI_BORDER);
-   }
-
-   void Dot(const string suffix, const int x, const int y, const bool latched)
-   {
-      Rect(suffix, x, y, 6, 6,
-           latched ? XSPARK_UI_RED : XSPARK_UI_GREEN,
-           latched ? XSPARK_UI_RED : XSPARK_UI_GREEN);
-   }
-
-   color DirectionColor(const EXSparkSignalDirection direction)
-   {
-      if(direction == XSPARK_SIGNAL_BUY)
-         return XSPARK_UI_GREEN;
-      if(direction == XSPARK_SIGNAL_SELL)
-         return XSPARK_UI_RED;
-
-      return XSPARK_UI_TEXT_DIM;
+      string font = XSPARK_UI_FONT_TEXT;
+      if(XSparkDashboardFont(font, 8, m_scale, m_dpi, (int)(13 * m_scale)) == 0) return "";
+      return XSparkDashboardPixelLine(text, row, (int)(352 * m_scale), row == 1);
    }
 
    // Drawdown is read against the budget it is spending, so the colour crosses
@@ -205,6 +200,7 @@ public:
       m_margin_y = 18;
       m_origin_x = 12;
       m_origin_y = 18;
+      m_dpi = 96;
       m_scale = 1.0; m_compact = false; m_last_compact = false; m_animate = true;
       m_force_refresh = true; m_last_render = 0; m_quote_stamp = 0; m_price_count = 0;
    }
@@ -237,6 +233,15 @@ public:
 
    void Initialize()
    {
+      // Rebuild only this panel's objects in paint order after upgrade/restart.
+      // Reusing stale backgrounds can otherwise cover labels created earlier.
+      for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+      {
+         const string name = ObjectName(0, i);
+         if(StringFind(name, m_dashboard_prefix) == 0 && name != Name("pattern_boundary") && name != Name("pattern_detection"))
+            ObjectDelete(0, name);
+      }
+      m_last_compact = false; m_force_refresh = true;
       m_initialized = true;
    }
 
@@ -281,6 +286,8 @@ public:
       if(!NeedsRefresh()) return;
       if(!m_initialized) Initialize();
       const ulong clock = GetTickCount64();
+      m_dpi = (int)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
+      if(m_dpi <= 0) m_dpi = 96;
       const int chart_width = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
       const int chart_height = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
       m_scale = MathMin(1.0, MathMax(0.75, (double)(chart_width - 2 * m_margin_x) / 400.0));
@@ -311,8 +318,8 @@ public:
       Rect("topline", 1, 1, 398, 2, XSPARK_UI_BRAND, XSPARK_UI_BRAND);
       Rect("logo_a", 16, 18, 6, 17, XSPARK_UI_BRAND, XSPARK_UI_BRAND);
       Rect("logo_b", 25, 12, 6, 23, XSPARK_UI_BRAND, XSPARK_UI_BRAND);
-      Text("brand", 41, 12, "xspark", XSPARK_UI_TEXT, 18, XSPARK_UI_FONT_BOLD);
-      Text("feed", 220, 20, fresh ? "LIVE PRICES" : "FEED PAUSED", fresh ? XSPARK_UI_GREEN : XSPARK_UI_ORANGE, 8, XSPARK_UI_FONT_BOLD);
+      Text("brand", 41, 12, "xspark", XSPARK_UI_TEXT, 18, XSPARK_UI_FONT_BOLD, false, 155, 28);
+      Text("feed", 220, 20, fresh ? "LIVE PRICES" : "FEED PAUSED", fresh ? XSPARK_UI_GREEN : XSPARK_UI_ORANGE, 8, XSPARK_UI_FONT_BOLD, false, 100, 14);
       const bool pulse = !m_animate || !live.animate || (clock / 1000) % 2 == 0;
       Rect("pulse", 206, 23, 5, 5, fresh ? (pulse ? XSPARK_UI_GREEN : XSPARK_UI_TRACK) : XSPARK_UI_ORANGE, XSPARK_UI_BG);
       const string button = Name("toggle");
@@ -325,15 +332,18 @@ public:
       ObjectSetInteger(0, button, OBJPROP_BGCOLOR, XSPARK_UI_BG_BAND);
       ObjectSetInteger(0, button, OBJPROP_COLOR, XSPARK_UI_TEXT_DIM);
       ObjectSetInteger(0, button, OBJPROP_BORDER_COLOR, XSPARK_UI_BORDER);
-      ObjectSetInteger(0, button, OBJPROP_FONTSIZE, (int)MathMax(6, 8 * m_scale));
+      string button_font = XSPARK_UI_FONT_TEXT;
+      const int button_points = XSparkDashboardFont(button_font, 8, m_scale, m_dpi, (int)(16 * m_scale));
+      const string button_text = button_points > 0 ? XSparkDashboardFitText(compact ? "Expand" : "Less", (int)(46 * m_scale)) : "";
+      ObjectSetInteger(0, button, OBJPROP_FONTSIZE, (int)MathMax(1, button_points));
       ObjectSetInteger(0, button, OBJPROP_ZORDER, 10);
       ObjectSetInteger(0, button, OBJPROP_HIDDEN, true);
-      ObjectSetString(0, button, OBJPROP_FONT, XSPARK_UI_FONT_TEXT);
-      ObjectSetString(0, button, OBJPROP_TEXT, compact ? "Expand" : "Less");
+      ObjectSetString(0, button, OBJPROP_FONT, button_font);
+      ObjectSetString(0, button, OBJPROP_TEXT, button_text == "" ? " " : button_text);
       ObjectSetString(0, button, OBJPROP_TOOLTIP, "Show or collapse details. Small chart windows use compact view.");
       Text("symbol", 16, 48, live.symbol + "  /  " + live.timeframe, XSPARK_UI_TEXT_DIM, 9, XSPARK_UI_FONT_BOLD);
-      Text("price", 16, 68, live.quote_valid ? DoubleToString(live.bid, live.digits) : "--", fresh ? XSPARK_UI_TEXT : XSPARK_UI_TEXT_DIM, 25, XSPARK_UI_FONT_NUM);
-      Text("mode", 16, 105, mode == "TRADING" ? "NEW TRADES ENABLED" : "WATCH ONLY", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD);
+      Text("price", 16, 68, live.quote_valid ? DoubleToString(live.bid, live.digits) : "--", fresh ? XSPARK_UI_TEXT : XSPARK_UI_TEXT_DIM, 25, XSPARK_UI_FONT_NUM, false, 218, 34);
+      Text("mode", 16, 105, mode == "TRADING" ? "NEW TRADES ENABLED" : "WATCH ONLY", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD, false, 188, 12);
       // Real sampled bids; height is normalized to this sample window, not volume.
       double low = m_price_count > 0 ? m_prices[0] : live.bid, high = low;
       for(int i = 0; i < m_price_count; i++) { low = MathMin(low, m_prices[i]); high = MathMax(high, m_prices[i]); }
@@ -344,16 +354,16 @@ public:
               i < m_price_count && fresh ? XSPARK_UI_BRAND : XSPARK_UI_TRACK, XSPARK_UI_BG);
       }
       ObjectSetString(0, Name("price_23"), OBJPROP_TOOLTIP, "Recent bid samples at dashboard refreshes; normalized price, not trade volume.");
-      Text("quote_age", 384, 105, live.quote_age < 0 ? "No quote yet" : StringFormat("Last quote %I64ds ago", live.quote_age), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, true);
+      Text("quote_age", 384, 105, live.quote_age < 0 ? "No quote yet" : StringFormat("Last quote %I64ds ago", live.quote_age), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, true, 170, 12);
       Rect("notice", 12, 128, 376, 124, XSPARK_UI_BG_HEADER, XSPARK_UI_BORDER);
       Rect("notice_edge", 12, 128, 3, 124, accent, accent);
-      Text("notice_title", 24, 139, XSparkDashboardTrim(notice.title, 36), accent, 12, XSPARK_UI_FONT_BOLD);
+      Text("notice_title", 24, 139, notice.title, accent, 12, XSPARK_UI_FONT_BOLD);
       for(int row = 0; row < 2; row++)
       {
          Text(StringFormat("notice_body%d", row), 24, 163 + row * 14,
-              XSparkDashboardLine(notice.detail, row, 53, row == 1), XSPARK_UI_TEXT, 8, XSPARK_UI_FONT_TEXT);
+              NoticeLine(notice.detail, row), XSPARK_UI_TEXT, 8, XSPARK_UI_FONT_TEXT, false, 352, 13);
          Text(StringFormat("notice_next%d", row), 24, 209 + row * 14,
-              XSparkDashboardLine(notice.action, row, 53, row == 1), XSPARK_UI_TEXT_DIM, 8, XSPARK_UI_FONT_TEXT);
+              NoticeLine(notice.action, row), XSPARK_UI_TEXT_DIM, 8, XSPARK_UI_FONT_TEXT, false, 352, 13);
       }
       Text("next_label", 24, 195, "NEXT STEP", XSPARK_UI_BRAND, 7, XSPARK_UI_FONT_BOLD);
       const string notice_tooltip = notice.title + "\n" + notice.detail + "\n" + notice.action + "\nDetails: " + block_reason;
@@ -367,13 +377,13 @@ public:
       if(!compact)
       {
          Rect("detail_setup", 12, 264, 376, 116, XSPARK_UI_BG_HEADER, XSPARK_UI_BORDER);
-         Text("detail_setup_label", 24, 276, "LATEST CLOSED-CANDLE CHECK", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD);
-         Text("detail_bar_time", 376, 276, report.signal_bar_time > 0 ? TimeToString(report.signal_bar_time, TIME_MINUTES) : "--:--", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_NUM, true);
+         Text("detail_setup_label", 24, 276, "LATEST CLOSED-CANDLE CHECK", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD, false, 290, 12);
+         Text("detail_bar_time", 376, 276, report.signal_bar_time > 0 ? TimeToString(report.signal_bar_time, TIME_MINUTES) : "--:--", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_NUM, true, 52, 12);
          const string pattern = report.gate_candidate ? report.candidate_pattern : (report.has_pattern ? report.pattern_name : "Looking for a setup");
-         Text("detail_pattern", 24, 296, XSparkDashboardTrim(pattern, 26), XSPARK_UI_TEXT, 12, XSPARK_UI_FONT_BOLD);
+         Text("detail_pattern", 24, 296, pattern, XSPARK_UI_TEXT, 12, XSPARK_UI_FONT_BOLD, false, 260, 22);
          ObjectSetString(0, Name("detail_pattern"), OBJPROP_TOOLTIP,
                          "Entry candidate: " + pattern + "\nAll detections: " + report.detected_patterns + "\nRecognition mode: " + report.pattern_mode);
-         Text("detail_score", 376, 299, report.scored ? StringFormat("%.1f / 9", report.components.final_score) : "-- / 9", XSPARK_UI_BRAND, 11, XSPARK_UI_FONT_NUM, true);
+         Text("detail_score", 376, 299, report.scored ? StringFormat("%.1f / 9", report.components.final_score) : "-- / 9", XSPARK_UI_BRAND, 11, XSPARK_UI_FONT_NUM, true, 80, 19);
          Bar("detail_scorebar", 24, 323, 352, 5, report.scored ? report.components.final_score : 0, 9, XSPARK_UI_BRAND);
          const int threshold = XSparkDashboardBarPixels(report.effective_threshold, 9, 350);
          Rect("detail_threshold", 24 + threshold, 320, 2, 11, XSPARK_UI_TEXT_DIM, XSPARK_UI_TEXT_DIM);
@@ -382,39 +392,39 @@ public:
          string verdicts[3]; verdicts[0]=report.htf_verdict; verdicts[1]=report.pullback_verdict; verdicts[2]=report.rsi_verdict;
          for(int i = 0; i < 3; i++)
             Text(StringFormat("detail_gate%d", i), 24 + i * 120, 359, labels[i] + ": " + XSparkDashboardGate(verdicts[i]),
-                 verdicts[i] == "PASS" ? XSPARK_UI_GREEN : XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT);
+                 verdicts[i] == "PASS" ? XSPARK_UI_GREEN : XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, false, 112, 12);
          Rect("detail_account", 12, 392, 376, 108, XSPARK_UI_BG_HEADER, XSPARK_UI_BORDER);
-         Text("detail_equity_l", 24, 404, "ACCOUNT EQUITY", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD);
-         Text("detail_profit_l", 170, 404, "OPEN PROFIT", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD);
-         Text("detail_positions_l", 310, 404, "TRADES", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD);
-         Text("detail_equity", 24, 423, DoubleToString(equity, 2), XSPARK_UI_TEXT, StringLen(DoubleToString(equity, 2)) > 11 ? 10 : 15, XSPARK_UI_FONT_NUM);
-         Text("detail_profit", 170, 423, live.positions_valid ? StringFormat("%+.2f", live.open_profit) : "--", live.open_profit >= 0 ? XSPARK_UI_GREEN : XSPARK_UI_RED, StringLen(DoubleToString(live.open_profit, 2)) > 10 ? 10 : 15, XSPARK_UI_FONT_NUM);
-         Text("detail_positions", 310, 423, live.positions_valid ? StringFormat("%d/%d", live.position_count, max_open_positions) : "--", XSPARK_UI_TEXT, 15, XSPARK_UI_FONT_NUM);
-         Text("detail_currency", 24, 449, live.currency, XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT);
+         Text("detail_equity_l", 24, 404, "ACCOUNT EQUITY", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD, false, 136, 12);
+         Text("detail_profit_l", 170, 404, "OPEN PROFIT", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD, false, 130, 12);
+         Text("detail_positions_l", 310, 404, "TRADES", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD, false, 66, 12);
+         Text("detail_equity", 24, 423, DoubleToString(equity, 2), XSPARK_UI_TEXT, StringLen(DoubleToString(equity, 2)) > 11 ? 10 : 15, XSPARK_UI_FONT_NUM, false, 136, 24);
+         Text("detail_profit", 170, 423, live.positions_valid ? StringFormat("%+.2f", live.open_profit) : "--", live.open_profit >= 0 ? XSPARK_UI_GREEN : XSPARK_UI_RED, StringLen(DoubleToString(live.open_profit, 2)) > 10 ? 10 : 15, XSPARK_UI_FONT_NUM, false, 130, 24);
+         Text("detail_positions", 310, 423, live.positions_valid ? StringFormat("%d/%d", live.position_count, max_open_positions) : "--", XSPARK_UI_TEXT, 15, XSPARK_UI_FONT_NUM, false, 66, 24);
+         Text("detail_currency", 24, 449, live.currency, XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, false, 136, 12);
          Text("detail_today", 170, 449, StringFormat("%d today / %d in 24h", trades_today, trades_last_24h), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT);
-         Text("detail_daily_l", 24, 466, StringFormat("Daily loss %.1f / %.1f%%", safety.DailyDDPct(), safety.MaxDailyDDPct()), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT);
-         Text("detail_total_l", 208, 466, StringFormat("Peak loss %.1f / %.1f%%", safety.TotalDDPct(), safety.MaxTotalDDPct()), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT);
+         Text("detail_daily_l", 24, 466, StringFormat("Daily loss %.1f / %.1f%%", safety.DailyDDPct(), safety.MaxDailyDDPct()), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, false, 174, 12);
+         Text("detail_total_l", 208, 466, StringFormat("Peak loss %.1f / %.1f%%", safety.TotalDDPct(), safety.MaxTotalDDPct()), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, false, 168, 12);
          Bar("detail_daily", 24, 484, 166, 4, safety.DailyDDPct(), safety.MaxDailyDDPct(), DrawdownColor(safety.DailyDDPct(), safety.MaxDailyDDPct()));
          Bar("detail_total", 208, 484, 166, 4, safety.TotalDDPct(), safety.MaxTotalDDPct(), DrawdownColor(safety.TotalDDPct(), safety.MaxTotalDDPct()));
          Rect("detail_trades", 12, 512, 376, 100, XSPARK_UI_BG_HEADER, XSPARK_UI_BORDER);
-         Text("detail_trades_l", 24, 524, "THIS BOT'S OPEN TRADES", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD);
-         Text("detail_spread", 376, 524, StringFormat("Spread %.1f pts", spread_score_points), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_NUM, true);
+         Text("detail_trades_l", 24, 524, "THIS BOT'S OPEN TRADES", XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_BOLD, false, 222, 12);
+         Text("detail_spread", 376, 524, StringFormat("Spread %.1f pts", spread_score_points), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_NUM, true, 120, 12);
          for(int i = 0; i < 3; i++)
          {
-            string line = live.positions_valid ? live.positions[i] : (i == 0 ? "Position data is temporarily unavailable" : "");
+            string line = live.positions_valid ? (i < live.position_count ? live.positions[i] : "") : (i == 0 ? "Position data is temporarily unavailable" : "");
             if(live.positions_valid && live.position_count == 0 && i == 0) line = "No open trades. Waiting for a new entry.";
-            Text(StringFormat("detail_trade%d", i), 24, 546 + i * 19, XSparkDashboardTrim(line, live.position_count > i ? 32 : 46), XSPARK_UI_TEXT, 8, XSPARK_UI_FONT_TEXT);
+            Text(StringFormat("detail_trade%d", i), 24, 546 + i * 19, line, XSPARK_UI_TEXT, 8, XSPARK_UI_FONT_TEXT, false, live.position_count > i ? 256 : 352, 15);
             Text(StringFormat("detail_pnl%d", i), 376, 546 + i * 19,
                  live.positions_valid && live.position_count > i ? StringFormat("%+.2f", live.position_profit[i]) : "",
-                 live.position_profit[i] >= 0 ? XSPARK_UI_GREEN : XSPARK_UI_RED, 8, XSPARK_UI_FONT_NUM, true);
+                 live.position_profit[i] >= 0 ? XSPARK_UI_GREEN : XSPARK_UI_RED, 8, XSPARK_UI_FONT_NUM, true, 86, 15);
          }
          ObjectSetString(0, Name("detail_trades"), OBJPROP_TOOLTIP, StringFormat("Showing up to 3 of %d positions for this symbol and bot ID. Open profit includes swap, excludes commission. Managed records: %d.", live.position_count, open_positions));
       }
       const int footer = height - 28;
       string countdown = live.seconds_to_close < 0 ? "Waiting for candle data" :
                          (live.seconds_to_close == 0 ? "Awaiting next tick" : StringFormat("Next candle %02d:%02d", live.seconds_to_close / 60, live.seconds_to_close % 60));
-      Text("footer_clock", 16, footer, countdown, XSPARK_UI_TEXT_DIM, 8, XSPARK_UI_FONT_NUM);
-      Text("footer_style", 384, footer, XSparkDashboardTrim(live.entry_style, 24), XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, true);
+      Text("footer_clock", 16, footer, countdown, XSPARK_UI_TEXT_DIM, 8, XSPARK_UI_FONT_NUM, false, 192, 13);
+      Text("footer_style", 384, footer, live.entry_style, XSPARK_UI_TEXT_DIM, 7, XSPARK_UI_FONT_TEXT, true, 166, 13);
       Bar("candle_progress", 16, height - 12, 368, 3,
           live.seconds_to_close >= 0 ? live.bar_seconds - live.seconds_to_close : 0, live.bar_seconds, fresh ? XSPARK_UI_BRAND : XSPARK_UI_TRACK);
       m_last_render = clock; m_force_refresh = false;
