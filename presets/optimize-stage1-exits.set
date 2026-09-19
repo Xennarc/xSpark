@@ -1,0 +1,60 @@
+; XSpark - optimizer stage 1: exit geometry only
+;
+; Load in the Strategy Tester Inputs tab, then run in Optimization mode.
+; Optimizable lines use the MT5 form  value||start||step||stop||Y
+; (Y = include in the sweep, N = hold fixed). If your build rejects this file,
+; the same ranges are tabulated in docs/OPTIMIZATION.md - enter them by hand.
+;
+; WHY THIS SHAPE
+; A previous 1,024-pass run swept 58 parameters from default to 10x default and
+; returned zero trades on every pass: 1,022 broke an OnInit validation rule and
+; the surviving 2 fell below the broker volume minimum. See docs/OPTIMIZATION.md.
+;
+; This sweep varies FOUR related exit parameters and pins everything else.
+; Every combination it can produce is valid by construction, with one exception
+; noted below. Nominal size is 5 x 5 x 5 x 5 = 625 passes.
+;
+; RUN IT ON THE BASELINE THAT ALREADY WORKS: XAUUSDm M5, deposit 5000 USD.
+; Not M15, and not 500 USD - wide stops on a small deposit push required volume
+; under SYMBOL_VOLUME_MIN and every trade aborts, which is what produced the
+; empty run. Baseline below is the +75.8% / 21.3% DD configuration.
+;
+; ONE CONSTRAINT THE OPTIMIZER CANNOT SEE: OnInit rejects InpMaxRR < InpMinRR.
+; With the ranges below that affects the combinations where MinRR exceeds MaxRR;
+; those passes report zero trades and should be ignored rather than interpreted.
+;
+; RISK IS PINNED ON PURPOSE. Do not add the risk inputs to the sweep. The
+; optimizer maximises final balance, so it will always push risk to and past the
+; growth-optimal fraction and report whichever oversized setting survived this
+; particular history. Sizing comes from the measured edge, not from search.
+
+InpEnableTrading=true
+InpEntryStyle=0
+InpAutoTuneForSymbol=true
+
+; --- swept: exit geometry ---
+InpATRMultSL=3.0||1.5||0.5||3.5||Y
+InpMinRR=3.0||1.0||0.5||3.0||Y
+InpMaxRR=10.0||2.0||1.0||6.0||Y
+InpATRMultTrail=1.0||1.0||0.5||3.0||Y
+
+; --- pinned: entry side, so any change is attributable to the exits ---
+InpMinScore=3.0
+InpUseFlagPattern=true
+InpUseHSPattern=true
+InpUseCupHandlePattern=true
+InpUsePinBars=true
+InpPatternMaxChaseATR=1
+InpPartialTPRatio=2.5
+InpPartialClosePct=50.0
+
+; --- pinned: risk and rails. NOT sweep material. ---
+InpMaxOpenTrades=3
+InpRiskPctTier1=0.5
+InpRiskPctTier2=0.5
+InpRiskPctTier3=0.5
+InpMaxRiskPct=0.75
+InpMaxAccountRiskPct=1.5
+InpMaxDailyDDPct=6.0
+InpUseTotalDDKillSwitch=true
+InpMaxTotalDDPct=25.0
