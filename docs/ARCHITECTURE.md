@@ -9,7 +9,7 @@ MarketState / IndicatorCache
        |
 StrategyInterface
        |
-ScoreBotV3
+ScoreBotV3  /  CandleFlow
        |
 TradeSignal
        |
@@ -49,9 +49,11 @@ Partial / BE / trailing management
 
 Reads current MT5 symbol data such as bid, ask, spread, server time, digits, and point size. It must use MT5 symbol APIs and must not assume instrument characteristics.
 
-### StrategyInterface / ScoreBotV3
+### StrategyInterface / ScoreBotV3 / CandleFlow
 
-Strategies convert market state into signal data. `ScoreBotV3.mqh` implements the XAUUSD M15 ScoreBot_v3 MAX_SHARPE logic and produces signals plus analysis reports. Strategy modules must not include broker execution APIs or submit orders.
+Strategies convert market state into signal data. `ScoreBotV3.mqh` implements the XAUUSD M15 ScoreBot_v3 MAX_SHARPE logic and produces signals plus analysis reports. `CandleFlow.mqh` implements a single-factor rule - the direction of the closed candle, a stop anchored beyond its far wick, and no target - and produces the same signal and report types. Strategy modules must not include broker execution APIs or submit orders.
+
+Each strategy is hosted by its own Expert Advisor: `XSpark.mq5` runs ScoreBot_v3, `XSparkFlow.mq5` runs CandleFlow. Both wire the same shared components and are separated at runtime by Magic Number, so they can run side by side on one account without managing each other's positions. See [ADR-027](DECISIONS.md) for why a second strategy is a second EA rather than a mode, and [the CandleFlow guide](STRATEGY_CANDLEFLOW.md) for the rule itself.
 
 ### SafetyManager
 
@@ -76,6 +78,8 @@ After a confirmed entry it resolves the exact broker position from `CTrade::Resu
 ### PositionManager
 
 Reconciles XSpark-managed broker positions using chart symbol plus configured Magic Number. Existing broker-side positions are the source of truth after restart or crash. It owns partial close, breakeven stop movement, trailing stop movement, weekend close, and killswitch flattening for XSpark-owned exposure only.
+
+Trailing has two modes, chosen per call by the hosting EA so one instance never holds another strategy's configuration. `XSPARK_TRAIL_ATR_AFTER_PARTIAL` is ScoreBot_v3's lifecycle: partial close, break-even, then an ATR trail. `XSPARK_TRAIL_CANDLE_ANCHOR` is CandleFlow's: no partial and no break-even step, and the stop ratchets toward an anchor price the strategy recomputes on each closed candle, tightening only. A missing anchor leaves the broker stop where it is.
 
 New trade state is bound to the exact broker position id supplied by the execution result. A same-direction match exists only as a documented fail-safe fallback for the case where the broker deal exposes no position id; it does not use newest-open-time, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or whose executed volume does not match. A position that already existed before the send is refused outright, so a netting-mode merge can never overwrite the state of a trade that is already being managed. Anything other than an exact bind is reported as a registration failure so the EA can recover deliberately.
 

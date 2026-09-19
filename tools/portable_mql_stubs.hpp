@@ -9,6 +9,8 @@ datetime StructToTime(const MqlDateTime& p) {return p.hour*3600+p.min*60+p.sec;}
 datetime TimeTradeServer() {return 47000;}
 datetime TimeCurrent() {return 47000;}
 double XSparkPriceToScorePoints(double price, double point) {return price/point;}
+enum {TIME_DATE=1, TIME_MINUTES=2};
+string TimeToString(datetime t, int=0) {return std::to_string(t);}
 double MathLog(double x) {return std::log(x);}
 int StringLen(const string& s) {return int(s.size());}
 int StringGetCharacter(const string& s,int i) {return s.at(i);}

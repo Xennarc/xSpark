@@ -30,9 +30,11 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     source = Path(tmp) / 'logic.cpp'
     body = PREAMBLE + '\n'.join(adapt((ROOT / f).read_text()) for f in FILES)
     body += (ROOT / 'tools/portable_mql_stubs.hpp').read_text()
-    for file in ['Strategy/ScoringEngine.mqh', 'Core/StateStore.mqh', 'Risk/RiskManager.mqh', 'Strategy/ScoreBotV3.mqh']:
+    for file in ['Strategy/ScoringEngine.mqh', 'Core/StateStore.mqh', 'Risk/RiskManager.mqh', 'Strategy/ScoreBotV3.mqh',
+                 'Strategy/CandleFlow.mqh']:
         body += adapt((ROOT / 'MQL5/Include/XSpark' / file).read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestConcurrentRisk.mq5').read_text())
+    body += adapt((ROOT / 'MQL5/Scripts/Tests/TestCandleFlow.mq5').read_text())
     body += (ROOT / 'tools/portable_boundary_tests.hpp').read_text()
     # Compile actual reconciliation/management methods with isolated broker doubles.
     manager = (ROOT / 'MQL5/Include/XSpark/Trade/PositionManager.mqh').read_text()
@@ -55,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
                           ('// ACCOUNT_EXPOSURE_SOURCE', adapt((ROOT / 'MQL5/Include/XSpark/Risk/AccountExposure.mqh').read_text()))]:
         position_tests = position_tests.replace(marker, value)
     body += position_tests
-    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); RunChartPatternTests(); RunEntrySettingsTests(); MultiPositionTests::Run(); RunConcurrentRiskTests(); Print("TOTAL passed=",g_passed+g_pattern_passed+g_settings_passed+g_concurrent_passed," failed=",g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed); return g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed ? 1 : 0; }\n')
+    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); RunChartPatternTests(); RunEntrySettingsTests(); MultiPositionTests::Run(); RunConcurrentRiskTests(); RunCandleFlowTests(); Print("TOTAL passed=",g_passed+g_pattern_passed+g_settings_passed+g_concurrent_passed+g_flow_passed," failed=",g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed); return g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed ? 1 : 0; }\n')
     exe = Path(tmp) / 'logic'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pedantic',
                     '-fsanitize=address,undefined', '-g', str(source), '-o', str(exe)], check=True)

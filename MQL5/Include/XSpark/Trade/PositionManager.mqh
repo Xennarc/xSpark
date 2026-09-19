@@ -1376,7 +1376,10 @@ public:
                         const bool use_weekend_close,
                         const int weekend_close_hour,
                         const int weekend_close_minute,
-                        CXSparkLogger &logger)
+                        CXSparkLogger &logger,
+                        const int trail_mode = XSPARK_TRAIL_ATR_AFTER_PARTIAL,
+                        const double anchor_sl_long = 0.0,
+                        const double anchor_sl_short = 0.0)
    {
       if(!m_initialized)
          return;
@@ -1459,6 +1462,56 @@ public:
             continue;
 
          const double exit_side_price = direction == XSPARK_SIGNAL_BUY ? bid : ask;
+
+         // Candle-anchor mode. The stop follows an anchor the caller recomputes
+         // once per closed bar; there is no partial, no break-even step and no
+         // ATR trail. The ratchet is one-way by construction: a candidate that
+         // is not tighter than the live stop is discarded, so a re-anchor can
+         // never widen risk, and a missing anchor leaves the existing broker
+         // stop exactly where it is.
+         if(trail_mode == XSPARK_TRAIL_CANDLE_ANCHOR)
+         {
+            const double anchor = direction == XSPARK_SIGNAL_BUY ? anchor_sl_long : anchor_sl_short;
+
+            if(anchor <= 0.0)
+               continue;
+
+            double adjusted_sl = 0.0;
+            double ignored_tp = 0.0;
+            string adjust_reason = "";
+
+            if(!XSparkAdjustProtectionLevels(m_symbol,
+                                             direction,
+                                             exit_side_price,
+                                             anchor,
+                                             0.0,
+                                             m_use_stop_level_validation,
+                                             adjusted_sl,
+                                             ignored_tp,
+                                             adjust_reason))
+            {
+               continue;
+            }
+
+            const double live_sl = PositionGetDouble(POSITION_SL);
+            const bool tighter = direction == XSPARK_SIGNAL_BUY ?
+                                 (live_sl <= 0.0 || adjusted_sl > live_sl) :
+                                 (live_sl <= 0.0 || adjusted_sl < live_sl);
+
+            if(tighter && ModifyPositionStops(ticket, adjusted_sl, current_tp, "Candle trail", logger))
+            {
+               logger.Info("PositionManager",
+                           StringFormat("Candle trail ticket=%I64u oldSL=%s newSL=%s anchor=%s",
+                                        ticket,
+                                        DoubleToString(live_sl, digits),
+                                        DoubleToString(adjusted_sl, digits),
+                                        DoubleToString(anchor, digits)));
+               m_states[index].current_trail_sl = adjusted_sl;
+               PersistStateChecked(m_states[index], logger);
+            }
+
+            continue;
+         }
 
          if(!m_states[index].partial_done)
          {

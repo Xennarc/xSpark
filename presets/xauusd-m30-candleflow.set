@@ -1,0 +1,60 @@
+; XSparkFlow - XAUUSD M30 CandleFlow starting point
+;
+; For XSparkFlow.ex5 on an XAUUSD M30 chart. This is a STARTING POINT, not a
+; validated profile: CandleFlow has never been backtested, forward-tested or
+; traded. Nothing here is a profitability claim.
+;
+; The rule it configures: when the M30 candle closes above its open, buy; below
+; its open, sell. No take-profit. The stop sits 0.10 x average range beyond that
+; candle's far wick, and re-anchors to the far wick of every later closed M30
+; candle, tightening only.
+;
+; TO CHANGE TIMEFRAME: attach the EA to a different chart period. Every distance
+; here is a multiple of that period's own average range, so nothing in this file
+; needs editing. Supported periods: M1, M5, M15, M30, H1, H2, H4.
+;
+; Risk starts at 1% per trade with trading DISABLED. Set InpEnableTrading=true
+; only after a Strategy Tester run and a demo account have shown you what this
+; rule actually does - it is in the market far more often than ScoreBot_v3.
+
+InpEnableTrading=false
+InpAutoTuneForSymbol=true
+InpMaxOpenTrades=1
+
+InpBufferATRMult=0.10
+InpBufferRangePct=0.0
+InpBufferPoints=0.0
+InpMinStopATRMult=0.25
+InpMaxStopATRMult=0.0
+InpMinBodyATRMult=0.0
+InpUseVolatilityGate=false
+
+InpRiskPct=1.0
+InpMaxRiskPct=3.5
+InpMaxAccountRiskPct=6.0
+InpMaxDailyDDPct=15.0
+InpUseTotalDDKillSwitch=true
+InpMaxTotalDDPct=25.0
+
+InpUseWeekendClose=true
+InpWeekendCloseHour=20
+InpWeekendCloseMinute=0
+
+InpVerboseLog=false
+
+InpQuietMarketPct=60.0
+InpWildMarketPct=600.0
+InpEntrySlipPct=25.0
+InpExitSlipPct=85.0
+InpSpreadCapPct=40.0
+InpMaxSpreadATRPct=10.0
+
+InpUseSpreadFilter=true
+InpUseStopLevelValidation=true
+InpUseMarginCheck=true
+InpMarginBufferPct=20.0
+InpMaxQuoteAgeSeconds=15
+
+InpMagicNumber=770332
+InpOrderComment=CandleFlow_v1
+InpClearKillswitchLatch=false
