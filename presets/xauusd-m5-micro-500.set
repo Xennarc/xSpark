@@ -1,0 +1,79 @@
+; XSpark - XAUUSD M5 "$500 account" profile
+; STATUS: UNTESTED. No Strategy Tester run has been performed on this preset.
+;
+; READ THIS FIRST: $500 IS BELOW THE STRATEGY'S VIABLE MINIMUM ON GOLD.
+; This preset is the least-bad configuration for that balance, not a good one.
+; The limit is arithmetic, not tuning, and no combination of inputs avoids it.
+;
+; WHY. On XAUUSD one lot is 100 oz, so the 0.01 broker minimum is 1 oz and a
+; $1 price move is $1. Risk in dollars for 0.01 lots therefore EQUALS the stop
+; distance in dollars. At ATR 3.1 with a 1.5 x ATR stop the stop is 4.65, so the
+; smallest trade this EA can place risks $4.65 - which is 0.93% of a $500
+; account but only 0.09% of a $5,000 one.
+;
+;   balance    0.01 lots (no partial)   0.02 lots (partial legal)
+;   $500               0.93%                     1.86%
+;   $1,000             0.47%                     0.93%
+;   $2,000             0.23%                     0.47%
+;   $5,000             0.09%                     0.19%
+;
+; Two consequences at $500:
+;   - You cannot risk less than ~0.9% per trade. Asking for less does not reduce
+;     risk; PositionSizer aborts the trade outright when the computed volume is
+;     below the broker minimum. At 0.35% risk on $500 nearly every trade is
+;     skipped and the EA effectively stops trading.
+;   - Partial closes can never fire. They need 0.02 lots, which is 1.86% risk at
+;     this balance - roughly 4x what the measured edge supports. Since 81.5% of
+;     all winning positions in the reference data involved a partial close, this
+;     account size is locked out of the strategy's main win-rate mechanism.
+;
+; So the exits here are stop, trailing stop, or take-profit only. The TP does all
+; the work, which is why the target band below is deliberately tight (1.5-2.5R)
+; rather than the 3-10R the original run used.
+;
+; MINIMUM VIABLE BALANCE for partials at a Kelly-safe 0.5%/trade:
+;   ~$1,860 with a 1.5 x ATR stop, ~$3,720 with a 3.0 x ATR stop.
+;
+; ONE THING WORTH CHECKING FIRST: read SYMBOL_VOLUME_MIN for the exact gold
+; symbol on your account rather than assuming 0.01. Some brokers list a gold
+; symbol with a 0.001 minimum. If yours does, every number above improves by 10x
+; and $500 becomes workable - ask for a preset built around that instead.
+
+InpEnableTrading=true
+InpEntryStyle=0
+InpAutoTuneForSymbol=true
+InpMinScore=3.0
+
+; --- one position only; no stacking on an account this small ---
+InpMaxOpenTrades=1
+
+; --- 1.0% is the floor that still produces a tradeable 0.01 lot at normal ATR.
+;     Below this the sizer aborts and the EA simply will not trade.
+;     Side effect, and a deliberate one: when ATR rises past ~3.3 the required
+;     volume falls under the minimum and the trade is skipped, so this doubles
+;     as a high-volatility filter. Expect noticeably fewer trades. ---
+InpRiskPctTier1=1.0
+InpRiskPctTier2=1.0
+InpRiskPctTier3=1.0
+InpMaxRiskPct=1.5
+InpMaxAccountRiskPct=1.5
+
+; --- tighter rails than the $5,000 presets, because risk per trade is forced up.
+;     At 1.0% risk a 20% killswitch latches after ~19 consecutive full stops. ---
+InpMaxDailyDDPct=5.0
+InpUseTotalDDKillSwitch=true
+InpMaxTotalDDPct=20.0
+
+; --- stop/target: shipped-default stop, and a tight reachable target band,
+;     because with no partial close the take-profit is the only way to bank a win ---
+InpATRMultSL=1.5
+InpMinRR=1.5
+InpMaxRR=2.5
+InpATRMultTrail=2.0
+
+; --- retained for completeness; these cannot fire at 0.01 lots ---
+InpPartialTPRatio=2.5
+InpPartialClosePct=50.0
+
+InpUsePinBars=true
+InpPatternMaxChaseATR=0.5
