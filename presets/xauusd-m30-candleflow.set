@@ -1,38 +1,53 @@
-; XSparkFlow - XAUUSD M30 CandleFlow starting point
+; XSparkFlow - XAUUSD M30 CandleFlow, the recommended starting configuration
 ;
-; For XSparkFlow.ex5 on an XAUUSD M30 chart. This is a STARTING POINT, not a
-; validated profile: CandleFlow has never been backtested, forward-tested or
-; traded. Nothing here is a profitability claim.
+; This file simply writes down the settings the EA already defaults to, so you
+; can see them in one place and diff them against anything you change. Loading
+; it on a fresh chart changes nothing.
 ;
-; The rule it configures: when the M30 candle closes above its open, buy; below
-; its open, sell. No take-profit. The stop sits 0.10 x average range beyond that
-; candle's far wick, and re-anchors to the far wick of every later closed M30
-; candle, tightening only.
+; It is a STARTING POINT, not a validated profile: CandleFlow has never been
+; backtested, forward-tested or traded. Nothing here is a profitability claim.
 ;
-; Every identifier below carries the InpFlow prefix, which is what keeps this
-; file and a ScoreBot_v3 .set from configuring each other: MetaTrader applies a
-; preset by identifier, so names that do not exist in the target EA are ignored.
-; Loading a ScoreBot preset into XSparkFlow now changes nothing at all.
+; WHAT THE BOT DOES
+;   A 30-minute candle finishes higher than it started  -> it buys.
+;   A 30-minute candle finishes lower than it started   -> it sells.
+;   There is no profit target. The trade ends when its stop-loss is hit.
+;   The stop only ever moves in your favour, never away.
+;
+; HOW THE STOP MOVES, in plain terms
+;   It starts just past the signal candle's far end.
+;   It follows 3 candle-heights behind the best price the trade has seen.
+;   Once the trade is up more than it risked, it tightens towards 1.5, and
+;   your entry price is protected so the trade can no longer become a loss.
+;   It is never parked closer than 0.35 candle-heights to the live price,
+;   because a stop inside the spread is just a slow market order.
 ;
 ; TO CHANGE TIMEFRAME: attach the EA to a different chart period. Every distance
-; here is a multiple of that period's own average range, so nothing in this file
-; needs editing. Supported periods: M1, M5, M15, M30, H1, H2, H4.
+; here is a multiple of that period's own candle size or of the amount risked on
+; the trade, so nothing in this file needs editing.
 ;
-; Risk starts at 1% per trade with trading DISABLED. Set InpFlowEnableTrading=true
-; only after a Strategy Tester run and a demo account have shown you what this
-; rule actually does - it is in the market far more often than ScoreBot_v3.
+; Trading is DISABLED. Turn InpFlowEnableTrading on only after a Strategy Tester
+; run and a demo account have shown you what this actually does - it is in the
+; market far more often than ScoreBot_v3.
 
 InpFlowEnableTrading=false
 InpFlowAutoTuneForSymbol=true
 InpFlowMaxOpenTrades=1
+
+InpFlowMinBodyATRMult=0.0
 
 InpFlowBufferATRMult=0.10
 InpFlowBufferRangePct=0.0
 InpFlowBufferPoints=0.0
 InpFlowMinStopATRMult=0.25
 InpFlowMaxStopATRMult=0.0
-InpFlowMinBodyATRMult=0.0
-InpFlowUseVolatilityGate=false
+
+InpFlowMinTrailATRMult=0.35
+InpFlowTrailATRMult=3.0
+InpFlowTrailTightATRMult=1.5
+InpFlowTrailTightenStartR=1.0
+InpFlowTrailTightenFullR=4.0
+InpFlowBreakevenAtR=1.2
+InpFlowBreakevenOffsetR=0.1
 
 InpFlowRiskPct=1.0
 InpFlowMaxRiskPct=3.5
@@ -46,6 +61,8 @@ InpFlowWeekendCloseHour=20
 InpFlowWeekendCloseMinute=0
 
 InpFlowVerboseLog=false
+
+InpFlowUseVolatilityGate=false
 
 InpFlowQuietMarketPct=60.0
 InpFlowWildMarketPct=600.0

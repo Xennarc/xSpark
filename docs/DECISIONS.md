@@ -290,3 +290,37 @@ Mechanically, the three positional trailing arguments on `ManagePositions` becam
 The arithmetic lives in `Trade/TrailingStop.mqh` rather than in the strategy, because a trailing stop is a property of an open position and PositionManager is what owns open positions. Putting it in the Strategy layer would have forced PositionManager to depend on a strategy header to trail a position it already owns.
 
 No profitability claim is made. The defaults in the advanced preset were chosen for plausibility and have not been measured against anything.
+
+## ADR-030 - The Inputs Tab Is The User Interface, And Defaults Are A Recommendation
+
+Two changes to CandleFlow that are really one change: the settings now say what they do in words a non-trader has, and they arrive set to the configuration we would actually recommend.
+
+### The labels
+
+MetaTrader renders an input's trailing comment as its name in the Inputs tab. There is no tooltip, no help text and no second screen. That comment is the entire user interface, and it was written in the vocabulary of the code rather than of the person reading it: "x average range", "x initial risk", "strategy points", "drawdown", "spread", "deviation". Every one of those is a term you have to already know to act on.
+
+They are now written for someone who does not. ATR became "typical candle size", which is what ATR14 approximately is and which makes "0.10 x typical candle size" mean something on sight. R became "the amount risked", with the group header defining it once as the distance from entry to the first stop. Spread became "buy/sell gap", defined in a comment above the group that uses it. Deviation became "price drift allowed". The identifiers did not change, because presets address inputs by identifier and renaming them would break every saved file again.
+
+Three group headers now carry a short paragraph above them - what the bot does, what the trailing stop is doing, which settings are inert when a switch is off. MetaTrader does not render those, but the file is also read by people, and the person most likely to read it is the one deciding whether a number is safe to change.
+
+The 63-character limit is enforced rather than remembered. `tools/check_ea_inputs.py` now fails the build on an input with no label or with one MetaTrader would truncate, which is the difference between a convention and a rule. A truncated label is worse than a short one, because it reads as a complete sentence that says something slightly wrong.
+
+### The defaults
+
+ADR-029 shipped the chandelier, the tiering and the breakeven lock switched OFF, on the reasoning that turning three new layers on by default would mean the shipped behaviour was not the one the documentation described. That was the right call for one commit and the wrong one to leave in place.
+
+The argument against it is simple: a default that nobody would recommend is not a default, it is a homework assignment. Every operator who installed CandleFlow would have had to find the advanced preset, know to load it, and understand seven settings before the strategy did what it was built to do - and the ones who did not would have run the version with the known weakness, which is the version we would tell them not to run. Documentation is cheaper to change than a user's outcome.
+
+So the stack is on, and the documentation now describes that. The numbers live in `Trade/TrailingStop.mqh` as `XSPARK_TRAIL_DEFAULT_*`, which is simultaneously what the EA's inputs read and what the test suite validates. A default that failed `XSparkValidateTrailTuning` would block every entry on a fresh chart in total silence; it now cannot reach a chart, because the check that would catch it runs against the same constants the inputs use rather than against a copy.
+
+`InpFlowUseWeekendClose` also defaults on. A position held on a trailing stop with no target carries the weekend gap in full, and the stop cannot act across it.
+
+What did NOT change is anything that decides whether to trade. The body filter stays off and the volatility gate stays off, because the entry rule is the thing the strategy is named for and quietly adding filters to it would make the shipped bot a different one from the documented bot. That is the distinction ADR-029 was reaching for, applied where it actually holds: how an open trade is protected is an implementation of the rule, while which candles count IS the rule.
+
+### The preset that replaced the old one
+
+`xauusd-m30-candleflow-advanced.set` had nothing left to say once its contents became the defaults, so it is gone. In its place is `xauusd-m30-candleflow-plain-trail.set`, which turns every layer off and leaves only the candle trail.
+
+That is the more useful file. It is the baseline the full configuration has to beat in the Tester, and the honest instruction attached to it is that if the stack does not beat the plain trail over the same period, the stack should be turned off rather than tuned. A preset that lets you disprove the default is worth more than one that repeats it.
+
+No profitability claim is made. The defaults are plausible, not measured, and neither configuration has been backtested.

@@ -23,6 +23,21 @@
 // multiple, and an interpolation across a near-zero R span amplifies noise.
 #define XSPARK_TRAIL_MIN_TIER_SPAN_R 0.10
 
+// The shipped configuration. These are the numbers the EA's inputs default to,
+// declared here so the test that proves they form a VALID configuration is
+// testing what actually ships rather than a copy of it.
+//
+// They are chosen for plausibility, not measured: a wide trail early so a young
+// trade can breathe, tightening as it matures, and the entry protected once the
+// trade has earned more than it risked. Nothing here is a profitability claim.
+#define XSPARK_TRAIL_DEFAULT_FLOOR_ATR 0.35
+#define XSPARK_TRAIL_DEFAULT_ATR 3.0
+#define XSPARK_TRAIL_DEFAULT_TIGHT_ATR 1.5
+#define XSPARK_TRAIL_DEFAULT_TIGHTEN_START_R 1.0
+#define XSPARK_TRAIL_DEFAULT_TIGHTEN_FULL_R 4.0
+#define XSPARK_TRAIL_DEFAULT_BREAKEVEN_R 1.2
+#define XSPARK_TRAIL_DEFAULT_BREAKEVEN_OFFSET_R 0.1
+
 struct XSparkTrailTuning
 {
    // The trail may never sit closer to the market than this many ATRs. A stop
@@ -56,6 +71,17 @@ void XSparkResetTrailTuning(XSparkTrailTuning &tuning)
    tuning.tighten_full_r = 0.0;
    tuning.breakeven_at_r = 0.0;
    tuning.breakeven_offset_r = 0.0;
+}
+
+void XSparkDefaultTrailTuning(XSparkTrailTuning &tuning)
+{
+   tuning.min_trail_atr_mult = XSPARK_TRAIL_DEFAULT_FLOOR_ATR;
+   tuning.chandelier_atr_mult = XSPARK_TRAIL_DEFAULT_ATR;
+   tuning.chandelier_tight_atr_mult = XSPARK_TRAIL_DEFAULT_TIGHT_ATR;
+   tuning.tighten_start_r = XSPARK_TRAIL_DEFAULT_TIGHTEN_START_R;
+   tuning.tighten_full_r = XSPARK_TRAIL_DEFAULT_TIGHTEN_FULL_R;
+   tuning.breakeven_at_r = XSPARK_TRAIL_DEFAULT_BREAKEVEN_R;
+   tuning.breakeven_offset_r = XSPARK_TRAIL_DEFAULT_BREAKEVEN_OFFSET_R;
 }
 
 bool XSparkValidateTrailTuning(const XSparkTrailTuning &tuning, string &reason)

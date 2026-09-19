@@ -14,6 +14,8 @@ Checks:
   3. Every EA's Magic Number default comes from the StrategyIdentity registry,
      and the registry's numbers are distinct.
   4. No EA takes an input default from a DIFFERENT strategy's constants.
+  5. Every input carries a display label, and it fits MetaTrader's 63-character
+     limit, so the Inputs tab never falls back to showing the raw identifier.
 """
 from pathlib import Path
 import re
@@ -23,7 +25,10 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPERTS = sorted((ROOT / "MQL5/Experts").rglob("*.mq5"))
 REGISTRY = ROOT / "MQL5/Include/XSpark/Core/StrategyIdentity.mqh"
 
-INPUT_RE = re.compile(r"^input\s+\S+\s+(Inp\w+)\s*=\s*([^;]*);", re.M)
+INPUT_RE = re.compile(r"^input\s+\S+\s+(Inp\w+)\s*=\s*([^;]*);(.*)$", re.M)
+# MetaTrader renders an input's trailing comment as its name in the Inputs tab
+# and truncates past this, so a longer label loses the end of its own sentence.
+MAX_LABEL = 63
 MAGIC_RE = re.compile(r"^#define\s+XSPARK_(\w+)_MAGIC_DEFAULT\s+(\d+)\s*$", re.M)
 
 failures = []
@@ -71,7 +76,7 @@ for expert in EXPERTS:
         )
     own_tag = own_tags.pop() if len(own_tags) == 1 else None
 
-    for name, default in declarations:
+    for name, default, trailing in declarations:
         # 1. Identifier uniqueness across EAs.
         if name in declared_by:
             fail(
@@ -86,6 +91,16 @@ for expert in EXPERTS:
         if len(re.findall(r"\b" + re.escape(name) + r"\b", text)) < 2:
             fail(f"{rel}: input '{name}' is declared but never used.")
 
+        # 5. A label an operator can read, within what MetaTrader will show.
+        label = trailing.split("//", 1)[1].strip() if "//" in trailing else ""
+        if not label:
+            fail(f"{rel}: input '{name}' has no display label; add a trailing // comment.")
+        elif len(label) > MAX_LABEL:
+            fail(
+                f"{rel}: the label on '{name}' is {len(label)} characters; MetaTrader shows only "
+                f"{MAX_LABEL}, so the end would be cut off."
+            )
+
         # 4. Defaults must not read through another strategy's constants.
         if own_tag:
             for tag in strategy_tags - {own_tag}:
@@ -96,7 +111,7 @@ for expert in EXPERTS:
                     )
 
     # 3b. The Magic Number input must come from the registry, not a literal.
-    magic_inputs = [(n, d) for n, d in declarations if n.endswith("MagicNumber")]
+    magic_inputs = [(n, d) for n, d, _ in declarations if n.endswith("MagicNumber")]
     if len(magic_inputs) != 1:
         fail(f"{rel}: expected exactly one Magic Number input, found {len(magic_inputs)}.")
     elif own_tag and f"XSPARK_{own_tag}_MAGIC_DEFAULT" not in magic_inputs[0][1]:
@@ -112,4 +127,4 @@ if failures:
     print(f"\nEA input isolation: {len(failures)} problem(s).")
     sys.exit(1)
 
-print(f"EA input isolation: {len(EXPERTS)} Expert Advisor(s), {len(declared_by)} inputs, no shared identifiers.")
+print(f"EA inputs: {len(EXPERTS)} Expert Advisor(s), {len(declared_by)} inputs, no shared identifiers, all labelled.")
