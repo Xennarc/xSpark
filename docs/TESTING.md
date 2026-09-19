@@ -80,13 +80,18 @@ It exercises pure helpers only. It does not and cannot simulate broker behaviour
 
 ### Compile Targets
 
-Compile all three:
+Compile both Expert Advisors and the test scripts:
 
 ```text
 MQL5/Experts/XSpark/XSpark.mq5
+MQL5/Experts/XSparkFlow/XSparkFlow.mq5
 MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5
 MQL5/Scripts/Tests/TestExecutionHardening.mq5
+MQL5/Scripts/Tests/TestCandleFlow.mq5
 ```
+
+`tools/compile_mt5.ps1` compiles both EAs and every script under
+`MQL5/Scripts/Tests`.
 
 Target result before merge:
 
@@ -129,6 +134,8 @@ The following cannot be proven outside MT5 and must be checked in the Strategy T
 Reading real ATR history, and whether the derived numbers actually produce trades on a given symbol, are Strategy Tester questions and are NOT covered here.
 
 ## Dashboard Layout Script
+
+`MQL5/Scripts/Tests/TestCandleFlow.mq5` covers the CandleFlow rules: candle direction including the doji and body-filter cases, the three-component wick buffer, the anchor arithmetic in both directions, and the stop floor and ceiling - including a price that has already moved through the anchor, which the floor rescues and which refuses outright when no floor is configured. The one-way ratchet itself is covered by the `ManagePositions` fixtures in `tools/portable_position_tests.hpp`, long and short, together with the case where a missing anchor must leave the broker stop untouched.
 
 `MQL5/Scripts/Tests/TestDashboardLayout.mq5` covers the chart panel's pure presentation rules: status-to-severity mapping (including that an unmapped status renders as a FAULT rather than as healthy), bar fill in pixels against each component's own maximum, the session tag, panel placement for all four corners including a window smaller than the panel, and reason trimming.
 

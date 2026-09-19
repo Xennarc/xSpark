@@ -3,6 +3,18 @@
 
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
 
+// How PositionManager moves a stop once a position is live.
+//
+// The mode belongs to the caller, not to the position: it is a property of the
+// strategy that opened the trade, and both modes must be able to coexist on one
+// account under different Magic Numbers. Passing it per call keeps PositionManager
+// free of strategy configuration.
+enum EXSparkTrailMode
+{
+   XSPARK_TRAIL_ATR_AFTER_PARTIAL = 0, // ScoreBot_v3: partial, break-even, then ATR trail
+   XSPARK_TRAIL_CANDLE_ANCHOR = 1      // CandleFlow: no partial, ratchet to a supplied anchor
+};
+
 // Accumulated totals for every closing deal of one position.
 //
 // Two defects motivated this type, and they existed identically in two places:

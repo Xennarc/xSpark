@@ -506,10 +506,16 @@ public:
       ObjectSetInteger(0, base + "_SL", OBJPROP_STYLE, STYLE_DOT);
       ObjectSetString(0, base + "_SL", OBJPROP_TEXT, "Initial SL " + DoubleToString(plan.final_sl, digits));
 
-      ObjectCreate(0, base + "_TP", OBJ_HLINE, 0, 0, plan.final_tp);
-      ObjectSetInteger(0, base + "_TP", OBJPROP_COLOR, XSPARK_UI_GREEN);
-      ObjectSetInteger(0, base + "_TP", OBJPROP_STYLE, STYLE_DOT);
-      ObjectSetString(0, base + "_TP", OBJPROP_TEXT, "TP " + DoubleToString(plan.final_tp, digits));
+      // A no-target plan has no take-profit. Drawing the line anyway would put a
+      // labelled level at price zero, which reads as a target rather than as
+      // the absence of one.
+      if(plan.final_tp > 0.0)
+      {
+         ObjectCreate(0, base + "_TP", OBJ_HLINE, 0, 0, plan.final_tp);
+         ObjectSetInteger(0, base + "_TP", OBJPROP_COLOR, XSPARK_UI_GREEN);
+         ObjectSetInteger(0, base + "_TP", OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetString(0, base + "_TP", OBJPROP_TEXT, "TP " + DoubleToString(plan.final_tp, digits));
+      }
 
       ChartRedraw(0);
    }

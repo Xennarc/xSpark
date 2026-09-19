@@ -212,3 +212,31 @@ Every component is updated through a checked setter rather than a re-`Initialize
 `InpAutoTuneForSymbol` turns the whole thing off and restores the manual values exactly. One consequence worth stating for anyone optimising: with auto-tune on, the four manual inputs are ignored, so sweeping them does nothing. Their labels say so. The percentages are the knobs to sweep instead.
 
 Separately and with no behavioural effect, all 52 inputs now carry plain-language labels. MT5 renders an input's trailing comment as its name in the dialog, so this needed no renaming: variable names, `.set` files and existing optimisation configs are untouched.
+
+## ADR-027 - A Second Strategy Ships As A Second EA, Not A Second Mode
+
+CandleFlow is a single-factor rule: the direction of the closed candle decides the trade, there is no take-profit, and the stop re-anchors to the far wick of each later candle. Nothing about it resembles ScoreBot_v3's scored, gated, partial-then-trail lifecycle. The choice was whether to add it as a mode inside XSpark.mq5 or as a separate Expert Advisor over the same components.
+
+It is a separate EA, `XSparkFlow.mq5`, for three reasons.
+
+The first is blast radius. XSpark.mq5 is a live-money entry path with 52 inputs and a lifecycle that has been reasoned about one branch at a time. Adding a strategy selector to it means every existing input acquires a second meaning - "applies only in mode A" - and every existing branch acquires a second reader. The units that would have to be re-verified are the ones that are hardest to test and most expensive to get wrong.
+
+The second is that both must be able to run at once. Two EAs on two charts with two Magic Numbers is the arrangement the components were already built for: `PositionManager` reconciles on symbol and Magic, the state store is keyed on account, symbol and Magic, and `XSparkDirectionIsUnopposed` and the flatten campaign both filter the same way. A mode switch inside one EA would have made running both simultaneously a new feature rather than an existing property.
+
+The third is that it keeps the modularity claim honest. If a strategy can only be swapped by editing the EA that hosts the incumbent, the boundary is a convention rather than an interface. CandleFlow reuses SafetyManager, RiskManager, PositionSizer, AccountExposure, ExecutionEngine, PositionManager, StateStore, IndicatorCache, MarketState, SymbolMath, AutoTune and Dashboard without modifying any of their behaviour, which is the actual test of whether the separation holds.
+
+Two shared components gained a capability rather than a change.
+
+`ExecutionEngine` now accepts a plan with no target. The signal is `dynamic_rr <= 0`, which no ScoreBot_v3 plan can produce, and the effect is that the order is sent with `TP = 0` and the reward-ratio bounds are skipped - there is no target for them to bound. Every other execution-time control is untouched, and this is worth being explicit about because "skips a validation" reads like a weakened control: the stop must still be on the protective side of the close-side quote, entry drift is still bounded by the deviation gate, the volume is still re-derived from the refreshed quote and the broker-adjusted stop, and margin and the account risk cap are still re-checked immediately before the send. The reward ratio bounds the *target*, and realised risk does not depend on it. A no-target plan that somehow arrives carrying a target price is refused rather than sent, because nothing in that path has validated that price.
+
+`PositionManager.ManagePositions` gained a trailing mode and two anchor prices, all three defaulted so the existing call site and the existing behaviour are bit-for-bit unchanged. `XSPARK_TRAIL_CANDLE_ANCHOR` applies no partial close and no break-even step and ratchets the stop toward a caller-supplied anchor. The ratchet is one-way by construction - a candidate that is not tighter than the live stop is discarded - and a missing anchor leaves the broker stop exactly where it is, because a stop that cannot be tightened must stay put rather than disappear. The mode is passed per call rather than stored, so one PositionManager instance never holds another strategy's configuration.
+
+The anchor is recomputed by the strategy, not by PositionManager. This keeps the rule in the strategy layer where it can be tested without a broker, and keeps PositionManager free of any knowledge of candles.
+
+CandleFlow carries one control that is not in the user's rule. A stop is placed a buffer beyond the candle's wick, and the buffer does not bound the stop *distance*: a thin candle yields a thin stop, and a thin stop yields a large position for the same percentage risk. `InpMinStopATRMult` widens such a stop to a floor measured from the fill. Widening a stop always reduces the volume, so the floor cannot increase realised risk - it only prevents the size blow-up - and it is mandatory rather than optional because it is also the "smallest stop this configuration can produce" that every auto-tuned tolerance is derived against. An optional ceiling refuses an outsized candle rather than sizing it down to nothing; it is off by default.
+
+`RiskManager` grades exposure by score and CandleFlow has no score. Rather than add a no-score path to a risk control, every CandleFlow signal presents the same fixed score and the EA sets all three risk tiers to the same percentage, so the tier lookup cannot change the answer. The risk percentage an operator sets is the one that is used.
+
+CandleFlow does not reverse on an opposing candle. Every candle has a direction, so an opposing signal arrives constantly while a position is open; it is refused by the existing opposing-exposure check and the open trade exits on its trailing stop alone. Reversing would be a different strategy, and adding it as a default-on behaviour would mean the shipped rule is not the one described.
+
+No profitability claim is made or implied. CandleFlow has not been backtested, forward-tested or traded, and it ships with trading disabled.

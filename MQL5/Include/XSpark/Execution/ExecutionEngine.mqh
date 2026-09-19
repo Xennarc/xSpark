@@ -139,6 +139,13 @@ private:
          return false;
       }
 
+      // A plan with no reward ratio is a deliberate no-target plan: the strategy
+      // exits on its trailing stop alone, so the order is sent with TP = 0 and
+      // the reward-ratio bounds have nothing to bound. Every risk control below
+      // - stop side, drift, sizing, margin and the account cap - is unaffected,
+      // because none of them is derived from the target.
+      const bool use_target = MathIsValidNumber(plan.dynamic_rr) && plan.dynamic_rr > 0.0;
+
       double candidate_sl = plan.theoretical_sl;
       double risk_distance = 0.0;
       double volume = 0.0;
@@ -191,14 +198,18 @@ private:
             return false;
          }
 
-         const double target = XSparkTargetFromRiskDistance(plan.direction,
-                                                            current_entry_reference,
-                                                            risk_distance,
-                                                            plan.dynamic_rr);
-         if(target <= 0.0)
+         double target = 0.0;
+         if(use_target)
          {
-            reason = "Execution-time target could not be derived from the locked reward ratio.";
-            return false;
+            target = XSparkTargetFromRiskDistance(plan.direction,
+                                                  current_entry_reference,
+                                                  risk_distance,
+                                                  plan.dynamic_rr);
+            if(target <= 0.0)
+            {
+               reason = "Execution-time target could not be derived from the locked reward ratio.";
+               return false;
+            }
          }
 
          string pair_reason = "";
@@ -228,13 +239,25 @@ private:
          return false;
       }
 
-      const double realized_rr = XSparkRealizedRR(current_entry_reference, final_tp, risk_distance);
-      if(!XSparkRRIsWithinBounds(realized_rr, m_min_rr, m_max_rr))
+      double realized_rr = 0.0;
+
+      if(use_target)
       {
-         reason = StringFormat("Execution-time broker-valid RR %.4f is outside configured %.2f-%.2f.",
-                               realized_rr,
-                               m_min_rr,
-                               m_max_rr);
+         realized_rr = XSparkRealizedRR(current_entry_reference, final_tp, risk_distance);
+         if(!XSparkRRIsWithinBounds(realized_rr, m_min_rr, m_max_rr))
+         {
+            reason = StringFormat("Execution-time broker-valid RR %.4f is outside configured %.2f-%.2f.",
+                                  realized_rr,
+                                  m_min_rr,
+                                  m_max_rr);
+            return false;
+         }
+      }
+      else if(final_tp != 0.0)
+      {
+         // Defensive: a no-target plan that somehow acquired a target must not
+         // reach the broker, because nothing above has validated that price.
+         reason = "A no-target plan produced a take-profit price; the entry is refused.";
          return false;
       }
 

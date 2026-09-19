@@ -94,6 +94,18 @@ void Seed() {
   saved[b.id]=s;
  }
 }
+// Same two positions on the short side, so the anchor ratchet is proven in both
+// directions rather than only the one the long fixture happens to exercise.
+void SeedShort() {
+ live={{11,101},{22,202}}; saved.clear(); selected=-1;unreadable=-1;connected=true;
+ for(auto& b:live) {
+  b.type=POSITION_TYPE_SELL; b.stop=102;
+  XSparkTradeState s;XSparkResetTradeState(s);
+  s.ticket=b.ticket;s.identifier=b.id;s.direction=XSPARK_SIGNAL_SELL;s.entry=b.entry;
+  s.initial_sl=b.stop;s.initial_tp=90;s.initial_lots=1;s.initial_risk_distance=2;
+  saved[b.id]=s;
+ }
+}
 void Run() {
  CXSparkLogger logger;
  Seed();Manager m;
@@ -121,6 +133,22 @@ void Run() {
  Check("ticket identity mismatch cannot overwrite recorded state",!collision.Reconcile(logger) && collision.m_states[0].identifier==101);
  collision.ManagePositions(106,106.1,1,2.5,50,2,false,20,0,logger);
  Check("mismatched ticket is never managed as the old trade",collision.partial_calls.size()==1 && collision.partial_calls[0]==22);
+ // Candle-anchor trailing, exercising the manager loop itself.
+ Seed();Manager anchor;
+ anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,99,0);
+ Check("candle anchor trails every position without a partial close",anchor.partial_calls.empty() && live[0].stop==99 && live[1].stop==99);
+ anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,97,0);
+ Check("a looser candle anchor never widens a live stop",live[0].stop==99 && live[1].stop==99);
+ anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,101,0);
+ Check("a tighter candle anchor moves the stop up",live[0].stop==101 && live[1].stop==101);
+ anchor.ManagePositions(106,106.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,0,0);
+ Check("a missing candle anchor leaves the broker stop alone",live[0].stop==101 && live[1].stop==101);
+ Check("candle anchor mode records the trail it applied",anchor.m_states[0].current_trail_sl==101 && saved.at(101).current_trail_sl==101);
+ SeedShort();Manager anchor_short;
+ anchor_short.ManagePositions(94,94.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,0,101);
+ Check("candle anchor trails a short down",live[0].stop==101 && live[1].stop==101);
+ anchor_short.ManagePositions(94,94.1,1,0,0,0,false,20,0,logger,XSPARK_TRAIL_CANDLE_ANCHOR,0,103);
+ Check("a looser candle anchor never widens a short stop",live[0].stop==101 && live[1].stop==101);
  Seed();double all=0,own=0,other=0;int count=0;string reason;
  live.push_back({33,303});live.back().symbol="OTHER";
  Check("exposure includes foreign trades but counts own slots",XSparkReadAccountExposure("TEST",999,all,own,other,count,reason) && all==6 && own==4 && other==2 && count==2);

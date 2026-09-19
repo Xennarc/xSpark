@@ -87,7 +87,13 @@ enum EXSparkScoreBotPatternId
    XSPARK_PATTERN_INVERSE_HS = 11,
    XSPARK_PATTERN_HEAD_SHOULDERS = 12,
    XSPARK_PATTERN_CUP_HANDLE = 13,
-   XSPARK_PATTERN_INVERSE_CUP_HANDLE = 14
+   XSPARK_PATTERN_INVERSE_CUP_HANDLE = 14,
+   // CandleFlow. Not patterns in the ScoreBot sense - they are the direction of
+   // one closed candle - but they travel through the same signal, plan and
+   // per-position state, and a persisted id must rebuild the right name after a
+   // restart rather than borrowing another pattern's.
+   XSPARK_PATTERN_BULLISH_CANDLE = 15,
+   XSPARK_PATTERN_BEARISH_CANDLE = 16
 };
 
 struct XSparkCandle
@@ -256,6 +262,8 @@ string XSparkPatternNameFromId(const EXSparkScoreBotPatternId pattern_id)
       case XSPARK_PATTERN_INVERSE_CUP_HANDLE: return "Inverse Cup & Handle";
       case XSPARK_PATTERN_PULLBACK_BREAK: return "Pullback Break";
       case XSPARK_PATTERN_MOMENTUM_TURN: return "Momentum Turn";
+      case XSPARK_PATTERN_BULLISH_CANDLE: return "Bullish Close";
+      case XSPARK_PATTERN_BEARISH_CANDLE: return "Bearish Close";
       default:
          return "NO PATTERN";
    }

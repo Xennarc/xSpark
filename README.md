@@ -8,6 +8,13 @@ This project is under development and is not yet intended for live trading.
 
 XSpark has implemented its first strategy, ScoreBot_v3 MAX_SHARPE, behind safety-first architecture boundaries.
 
+A second strategy, [CandleFlow](docs/STRATEGY_CANDLEFLOW.md), ships as a separate
+Expert Advisor (`XSparkFlow.mq5`) that reuses the same safety, risk, execution,
+position-management and dashboard components. It is a single-factor rule: the
+direction of the closed candle, no take-profit, and a stop that re-anchors to
+each later candle's far wick. Both EAs can run on one account under different
+Magic Numbers. CandleFlow is untested and unvalidated for profitability.
+
 The EA is still under development and not production-approved. Trading is disabled by default with `InpEnableTrading = false`.
 
 See the [live chart dashboard](docs/DASHBOARD.md) for the visual console, status
@@ -28,7 +35,7 @@ MarketState / IndicatorCache
        |
 StrategyInterface
        |
-ScoreBotV3
+ScoreBotV3  /  CandleFlow
        |
 TradeSignal
        |
@@ -60,8 +67,10 @@ xspark-mt5/
 |-- .gitignore
 |-- MQL5/
 |   |-- Experts/
-|   |   `-- XSpark/
-|   |       `-- XSpark.mq5
+|   |   |-- XSpark/
+|   |   |   `-- XSpark.mq5
+|   |   `-- XSparkFlow/
+|   |       `-- XSparkFlow.mq5
 |   |-- Include/
 |   |   `-- XSpark/
 |   |       |-- Core/
@@ -74,6 +83,7 @@ xspark-mt5/
 |   |       |   `-- Logger.mqh
 |   |       |-- Strategy/
 |   |       |   |-- StrategyInterface.mqh
+|   |       |   |-- CandleFlow.mqh
 |   |       |   |-- ScoreBotV3.mqh
 |   |       |   |-- PatternDetector.mqh
 |   |       |   |-- ScoringEngine.mqh
@@ -95,6 +105,7 @@ xspark-mt5/
 |-- docs/
 |   |-- ARCHITECTURE.md
 |   |-- STRATEGY_SCOREBOT_V3.md
+|   |-- STRATEGY_CANDLEFLOW.md
 |   |-- ROADMAP.md
 |   |-- TESTING.md
 |   |-- DEPLOYMENT.md
