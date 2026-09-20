@@ -9,9 +9,17 @@
 // CandleFlow: one factor, one candle.
 //
 // A closed base-timeframe candle that finished above its open is a long; below
-// its open is a short. There is no target. The stop is anchored to that same
-// candle's far wick with a buffer, and is re-anchored to the far wick of every
-// later closed candle, tightening only. That is the entire strategy.
+// its open is a short. The stop is anchored to that same candle's far wick with
+// a buffer, and is re-anchored to the far wick of every later closed candle,
+// tightening only. That is the entire ENTRY rule, and it has not changed.
+//
+// The exit has two optional additions, both off as far as this module is
+// concerned and both configured by the EA: a hard take-profit for the whole
+// position, published here as the signal's reward ratio, and a ladder of
+// partial take-profits, which belongs entirely to PositionManager because it
+// operates on an open position rather than on an entry. See
+// Trade/ProfitLadder.mqh. With both left at zero this is the original
+// no-target strategy, unchanged price for price.
 //
 // Everything here is pure arithmetic over closed bars: no symbol lookups, no
 // terminal calls, no broker state. The live quote, the broker stop level, the
@@ -45,7 +53,8 @@
 #define XSPARK_CANDLEFLOW_SIGNAL_SCORE 5.5
 
 // A no-target plan is signalled by a non-positive reward ratio, which the
-// execution engine reads as "send no take-profit".
+// execution engine reads as "send no take-profit". It is what a signal carries
+// whenever the operator has not configured a hard target.
 #define XSPARK_CANDLEFLOW_NO_TARGET_RR 0.0
 
 // The single entry factor: which way the closed candle finished.
@@ -315,6 +324,12 @@ struct XSparkCandleFlowConfig
    double min_stop_atr_mult;  // stop floor as a multiple of ATR14
    double max_stop_atr_mult;  // stop ceiling as a multiple of ATR14; 0 disables
    double min_body_atr_mult;  // body filter as a multiple of ATR14; 0 disables
+   // Hard take-profit for the whole position, as a multiple of the entry risk.
+   // Zero is the strategy's original no-target behaviour, where the trailing
+   // stop is the only exit. Supplied by the EA from the profit ladder, which
+   // owns this setting and its bounds; the rule only reports it on the signal
+   // so the panel and the plan agree about what the trade is aiming at.
+   double final_target_r;
    bool   use_volatility_gate;
    double atr_min_points;
    double atr_max_points;
@@ -329,6 +344,7 @@ void XSparkDefaultCandleFlowConfig(XSparkCandleFlowConfig &config)
    config.min_stop_atr_mult = 0.25;
    config.max_stop_atr_mult = 0.0;
    config.min_body_atr_mult = 0.0;
+   config.final_target_r = 0.0;
    config.use_volatility_gate = false;
    config.atr_min_points = 0.0;
    config.atr_max_points = 0.0;
@@ -379,6 +395,12 @@ bool XSparkValidateCandleFlowConfig(const XSparkCandleFlowConfig &config, string
       return false;
    }
 
+   if(!MathIsValidNumber(config.final_target_r) || config.final_target_r < 0.0)
+   {
+      reason = "The final take-profit target must be finite and non-negative.";
+      return false;
+   }
+
    return true;
 }
 
@@ -402,6 +424,16 @@ public:
    void Configure(const XSparkCandleFlowConfig &config)
    {
       m_config = config;
+   }
+
+   // The reward ratio every signal carries. Non-positive means "send no
+   // take-profit", which is what the execution engine reads it as.
+   double TargetRewardRatio()
+   {
+      if(!MathIsValidNumber(m_config.final_target_r) || m_config.final_target_r <= 0.0)
+         return XSPARK_CANDLEFLOW_NO_TARGET_RR;
+
+      return m_config.final_target_r;
    }
 
    bool Initialize(const string symbol)
@@ -564,7 +596,10 @@ public:
       report.context.bar1_close = bar1.close;
       report.context.atr14 = atr14;
       report.effective_threshold = 0.0;
-      report.dynamic_rr = XSPARK_CANDLEFLOW_NO_TARGET_RR;
+      // Zero unless the operator configured a hard target, in which case the
+      // execution engine derives the take-profit price from it at send time,
+      // against the refreshed quote rather than against the planning one.
+      report.dynamic_rr = TargetRewardRatio();
 
       string direction_reason = "";
       const EXSparkSignalDirection direction = XSparkCandleFlowBarDirection(bar1,
@@ -655,8 +690,11 @@ public:
       signal.symbol = m_symbol;
       signal.direction = direction;
       signal.desired_stop = anchor;     // the raw candle anchor; the EA bounds it against the live quote
-      signal.desired_target = 0.0;      // no target, by design
-      signal.dynamic_rr = XSPARK_CANDLEFLOW_NO_TARGET_RR;
+      // The price is deliberately not computed here: execution derives it from
+      // the ratio below and the stop distance it actually gets, which is the
+      // only distance the target is meaningful against.
+      signal.desired_target = 0.0;
+      signal.dynamic_rr = TargetRewardRatio();
       signal.score = XSPARK_CANDLEFLOW_SIGNAL_SCORE;
       signal.effective_threshold = 0.0;
       signal.pattern_score = XSPARK_CANDLEFLOW_SIGNAL_SCORE;

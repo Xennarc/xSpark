@@ -51,7 +51,7 @@ Reads current MT5 symbol data such as bid, ask, spread, server time, digits, and
 
 ### StrategyInterface / ScoreBotV3 / CandleFlow
 
-Strategies convert market state into signal data. `ScoreBotV3.mqh` implements the XAUUSD M15 ScoreBot_v3 MAX_SHARPE logic and produces signals plus analysis reports. `CandleFlow.mqh` implements a single-factor rule - the direction of the closed candle, a stop anchored beyond its far wick, and no target - and produces the same signal and report types. Strategy modules must not include broker execution APIs or submit orders.
+Strategies convert market state into signal data. `ScoreBotV3.mqh` implements the XAUUSD M15 ScoreBot_v3 MAX_SHARPE logic and produces signals plus analysis reports. `CandleFlow.mqh` implements a single-factor rule - the direction of the closed candle and a stop anchored beyond its far wick - and produces the same signal and report types. Its exit has two optional additions that the EA configures and the strategy module never sees: a hard take-profit for the whole position, published as the signal's reward ratio, and a ladder of partial take-profits that belongs to `PositionManager` because it acts on an open position rather than on an entry. Strategy modules must not include broker execution APIs or submit orders.
 
 Each strategy is hosted by its own Expert Advisor: `XSpark.mq5` runs ScoreBot_v3, `XSparkFlow.mq5` runs CandleFlow. Both wire the same shared components and are separated at runtime by Magic Number, so they can run side by side on one account without managing each other's positions. See [ADR-027](DECISIONS.md) for why a second strategy is a second EA rather than a mode, and [the CandleFlow guide](STRATEGY_CANDLEFLOW.md) for the rule itself.
 
@@ -79,7 +79,7 @@ After a confirmed entry it resolves the exact broker position from `CTrade::Resu
 
 Reconciles XSpark-managed broker positions using chart symbol plus configured Magic Number. Existing broker-side positions are the source of truth after restart or crash. It owns partial close, breakeven stop movement, trailing stop movement, weekend close, and killswitch flattening for XSpark-owned exposure only.
 
-Trailing has two modes, chosen per call by the hosting EA so one instance never holds another strategy's configuration. `XSPARK_TRAIL_ATR_AFTER_PARTIAL` is ScoreBot_v3's lifecycle: partial close, break-even, then an ATR trail. `XSPARK_TRAIL_CANDLE_ANCHOR` is CandleFlow's: no partial and no break-even step, and the stop ratchets toward an anchor price the strategy recomputes on each closed candle, tightening only. A missing anchor leaves the broker stop where it is.
+Trailing has two modes, chosen per call by the hosting EA so one instance never holds another strategy's configuration. `XSPARK_TRAIL_ATR_AFTER_PARTIAL` is ScoreBot_v3's lifecycle: partial close, break-even, then an ATR trail. `XSPARK_TRAIL_CANDLE_ANCHOR` is CandleFlow's: no break-even step, and the stop ratchets toward an anchor price the strategy recomputes on each closed candle, tightening only. A missing anchor leaves the broker stop where it is. Within that mode an optional take-profit ladder runs first, closing volume before the trail moves the stop, and the trail then runs on the same pass against re-resolved state. The ladder is configured through the trailing plan, so `ManagePositions` keeps one signature and ScoreBot_v3's call site is untouched.
 
 New trade state is bound to the exact broker position id supplied by the execution result. A same-direction match exists only as a documented fail-safe fallback for the case where the broker deal exposes no position id; it does not use newest-open-time, and it refuses any candidate that is already tracked, has the wrong direction, opened before the send, or whose executed volume does not match. A position that already existed before the send is refused outright, so a netting-mode merge can never overwrite the state of a trade that is already being managed. Anything other than an exact bind is reported as a registration failure so the EA can recover deliberately.
 
@@ -92,6 +92,12 @@ Flattening keeps retrying until no XSpark exposure remains and never touches ano
 ### ExecutionMath
 
 `Core/ExecutionMath.mqh` holds the pure, broker-independent predicates shared by the execution boundary, the position-identity boundary, and the stale-quote gate: duplicate signal-bar protection, entry-drift tolerance, protective-stop side checks, risk distance, target from risk distance, realized RR, RR bounds, position identity matching, fail-safe fallback acceptance, and quote-age evaluation. Keeping them pure is what makes them testable without a trade server.
+
+### ProfitLadder
+
+`Trade/ProfitLadder.mqh` holds the scaled take-profit arithmetic as pure functions over prices and volumes: which step a price has reached, the cumulative share each step implies, and the volume budget that share leaves open. It sits in the Trade layer beside `TrailingStop.mqh` and for the same reason - taking profit in steps is a property of an open position, not of an entry rule - and it reads no symbol, terminal or indicator, which is what makes the whole decision testable without a trade server.
+
+Each step is expressed as a budget ("leave this much of the opening volume open") rather than as a share to close. That is what makes a step idempotent, and therefore what makes a broker close that was confirmed but never recorded a step with nothing left to do rather than a second bite at the same trade.
 
 ### AutoTune
 

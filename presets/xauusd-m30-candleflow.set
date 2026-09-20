@@ -4,14 +4,38 @@
 ; can see them in one place and diff them against anything you change. Loading
 ; it on a fresh chart changes nothing.
 ;
-; It is a STARTING POINT, not a validated profile: CandleFlow has never been
-; backtested, forward-tested or traded. Nothing here is a profitability claim.
+; It is a STARTING POINT, not a validated profile. No backtest, forward test or
+; live result is recorded in this repository, and none of these numbers was
+; measured. Nothing here is a profitability claim.
 ;
 ; WHAT THE BOT DOES
 ;   A 30-minute candle finishes higher than it started  -> it buys.
 ;   A 30-minute candle finishes lower than it started   -> it sells.
-;   There is no profit target. The trade ends when its stop-loss is hit.
+;   It banks 40% of the trade once it is 1.5 times the amount risked in
+;   front, and another 30% at 3 times. The remaining 30% has no target and
+;   ends when its stop-loss is hit.
 ;   The stop only ever moves in your favour, never away.
+;
+; WHY IT BANKS PROFIT IN STEPS
+;   A trailing stop can only act after the price has come back by the whole
+;   trail distance, so a trade that runs a long way and then turns around is
+;   closed well below the best price it saw. The two steps take most of that
+;   move off the table before the turn can reach it, and the 30% that is left
+;   keeps the open-ended upside the rule exists for.
+;
+;   Set InpFlowTP1AtR and InpFlowTP2AtR to 0 to get the original behaviour,
+;   where the trailing stop is the only exit. xauusd-m30-candleflow-no-targets.set
+;   is exactly this file with those levels off, and is the one-change A/B for
+;   "did the levels help". Run it ON REAL TICKS: the levels trigger on a
+;   tick-resolution price while the trailing stop only advances on finished
+;   candles, so low-resolution modelling understates them.
+;
+;   A step needs enough lots to be legal: it must close at least the broker's
+;   minimum and leave at least that much behind. On a 0.01 minimum both steps
+;   fire from 0.03 lots upward. Below that they are skipped, logged once, and
+;   the trade simply runs on its trailing stop. Shares are always rounded DOWN,
+;   so a small position banks slightly less than configured and never more -
+;   at 0.05 lots these two settings bank 60% rather than 70%.
 ;
 ; HOW THE STOP MOVES, in plain terms
 ;   It starts just past the signal candle's far end.
@@ -48,6 +72,14 @@ InpFlowTrailTightenStartR=1.0
 InpFlowTrailTightenFullR=4.0
 InpFlowBreakevenAtR=1.2
 InpFlowBreakevenOffsetR=0.1
+
+InpFlowTP1AtR=1.5
+InpFlowTP1ClosePct=40.0
+InpFlowTP2AtR=3.0
+InpFlowTP2ClosePct=30.0
+InpFlowTP3AtR=0.0
+InpFlowTP3ClosePct=0.0
+InpFlowFinalTargetR=0.0
 
 InpFlowRiskPct=1.0
 InpFlowMaxRiskPct=3.5

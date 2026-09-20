@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     "MQL5/Include/XSpark/Core/StrategyIdentity.mqh",
     "MQL5/Include/XSpark/Strategy/StrategyInterface.mqh",
+    "MQL5/Include/XSpark/Trade/ProfitLadder.mqh",
     "MQL5/Include/XSpark/Trade/TrailingStop.mqh",
     "MQL5/Include/XSpark/Strategy/ScoreBotTypes.mqh",
     "MQL5/Include/XSpark/Strategy/PatternDetector.mqh",
@@ -39,19 +40,42 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestCandleFlow.mq5').read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestStrategyIdentity.mq5').read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestTrailingStop.mq5').read_text())
+    body += adapt((ROOT / 'MQL5/Scripts/Tests/TestProfitLadder.mq5').read_text())
     body += (ROOT / 'tools/portable_boundary_tests.hpp').read_text()
     # Compile actual reconciliation/management methods with isolated broker doubles.
     manager = (ROOT / 'MQL5/Include/XSpark/Trade/PositionManager.mqh').read_text()
     methods = []
     for name in ['FindStateByTicket', 'FindStateByIdentifier', 'PositionMatchesInstance',
                  'PositionDirection', 'AddOrUpdateSelectedPosition', 'CountUnmanagedStates',
-                 'CountMatchingLivePositions', 'FindLiveTicketByIdentifier', 'Reconcile', 'ManagePositions',
-                 'SetTrailPlan']:
-        match = re.search(r'^   (?:int|bool|void|EXSparkSignalDirection) ' + name + r'\(', manager, re.M)
+                 'CountMatchingLivePositions', 'FindLiveTicketByIdentifier', 'Reconcile',
+                 'LegalLadderCloseVolume', 'ApplyProfitLadder', 'ManagePositions', 'SetTrailPlan']:
+        match = re.search(r'^   (?:int|bool|void|double|EXSparkSignalDirection) ' + name + r'\(', manager, re.M)
         if not match:
             raise RuntimeError('Missing production method: ' + name)
         end = manager.index('\n   }', match.start()) + len('\n   }')
         methods.append(adapt(manager[match.start():end]))
+    # Per-position state is written, read back and deleted by three separate key
+    # lists. The portable fixtures below cannot catch a key missing from one of
+    # them, because their storage doubles copy the whole struct - so the lists
+    # are compared as source. A key that is written but never deleted leaks a
+    # terminal global variable for every position the EA ever opens.
+    def state_keys(method):
+        start = manager.index('   bool ' + method + '(') if method != 'ClearPersistedState' \
+            else manager.index('   void ' + method + '(')
+        end = manager.index('\n   }', start)
+        return set(re.findall(r'PositionStateKey\(state\.identifier, "(\w+)"\)', manager[start:end]))
+
+    written = state_keys('PersistState')
+    restored = state_keys('LoadPersistedState')
+    cleared = state_keys('ClearPersistedState')
+    if not written <= cleared:
+        raise RuntimeError('PersistState writes keys ClearPersistedState never deletes: '
+                           + ', '.join(sorted(written - cleared)))
+    if not restored <= written:
+        raise RuntimeError('LoadPersistedState reads keys PersistState never writes: '
+                           + ', '.join(sorted(restored - written)))
+    print(f'Position state keys: {len(written)} written, {len(restored)} restored, all deleted.')
+
     position_tests = (ROOT / 'tools/portable_position_tests.hpp').read_text()
     execution_math = (ROOT / 'MQL5/Include/XSpark/Core/ExecutionMath.mqh').read_text()
     identity_start = execution_math.index('bool XSparkPositionIdentityMatches(')
@@ -66,7 +90,7 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
                           ('// ACCOUNT_EXPOSURE_SOURCE', adapt((ROOT / 'MQL5/Include/XSpark/Risk/AccountExposure.mqh').read_text()))]:
         position_tests = position_tests.replace(marker, value)
     body += position_tests
-    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); RunChartPatternTests(); RunEntrySettingsTests(); MultiPositionTests::Run(); RunConcurrentRiskTests(); RunCandleFlowTests(); RunStrategyIdentityTests(); RunTrailingStopTests(); Print("TOTAL passed=",g_passed+g_pattern_passed+g_settings_passed+g_concurrent_passed+g_flow_passed+g_identity_passed+g_trail_passed," failed=",g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed); return g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed ? 1 : 0; }\n')
+    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); RunChartPatternTests(); RunEntrySettingsTests(); MultiPositionTests::Run(); RunConcurrentRiskTests(); RunCandleFlowTests(); RunStrategyIdentityTests(); RunTrailingStopTests(); RunProfitLadderTests(); Print("TOTAL passed=",g_passed+g_pattern_passed+g_settings_passed+g_concurrent_passed+g_flow_passed+g_identity_passed+g_trail_passed+g_ladder_passed," failed=",g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed+g_ladder_failed); return g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed+g_ladder_failed ? 1 : 0; }\n')
     exe = Path(tmp) / 'logic'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pedantic',
                     '-fsanitize=address,undefined', '-g', str(source), '-o', str(exe)], check=True)

@@ -1,0 +1,87 @@
+; XSparkFlow - XAUUSD M30 CandleFlow with NO take-profit levels
+;
+; The A/B partner for xauusd-m30-candleflow.set. Identical in every setting
+; except the seven take-profit identifiers, which are written out here as
+; explicit zeros. Run the two over the same period and the ONLY difference
+; between them is whether profit is banked in steps.
+;
+; This is the configuration CandleFlow had before the take-profit levels
+; existed: the full trailing stack, and the trailing stop as the only exit.
+;
+; WHY THE ZEROS ARE WRITTEN OUT
+;   A .set file applies only the identifiers it lists and leaves every other
+;   setting at whatever is already in the dialog. Omitting these seven would
+;   leave the levels at their ON defaults, and the comparison would then be
+;   measuring nothing at all.
+;
+; DO NOT compare against xauusd-m30-candleflow-plain-trail.set to answer this
+; question. That file also switches off the chandelier, the tightening and the
+; break-even lock, so it measures four changes at once.
+;
+; RUN IT ON REAL TICKS. The levels trigger on a tick-resolution price while the
+; trailing stop's high-water mark only advances on finished candles, so
+; "Open prices only" modelling systematically understates the levels: a spike
+; that reaches a level inside a bar and closes back below it never banks.
+;
+; Nothing here is a profitability claim. No result is recorded in this
+; repository for either configuration.
+
+InpFlowEnableTrading=false
+InpFlowAutoTuneForSymbol=true
+InpFlowMaxOpenTrades=1
+
+InpFlowMinBodyATRMult=0.0
+
+InpFlowBufferATRMult=0.10
+InpFlowBufferRangePct=0.0
+InpFlowBufferPoints=0.0
+InpFlowMinStopATRMult=0.25
+InpFlowMaxStopATRMult=0.0
+
+InpFlowMinTrailATRMult=0.35
+InpFlowTrailATRMult=3.0
+InpFlowTrailTightATRMult=1.5
+InpFlowTrailTightenStartR=1.0
+InpFlowTrailTightenFullR=4.0
+InpFlowBreakevenAtR=1.2
+InpFlowBreakevenOffsetR=0.1
+
+InpFlowTP1AtR=0.0
+InpFlowTP1ClosePct=0.0
+InpFlowTP2AtR=0.0
+InpFlowTP2ClosePct=0.0
+InpFlowTP3AtR=0.0
+InpFlowTP3ClosePct=0.0
+InpFlowFinalTargetR=0.0
+
+InpFlowRiskPct=1.0
+InpFlowMaxRiskPct=3.5
+InpFlowMaxAccountRiskPct=6.0
+InpFlowMaxDailyDDPct=15.0
+InpFlowUseTotalDDKillSwitch=true
+InpFlowMaxTotalDDPct=25.0
+
+InpFlowUseWeekendClose=true
+InpFlowWeekendCloseHour=20
+InpFlowWeekendCloseMinute=0
+
+InpFlowVerboseLog=false
+
+InpFlowUseVolatilityGate=false
+
+InpFlowQuietMarketPct=60.0
+InpFlowWildMarketPct=600.0
+InpFlowEntrySlipPct=25.0
+InpFlowExitSlipPct=85.0
+InpFlowSpreadCapPct=40.0
+InpFlowMaxSpreadATRPct=10.0
+
+InpFlowUseSpreadFilter=true
+InpFlowUseStopLevelValidation=true
+InpFlowUseMarginCheck=true
+InpFlowMarginBufferPct=20.0
+InpFlowMaxQuoteAgeSeconds=15
+
+InpFlowMagicNumber=770332
+InpFlowOrderComment=CandleFlow_v1
+InpFlowClearKillswitchLatch=false
