@@ -1607,13 +1607,16 @@ public:
 
          const double exit_side_price = direction == XSPARK_SIGNAL_BUY ? bid : ask;
 
-         // Candle-anchor mode. No partial and no break-even step: the whole exit
-         // is the trail, composed from the candle anchor, an optional chandelier
-         // measured from the position's own closed-candle peak, and an optional
-         // breakeven lock. The ratchet is one-way by construction - a candidate
-         // that is not tighter than the live stop is discarded - so no layer can
-         // widen risk, and a pass that produces nothing leaves the broker stop
-         // exactly where it is.
+         // Candle-anchor mode. Two independent halves, in this order: an optional
+         // ladder of scaled take-profits, which only ever closes volume, and then
+         // the trail, which only ever moves the stop. The trail is composed from
+         // the candle anchor, an optional chandelier measured from the position's
+         // own closed-candle peak, and an optional breakeven lock; there is no
+         // break-even step of the kind ScoreBot's mode applies after its partial.
+         // The ratchet is one-way by construction - a candidate that is not
+         // tighter than the live stop is discarded - so no layer can widen risk,
+         // and a pass that produces nothing leaves the broker stop exactly where
+         // it is.
          if(m_trail_plan.mode == XSPARK_TRAIL_CANDLE_ANCHOR)
          {
             // The peak advances once per candle, identified by its timestamp, so
