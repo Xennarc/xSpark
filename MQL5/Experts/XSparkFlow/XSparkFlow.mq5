@@ -148,6 +148,13 @@ XSparkTrailTuning g_trail_tuning;
 // strategy's own constant so it is never zero, and re-read from the validated
 // config in OnInit so the two can never disagree.
 double g_flow_min_stop_atr_mult = XSPARK_CANDLEFLOW_MIN_STOP_ATR_MULT;
+
+// When this instrument's weekend starts, read from the instrument. Resolved
+// once in OnInit and seeded with the fallback so a path that somehow reached
+// OnTick first would still close early rather than carry the gap.
+bool g_flow_use_weekend_close = true;
+int  g_flow_weekend_close_hour = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR;
+int  g_flow_weekend_close_minute = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE;
 // Scaled profit taking. Built once from the inputs and handed to PositionManager
 // with every trailing plan. An empty ladder is the strategy's original
 // behaviour, and is what a refused configuration falls back to so that a
@@ -280,6 +287,53 @@ bool XSparkFlowValidateInputs()
    }
 
    return true;
+}
+
+// Reads this symbol's own trading sessions and resolves when to flatten.
+//
+// The terminal call lives here and the decision lives in CandleFlow.mqh, which
+// is what lets every branch of the decision be tested without a trade server.
+// Session data that cannot be read is not an error: the pure function falls
+// back to closing early, which is the safe direction.
+void XSparkFlowResolveWeekendClose()
+{
+   datetime session_from = 0;
+   datetime session_to = 0;
+
+   // The last Friday session is the one that matters; a symbol may report
+   // several with a break between them.
+   bool friday_known = false;
+   int friday_end_hour = 0;
+   int friday_end_minute = 0;
+
+   for(uint index = 0; index < 8; index++)
+   {
+      if(!SymbolInfoSessionTrade(_Symbol, FRIDAY, index, session_from, session_to))
+         break;
+
+      friday_known = true;
+      const int seconds = (int)session_to;
+      friday_end_hour = (seconds / 3600) % 24;
+      friday_end_minute = (seconds % 3600) / 60;
+   }
+
+   // A symbol that trades on either weekend day has no weekend gap to protect
+   // against, so flattening for it would close a position for no reason.
+   const bool trades_at_weekend =
+      SymbolInfoSessionTrade(_Symbol, SATURDAY, 0, session_from, session_to) ||
+      SymbolInfoSessionTrade(_Symbol, SUNDAY, 0, session_from, session_to);
+
+   string weekend_reason = "";
+   XSparkCandleFlowWeekendClose(trades_at_weekend,
+                                friday_known,
+                                friday_end_hour,
+                                friday_end_minute,
+                                g_flow_use_weekend_close,
+                                g_flow_weekend_close_hour,
+                                g_flow_weekend_close_minute,
+                                weekend_reason);
+
+   g_logger.Info("CandleFlow", weekend_reason);
 }
 
 // Resolves the strategy point size for the chart symbol. Identical policy to
@@ -1026,11 +1080,13 @@ void XSparkFlowEvaluateNewBarCore()
       return;
    }
 
-   // Always on. A position held on a trailing stop with no target carries the
-   // weekend gap in full, and the stop cannot act across it.
-   if(g_position_manager.ShouldWeekendClose(g_market_state.ServerTime(),
-                                            XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR,
-                                            XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE))
+   // A position held on a trailing stop with no target carries the weekend gap
+   // in full and the stop cannot act across it. Off only for an instrument that
+   // trades through the weekend, where there is no gap to carry.
+   if(g_flow_use_weekend_close &&
+      g_position_manager.ShouldWeekendClose(g_market_state.ServerTime(),
+                                            g_flow_weekend_close_hour,
+                                            g_flow_weekend_close_minute))
    {
       g_status = "WEEKEND CLOSE";
       g_last_block_reason = "Weekend close window is active; new entries are blocked.";
@@ -1224,6 +1280,7 @@ int OnInit()
    }
 
    XSparkFlowResolveSessionScorePointSize();
+   XSparkFlowResolveWeekendClose();
 
    // The rule's own geometry - the wick buffer, the stop floor, and the filters
    // that are deliberately off - comes from the strategy's shipped defaults.
@@ -1546,9 +1603,9 @@ void OnTick()
                                       0.0,   // no partial close
                                       0.0,   // no partial close
                                       0.0,   // no ATR trail
-                                      true,  // weekend close, always on
-                                      XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR,
-                                      XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE,
+                                      g_flow_use_weekend_close,
+                                      g_flow_weekend_close_hour,
+                                      g_flow_weekend_close_minute,
                                       g_logger);
 
    // A take-profit close the broker confirmed and XSpark could not record

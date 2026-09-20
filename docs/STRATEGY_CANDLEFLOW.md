@@ -116,8 +116,18 @@ went. There is no longer a way to turn it off, and no manual fallback to get
 wrong. See ADR-033.
 
 **Fixed, because there was never a second sensible value.** The wick buffer, the
-stop floor, one trade at a time, the Friday close, the panel's position and size.
-These live in `Strategy/CandleFlow.mqh` beside the rule they belong to.
+stop floor, one trade at a time, the panel's position and size. These live in
+`Strategy/CandleFlow.mqh` beside the rule they belong to.
+
+**Read from the instrument, because they are properties of it.** The weekend
+close used to be a Friday hour and minute you typed in. It is now taken from the
+symbol's own trading sessions: the bot flattens two hours before that
+instrument's last Friday session ends, and does not flatten at all on an
+instrument that trades through the weekend. A hard "Friday 20:00" was the gold
+answer applied to everything — hours early on a market open until 22:00, and
+meaningless on one that never closes. If the broker reports no usable Friday
+session the old 20:00 is used and the journal says so, because closing early is
+the safe direction to be wrong in.
 
 **Mandatory, because switching them off was never the right answer.** The spread
 filter, the broker's minimum-stop-distance check, the free-margin check, the

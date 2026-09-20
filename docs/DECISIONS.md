@@ -474,3 +474,15 @@ The two comparisons those files existed for are now one dropdown change each: pr
 An operator who wants a trail between Balanced and Tight can no longer have one. That is a real loss and it is the intended trade: the space between two tested configurations is not a place anyone had information to aim at, and every point in it was also a point where the pair of cross-parameter constraints could be violated. If a future measurement says a fourth style is worth having, it is added at the end of the enum - never in the middle, because MetaTrader stores an enum input as its integer and renumbering would silently reinterpret every saved file.
 
 Nothing here has been compiled or backtested. The numbers behind each style are the ones that shipped, unchanged except for the entry-slippage tightening above, and they remain plausible rather than measured.
+
+### Addendum: the weekend close is read from the instrument, not typed in
+
+The first version of this reduction froze the Friday close at 20:00 for every symbol, which replaced an input the operator could get right with a constant that is wrong on most instruments. It is hours early on a market that trades until 22:00, and it is meaningless on one that never closes — a position flattened every Friday evening for a gap that does not exist.
+
+That is rule 15 exactly: the gold answer applied to metals, indices and crypto alike. Freezing a number is only legitimate when there is one right answer; when the right answer is a property of the instrument, the instrument is what should be asked.
+
+So it is now derived. `SymbolInfoSessionTrade` gives the symbol's own Friday sessions, the bot flattens two hours before the last one ends, and a symbol reporting a Saturday or Sunday session has the weekend close switched off entirely. The terminal call lives in the EA and the decision lives in a pure function in `Strategy/CandleFlow.mqh`, which is what lets every branch — including the instruments this repository has never run on — be tested without a trade server.
+
+An unreadable session falls back to the old 20:00 and logs that it did. Closing early costs a few hours of a market that is about to shut; closing late costs the gap, and the stop cannot act across it.
+
+One detail worth recording because it is invisible from the call site: `PositionManager::ShouldWeekendClose` bounds-checks nothing, so an hour above 23 would silently never fire on a Friday. The derivation therefore validates its own output and falls back rather than passing a value that would disable the control without saying so.

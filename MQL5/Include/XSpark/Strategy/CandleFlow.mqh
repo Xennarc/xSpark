@@ -117,12 +117,92 @@
 #define XSPARK_CANDLEFLOW_MARGIN_BUFFER_PCT 20.0
 #define XSPARK_CANDLEFLOW_MAX_QUOTE_AGE_SECONDS 15
 
-// Friday close, on the broker's clock. A position held on a trailing stop with
-// no target carries the weekend gap in full and the stop cannot act across it,
-// so this is behaviour rather than taste. Early costs a few hours of a market
-// that is about to shut; late costs the gap.
+// Friday close. A position held on a trailing stop with no target carries the
+// weekend gap in full and the stop cannot act across it, so flattening before
+// the weekend is behaviour rather than taste.
+//
+// WHEN to flatten is a property of the instrument, not of the operator, so it
+// is read from the instrument rather than fixed. A hard "Friday 20:00" is the
+// gold answer applied to everything, which is exactly what rule 15 forbids: it
+// is hours early on a market that trades until 22:00 and meaningless on one
+// that never closes.
+//
+// How long before that instrument's own last Friday session ends. Two hours is
+// enough for a partial close to fill in thinning liquidity without giving up a
+// whole session.
+#define XSPARK_CANDLEFLOW_WEEKEND_CLOSE_LEAD_MINUTES 120
+
+// Used only when the broker reports no usable Friday session. Closing early is
+// the safe direction to be wrong in, so an unreadable session is not a reason
+// to carry the gap.
 #define XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR 20
 #define XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE 0
+
+// Turns an instrument's own session data into the moment this bot flattens.
+//
+// Pure: the caller does the terminal lookup and hands over the numbers, which
+// is what lets every branch below be tested without a trade server.
+//
+// Three outcomes, and each one is stated rather than inferred:
+//   - the instrument trades at the weekend, so there is no gap to protect
+//     against and the weekend close is switched off for it;
+//   - its Friday session is readable, so flatten the lead time before the end;
+//   - it is not readable, so fall back and say so.
+bool XSparkCandleFlowWeekendClose(const bool trades_at_weekend,
+                                  const bool friday_session_known,
+                                  const int friday_end_hour,
+                                  const int friday_end_minute,
+                                  bool &use_weekend_close,
+                                  int &close_hour,
+                                  int &close_minute,
+                                  string &reason)
+{
+   use_weekend_close = true;
+   close_hour = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR;
+   close_minute = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE;
+   reason = "";
+
+   if(trades_at_weekend)
+   {
+      use_weekend_close = false;
+      close_hour = 0;
+      close_minute = 0;
+      reason = "This market trades at the weekend, so there is no weekend gap to close before.";
+      return true;
+   }
+
+   const bool usable = friday_session_known &&
+                       friday_end_hour >= 0 && friday_end_hour <= 23 &&
+                       friday_end_minute >= 0 && friday_end_minute <= 59;
+
+   if(!usable)
+   {
+      reason = StringFormat("The broker did not report a usable Friday session, so trades are closed at %02d:%02d on its clock.",
+                            close_hour,
+                            close_minute);
+      return true;
+   }
+
+   const int end_minutes = friday_end_hour * 60 + friday_end_minute;
+   int flatten_minutes = end_minutes - XSPARK_CANDLEFLOW_WEEKEND_CLOSE_LEAD_MINUTES;
+
+   // A session ending inside the lead time would push the flatten into the
+   // previous day, which ShouldWeekendClose cannot express. Opening the market
+   // and immediately closing is the honest reading of that, and it is still the
+   // safe direction.
+   if(flatten_minutes < 0)
+      flatten_minutes = 0;
+
+   close_hour = flatten_minutes / 60;
+   close_minute = flatten_minutes % 60;
+
+   reason = StringFormat("This market's Friday session ends at %02d:%02d, so trades are closed at %02d:%02d on the broker's clock.",
+                         friday_end_hour,
+                         friday_end_minute,
+                         close_hour,
+                         close_minute);
+   return true;
+}
 
 // A no-target plan is signalled by a non-positive reward ratio, which the
 // execution engine reads as "send no take-profit". It is what a signal carries
