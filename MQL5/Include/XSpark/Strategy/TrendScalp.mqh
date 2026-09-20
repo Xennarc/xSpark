@@ -134,10 +134,27 @@
 // larger daily exposure.
 #define XSPARK_TRENDSCALP_MAX_RISK_PCT 2.0
 
-// The most the small-account cap may let the broker's minimum lot risk. It
-// equals the shipped default so the shipped default passes its own ceiling
-// (rule 47).
-#define XSPARK_TRENDSCALP_MAX_MIN_LOT_RISK_PCT 3.0
+// The most the small-account cap may let the broker's minimum lot risk.
+//
+// This is the ceiling on InpScalpMinLotRiskCapPct, not a recommendation: the
+// shipped default stays at 3.0 and nothing changes for an account that does
+// not raise it. It sits above that default because the default alone cannot
+// deliver what the small-account cap exists for. On XAUUSD one lot is 100 oz,
+// so the 0.01 broker minimum is 1 oz and a $1 move is $1; the ATR-sized stop
+// runs $4.00-$14.89 (median $4.33) on M1, which is 4.33% of a $100 balance.
+// A 3.0 ceiling therefore refuses EVERY signal on the instrument and balance
+// the cap was written for - measured over 19 days: 867 signals, 0 entries.
+//
+// What 5.0 buys and what it costs. It admits 94% of those signals, and the
+// 6% it still refuses are the widest-ATR setups, so the cap doubles as a
+// volatility filter. It also means a $100 account risks about 4.3% per trade
+// against a 1:1 target whose no-edge win rate is 47%: five stops in a row is
+// -20%. That is the honest price of trading gold at a 1-oz minimum, and it is
+// why the shipped default does not go here on its own.
+//
+// XSPARK_TRENDSCALP_MAX_ACCOUNT_RISK_PCT must stay at or above this, so a
+// trade this cap permits is not then refused by the account cap.
+#define XSPARK_TRENDSCALP_MAX_MIN_LOT_RISK_PCT 5.0
 
 // Bounds everything this bot and any other bot has open at once. At or above
 // the small-account ceiling so a permitted minimum-lot trade cannot be

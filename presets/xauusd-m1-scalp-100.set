@@ -1,0 +1,103 @@
+; XSparkScalp (TrendScalp) - XAUUSD M1 "$100 account" profile
+; STATUS: UNTESTED AS A PROFILE. The numbers below are derived from a 19-day
+; Strategy Tester log (2026.09.01-19, XAUUSDm M1, Exness-MT5Trial17, real
+; ticks), but no tester run has been performed with THIS preset loaded.
+;
+; READ THIS FIRST: $100 IS BELOW THE SHIPPED CEILING'S VIABLE MINIMUM ON GOLD.
+; This preset requires a build where XSPARK_TRENDSCALP_MAX_MIN_LOT_RISK_PCT is
+; 5.0. On a build still shipping the 3.0 ceiling, InpScalpMinLotRiskCapPct
+; below is clamped back to 3.0 and the EA takes ZERO trades.
+;
+; WHY $100 IS THE PROBLEM. On XAUUSD one lot is 100 oz, so the 0.01 broker
+; minimum is 1 oz and a $1 price move is $1. Risk in dollars for the smallest
+; trade therefore EQUALS the stop distance in dollars. Measured over the 602
+; signals the tester refused:
+;
+;   XAUUSDm M1 minimum-lot risk:  min $4.00   median $4.33   max $14.89
+;
+;   balance    median risk    shipped 3.0 cap    signals that size
+;   $100          4.33%         $3.00                 0 / 602   (0%)
+;   $125          3.46%         $3.75                 0 / 602   (0%)
+;   $150          2.89%         $4.50               540 / 602  (90%)
+;   $200          2.17%         $6.00               581 / 602  (97%)
+;   $500          0.87%        $15.00               602 / 602 (100%)
+;
+; At $100 the SMALLEST stop in nineteen days was already 33% over the 3.0 cap's
+; budget. That is arithmetic, not tuning. The log it came from: 867 signals,
+; 0 entries, final balance unchanged at 100.00.
+;
+; WHAT THIS PRESET ACCEPTS. A 5.0 cap admits 94% of those signals and refuses
+; the widest-ATR 6%, so it doubles as a volatility filter. The price is that
+; every trade risks about 4.3% of the account. Five stops in a row is -20%.
+; The exit geometry is 1:1, whose no-edge win rate is 47%, and the entry's edge
+; is UNMEASURED. Nothing here is a profitability claim.
+;
+; THE ONE RESULT WORTH KNOWING BEFORE YOU FUND THIS. In the same log, the same
+; EA on the same symbol and period with a balance large enough to trade freely
+; ($10,000, 118 trades, InpScalpExitStyle=0) finished at $8,831.85 - DOWN 11.7%
+; in 19 days. M1 gold was net-negative in the only sample available. A $100
+; account runs the same strategy at 5x the per-trade risk.
+;
+; BETTER OPTIONS THAN THIS PRESET, if either is open to you:
+;   - A cent account. 1 lot = 1,000 units instead of 100,000, so minimum-lot
+;     risk falls ~100x and the shipped 3.0 cap sizes normally at 1-2% risk.
+;   - A gold symbol with a 0.001 minimum. Risk becomes ~$0.43 = 0.43% of $100
+;     and the shipped default works untouched. Read SYMBOL_VOLUME_MIN for the
+;     exact symbol on your account rather than assuming 0.01.
+;
+; CHART: attach to XAUUSD M1. Not M5/M10 - a longer period widens the stop and
+; makes this WORSE, not better. The same log measured M10 minimum-lot risk at a
+; median of $8.17 (8.17% of $100) against $4.33 on M1.
+
+InpScalpEnableTrading=true
+
+; --- inert at this balance, and left at the shipped value deliberately. A $1
+;     budget cannot buy the 0.01 minimum, so the small-account cap below is
+;     what actually sizes every trade. Raising this changes nothing at $100. ---
+InpScalpRiskPct=1.0
+
+; --- all sessions: at 1 open trade and ~34 signals a day, narrowing the window
+;     removes trades without reducing per-trade risk ---
+InpScalpSessions=0
+InpScalpBrokerUtcOffset=0
+
+; --- SET THIS TO WHAT YOUR BROKER ACTUALLY CHARGES. 0.0 is correct only on a
+;     spread-only gold account. An understated figure under-counts round-trip
+;     cost and admits trades the cost floor should refuse, until the live
+;     verification catches the first closure. ---
+InpScalpCommissionPerLot=0.0
+
+; --- 1:1 target. The log does not separate exit styles cleanly enough on M1 to
+;     recommend 1 over 0: the M5/M10 runs that used style 1 finished positive,
+;     but on different timeframes, so that is confounded, not evidence. ---
+InpScalpExitStyle=0
+
+; --- THE SETTING THIS PRESET EXISTS FOR. 5.0 admits 94% of the signals the
+;     3.0 default refused. Requires the raised ceiling; on an older build this
+;     silently becomes 3.0 and nothing trades. Check the journal's minimum-lot
+;     line on the first bar - it now warns when this cap is too low. ---
+InpScalpMinLotRiskCapPct=5.0
+
+; --- widened because per-trade risk is forced up to ~4.3%. At the shipped 6.0
+;     a single stop very nearly exhausts the day and there is no second trade,
+;     which defeats the point of a scalper. 15.0 tolerates 3 stops from the
+;     day's peak equity; the drawdown is measured from that peak, not from the
+;     day's opening balance, so a winning run raises the bar rather than
+;     banking extra loss budget. ---
+InpScalpMaxDailyDDPct=15.0
+
+; --- emergency stop ON, and it must stay above the daily limit or it fires
+;     first and the daily limit never acts. 30.0 latches after ~6 consecutive
+;     stops. It closes everything and refuses to reopen until you clear it
+;     deliberately with InpScalpClearKillswitchLatch. ---
+InpScalpUseTotalDDKillSwitch=true
+InpScalpMaxTotalDDPct=30.0
+
+InpScalpMagicNumber=770333
+
+; --- leave ON for the first weeks at this balance. Every sizing refusal is
+;     logged at DEBUG; with this off, a blocked run looks identical to a quiet
+;     one. This is exactly how the 867-signal/0-trade run went unnoticed. ---
+InpScalpVerboseLog=true
+
+InpScalpClearKillswitchLatch=false

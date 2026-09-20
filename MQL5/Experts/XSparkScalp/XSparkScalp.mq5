@@ -78,6 +78,19 @@ input EXSparkScalpExitStyle InpScalpExitStyle = XSPARK_SCALP_EXIT_EVEN; // Where
 // more than the risk percentage allows, so every signal would be refused. This
 // cap lets the smallest trade through when the money it risks is at or below
 // the cap. A cap at or below the risk percentage means "never raise".
+//
+// WHAT TO SET IT TO, and the one number that decides it: what the broker's
+// smallest trade risks at the widest stop this chart period allows. The
+// minimum-lot line prints it in the journal on the first bar, and warns when
+// this cap is below it. Set the cap above that figure or the EA will refuse
+// every entry - silently, unless verbose logging is on.
+//
+// On XAUUSD the smallest trade is 1 oz, so its risk in dollars EQUALS the stop
+// in dollars: about $4.33 on M1, which is 4.33% of a $100 balance and 0.87% of
+// a $500 one. A $100 gold account therefore needs roughly 5.0 here, and is
+// accepting about 4.3% risk per trade to get it - see the ceiling's own note in
+// TrendScalp.mqh. The shipped 3.0 is right from about $150 upwards, and every
+// balance above that only makes it safer.
 input group "04. Small accounts"
 input double InpScalpMinLotRiskCapPct = 3.0;     // Smallest trade may risk up to this % (0 = never exceed risk %)
 
