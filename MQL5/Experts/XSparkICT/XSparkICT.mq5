@@ -149,6 +149,10 @@ string g_score_point_size_reason = "The strategy point size has not been resolve
 bool   g_entry_drift_bound_usable = false;
 string g_entry_drift_bound_reason = "The entry drift bound has not been evaluated.";
 
+bool   g_ict_use_weekend_close = true;
+int    g_ict_weekend_close_hour = XSPARK_ICT_WEEKEND_CLOSE_HOUR;
+int    g_ict_weekend_close_minute = XSPARK_ICT_WEEKEND_CLOSE_MINUTE;
+
 bool   g_config_valid = false;
 string g_config_reason = "The ICT configuration has not been checked.";
 
@@ -455,6 +459,42 @@ void XSparkIctLogMinimumLotLine()
                     StringFormat("Entries will be refused whenever the stop runs wide: the smallest trade risks %.2f%% at the widest stop, above the %.2f%% small-account cap. "
                                  "Raise the balance, use a cent account, or lift the cap above %.2f%%.",
                                  risk_pct, g_ict_min_lot_cap_pct, risk_pct));
+}
+
+// The weekend backstop, read from the symbol's own Friday session rather than
+// assumed. A broker may report several Friday sessions with a break between
+// them; the last one is the one that matters.
+void XSparkIctResolveWeekendClose()
+{
+   datetime session_from = 0;
+   datetime session_to = 0;
+
+   bool friday_known = false;
+   int friday_end_seconds = 0;
+
+   for(uint index = 0; index < 8; index++)
+   {
+      if(!SymbolInfoSessionTrade(_Symbol, FRIDAY, index, session_from, session_to))
+         break;
+
+      friday_known = true;
+      friday_end_seconds = (int)session_to;
+   }
+
+   const bool trades_at_weekend =
+      SymbolInfoSessionTrade(_Symbol, SATURDAY, 0, session_from, session_to) ||
+      SymbolInfoSessionTrade(_Symbol, SUNDAY, 0, session_from, session_to);
+
+   string weekend_reason = "";
+   XSparkIctWeekendClose(trades_at_weekend,
+                         friday_known,
+                         friday_end_seconds,
+                         g_ict_use_weekend_close,
+                         g_ict_weekend_close_hour,
+                         g_ict_weekend_close_minute,
+                         weekend_reason);
+
+   g_logger.Info("ICT", weekend_reason);
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +867,8 @@ int OnInit()
    g_entry_drift_bound_usable = true;
    g_entry_drift_bound_reason = "";
 
+   XSparkIctResolveWeekendClose();
+
    g_config_valid = true;
    g_config_reason = "";
 
@@ -906,9 +948,8 @@ int OnInit()
                                      XSPARK_ICT_COMMENT_DEFAULT,
                                      XSPARK_ICT_ENTRY_DEVIATION_POINTS,
                                      g_score_point_size,
-                                     true,
-                                     true,
-                                     true,
+                                     true,   // validate against the broker's stop level
+                                     true,   // check margin before sending
                                      XSPARK_ICT_MARGIN_BUFFER_PCT,
                                      ict_min_rr,
                                      ict_max_rr,
@@ -1123,7 +1164,12 @@ void OnTick()
    g_position_manager.ManagePositions(g_market_state.Bid(),
                                       g_market_state.Ask(),
                                       g_latest_closed_atr14,
-                                      0.0,
+                                      0.0,   // no partial close
+                                      0.0,   // no partial close
+                                      0.0,   // no ATR trail
+                                      g_ict_use_weekend_close,
+                                      g_ict_weekend_close_hour,
+                                      g_ict_weekend_close_minute,
                                       g_logger);
 
    const datetime current_bar_time = iTime(_Symbol, g_base_timeframe, 0);

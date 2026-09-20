@@ -1198,6 +1198,77 @@ bool XSparkIctKillZoneEnd(const datetime server_time,
 }
 
 // ---------------------------------------------------------------------------
+// The weekend close.
+// ---------------------------------------------------------------------------
+//
+// A backstop, not part of the method. The kill-zone flatten and the hold time
+// already close everything long before Friday's session ends - the last window
+// ends at 15:00 UTC - so this should never fire. It exists because "should
+// never fire" is an argument, and a position carried across a weekend gap is
+// the one loss no stop can bound.
+//
+// Declared here rather than reused from another strategy so retuning that
+// strategy cannot move this one's exits (AGENTS.md rule 43).
+
+#define XSPARK_ICT_WEEKEND_CLOSE_HOUR 20
+#define XSPARK_ICT_WEEKEND_CLOSE_MINUTE 45
+#define XSPARK_ICT_WEEKEND_CLOSE_LEAD_MINUTES 15
+#define XSPARK_ICT_SECONDS_PER_DAY 86400
+
+bool XSparkIctWeekendClose(const bool trades_at_weekend,
+                           const bool friday_session_known,
+                           const int friday_end_seconds,
+                           bool &use_weekend_close,
+                           int &close_hour,
+                           int &close_minute,
+                           string &reason)
+{
+   use_weekend_close = true;
+   close_hour = XSPARK_ICT_WEEKEND_CLOSE_HOUR;
+   close_minute = XSPARK_ICT_WEEKEND_CLOSE_MINUTE;
+   reason = "";
+
+   // A market that trades through the weekend has no gap to protect against,
+   // so flattening for it would close a position for no reason at all.
+   if(trades_at_weekend)
+   {
+      use_weekend_close = false;
+      close_hour = 0;
+      close_minute = 0;
+      reason = "This market trades at the weekend, so there is no weekend gap to close before.";
+      return true;
+   }
+
+   const bool usable = friday_session_known &&
+                       friday_end_seconds >= 0 &&
+                       friday_end_seconds <= XSPARK_ICT_SECONDS_PER_DAY;
+
+   if(!usable)
+   {
+      reason = StringFormat("The broker did not report a usable Friday session, so trades are closed at %02d:%02d on its clock.",
+                            close_hour, close_minute);
+      return true;
+   }
+
+   const int end_minutes = friday_end_seconds >= XSPARK_ICT_SECONDS_PER_DAY ? 1440
+                                                                            : friday_end_seconds / 60;
+   int flatten_minutes = end_minutes - XSPARK_ICT_WEEKEND_CLOSE_LEAD_MINUTES;
+
+   // A session ending inside the lead time would push the flatten into the
+   // previous day, which the manager cannot express; closing as the day opens
+   // is the honest reading and still the safe direction.
+   if(flatten_minutes < 0)
+      flatten_minutes = 0;
+
+   close_hour = flatten_minutes / 60;
+   close_minute = flatten_minutes % 60;
+
+   reason = StringFormat("This market's Friday session ends at %02d:%02d, so trades are closed at %02d:%02d on the broker's clock.",
+                         end_minutes / 60, end_minutes % 60, close_hour, close_minute);
+   return true;
+}
+
+// ---------------------------------------------------------------------------
 // Cost and the live stop.
 // ---------------------------------------------------------------------------
 //

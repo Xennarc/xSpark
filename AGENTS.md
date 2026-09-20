@@ -43,6 +43,7 @@ XSpark is a live-money MetaTrader 5 Expert Advisor. Mistakes can cause real fina
 30. Code should compile with zero errors before being considered complete.
 31. Warnings should also be investigated rather than ignored.
 32. If MetaEditor/compiler is unavailable in the Codex environment, explicitly state that compilation was not performed. Never claim compilation success without actually compiling.
+32a. `tools/check_ea_call_arity.py` runs in CI and checks that every EA call into a shared component fits that component's signature. It exists because XSparkICT.mq5 shipped two calls that did not, and every other static check in the repository passed on it. Passing this check is not compilation and must never be reported as such: it counts arguments, not types.
 33. Never fabricate test results, backtest results, compiler results, performance numbers, or profitability.
 34. Profitability is not an acceptance criterion for infrastructure code.
 35. Maintain documentation when architectural behavior changes.
@@ -62,7 +63,7 @@ XSpark is a live-money MetaTrader 5 Expert Advisor. Mistakes can cause real fina
 49. Where several numbers describe one behaviour, expose the behaviour rather than the numbers. A named choice whose every value is a tested, internally consistent configuration cannot be misconfigured; a set of free numbers with cross-parameter constraints will be.
 50. An enum used as an input is a dropdown: every member needs a label under the same 63-character limit, and its ordinal is a wire format. Add members at the end and never renumber one, because MetaTrader stores the integer and a saved `.set` would silently mean something else.
 
-Rules 41 to 46, and 50, are enforced by `tools/check_ea_inputs.py`, which runs in CI.
+Rules 41 to 46, and 50, are enforced by `tools/check_ea_inputs.py`, which runs in CI. Rule 32a is enforced by `tools/check_ea_call_arity.py`, alongside it.
 
 ## Change Workflow
 
