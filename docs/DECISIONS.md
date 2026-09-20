@@ -142,6 +142,22 @@ The decision lives in `XSparkResolveKillswitchRestore`, a pure function, so all 
 
 This is shared code, so it fixes ScoreBot and CandleFlow together.
 
+### Addendum: a number the operator typed is never a reason to refuse to start
+
+The settings reduction added range checks to `XSparkFlowValidateInputs`, which returns `INIT_FAILED`. That stopped the EA dead, and it was the wrong call twice over.
+
+It is wrong on a live chart because `OnTick` then never runs: the trailing stop, the break-even lock, the profit ladder, the weekend close and the killswitch flatten all stop while live positions sit open at the broker. ADR-020 settled exactly this trade-off for the point-size fault and settled it the other way — fall back, log CRITICAL, latch a veto on new entries, keep managing what is open. A configuration problem must never be a reason to abandon exposure.
+
+It is wrong in the Strategy Tester because it is invisible. A failed `OnInit` produces a finished run with zero trades and one line in the Journal, which reads exactly like a strategy that found no setups. That is how it was found: the operator reported "no trades are taken with these settings during backtesting" after a run that had worked the day before.
+
+The specific break is worth recording because it is a migration failure, not a logic error. Commit `a073081` shipped `InpFlowMaxTotalDDPct` labelled "(0 = off)". Commit `51711a3` restored the separate switch and made the level require a positive percentage. MetaTrader keeps an input's value across a recompile whenever the identifier survives, and that one did — so an operator who had typed `0`, following the label in front of them, was carried into a build that refused to start. Two other clauses could bite the same way: the per-trade risk ceiling dropped from a configurable 10% to a hard 3.5%, and the daily limit went from unvalidated to refused at zero.
+
+So `XSparkCandleFlowResolveLimits` corrects instead. Risk above the ceiling clamps down to it; a level that is not a usable percentage falls back to the recommended one; a daily limit at or above the emergency stop is reported and left alone, because the stricter control still acts first and rewriting it would impose something nobody asked for. Every correction is stated at CRITICAL, naming what was typed and what is being used.
+
+One correction reduces protection, deliberately: a total-drawdown level of `0` is read as "switched off". That is honouring an instruction this repository printed in the Inputs tab of a shipped build, not guessing at intent — and the alternative silently re-arms a control the operator deliberately disabled, which on a year-long backtest closes the account out partway through and leaves the rest of the period untraded. The line says so and names the switch that replaced the convention.
+
+`INIT_FAILED` is now reserved for what no fallback can repair: a netting account, a Magic Number another shipped strategy claims, a chart period with no trend timeframe.
+
 ## ADR-023 - Risk Is Capped At The Account, Not Only Per Trade
 
 Reason: AGENTS.md rule 27 says no strategy may bypass maximum account-level risk limits, and the codebase could not enforce it. `InpMaxRiskPct` is a per-TRADE label. One instance at 3% risks 3%. Three instances on three symbols, each correctly obeying its own 3% cap, risks 9% simultaneously, and nothing anywhere could see that: every exposure check filtered by symbol and Magic Number, so each instance was structurally blind to the other two. Phase 1 made multi-symbol operation possible and ADR-022 raised per-trade risk, which turned a latent gap into a reachable one.

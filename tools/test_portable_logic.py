@@ -80,8 +80,22 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
                 for line in text[call:text.index('))', call)].splitlines()]
         args[0] = args[0].split('Initialize(', 1)[1]
         enable = args[7]
+        # The enable may reach SafetyManager through a resolved global rather
+        # than straight from the input - a value the operator typed can be
+        # corrected before use. What must NOT happen is the flag being computed
+        # from the LEVEL, so follow one hop of indirection and require that it
+        # lands on a dedicated bool input either way.
         if not re.fullmatch(r'Inp\w+', enable):
-            raise RuntimeError(f'{ea}: killswitch enable is derived, not an input: {enable}')
+            if not re.fullmatch(r'g_\w+', enable):
+                raise RuntimeError(f'{ea}: killswitch enable is neither an input nor a global: {enable}')
+            sources = set(re.findall(r'^\s*' + enable + r'\s*=\s*(Inp\w+)\s*;', text, re.M))
+            if len(sources) != 1:
+                raise RuntimeError(f'{ea}: {enable} must be assigned from exactly one input, found {sorted(sources)}')
+            derived = re.findall(r'^\s*' + enable + r'\s*=\s*(?!Inp\w+\s*;)([^;\n]+);', text, re.M)
+            for expr in derived:
+                if 'MaxTotalDDPct' in expr:
+                    raise RuntimeError(f'{ea}: killswitch enable is derived from the level: {enable} = {expr.strip()}')
+            enable = sources.pop()
         if not re.search(r'^input\s+bool\s+' + enable + r'\s*=', text, re.M):
             raise RuntimeError(f'{ea}: {enable} is not a bool input')
         levels = {}
@@ -118,6 +132,10 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     restore_start = safety.index('void XSparkResolveKillswitchRestore(')
     restore_end = safety.index('\n}', restore_start) + 2
     position_tests = position_tests.replace('// KILLSWITCH_RESTORE_SOURCE', adapt(safety[restore_start:restore_end]))
+    candleflow = (ROOT / 'MQL5/Include/XSpark/Strategy/CandleFlow.mqh').read_text()
+    limits_start = candleflow.index('bool XSparkCandleFlowResolveLimits(')
+    limits_end = candleflow.index('\n}', limits_start) + 2
+    position_tests = position_tests.replace('// RESOLVE_LIMITS_SOURCE', adapt(candleflow[limits_start:limits_end]))
     for marker, value in [('// PRODUCTION_METHODS', '\n'.join(methods)),
                           ('// TRADE_STATE_SOURCE', adapt((ROOT / 'MQL5/Include/XSpark/Trade/TradeState.mqh').read_text())),
                           ('// ACCOUNT_EXPOSURE_SOURCE', adapt((ROOT / 'MQL5/Include/XSpark/Risk/AccountExposure.mqh').read_text()))]:

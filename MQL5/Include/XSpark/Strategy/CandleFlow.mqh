@@ -112,6 +112,126 @@
 #define XSPARK_CANDLEFLOW_MAX_RISK_PCT 3.5
 #define XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT 6.0
 
+// The shipped values for the three numbers an operator sets. They are named
+// because they are also the fallback when a setting cannot be used: a number
+// that has to be replaced should be replaced with the recommended one, not with
+// whatever happens to be nearby.
+#define XSPARK_CANDLEFLOW_DEFAULT_RISK_PCT 1.0
+#define XSPARK_CANDLEFLOW_DEFAULT_DAILY_DD_PCT 15.0
+#define XSPARK_CANDLEFLOW_DEFAULT_TOTAL_DD_PCT 25.0
+
+// Turns what the operator typed into what the EA will actually run with, and
+// reports every difference.
+//
+// WHY THIS IS NOT A VALIDATOR THAT REFUSES. An out-of-range number used to
+// return false from XSparkFlowValidateInputs, which returns INIT_FAILED, which
+// means OnTick never runs at all - so the trailing stop, the break-even lock,
+// the profit ladder, the weekend close and the killswitch flatten all stop
+// while live positions sit open at the broker. ADR-020 settled that question
+// already, for the point-size fault, and settled it the other way: fall back,
+// log CRITICAL, keep managing. A configuration problem must never be a reason
+// to abandon open exposure.
+//
+// It is also invisible where it is most likely to be met. In the Strategy
+// Tester a failed OnInit produces a finished run with zero trades and one line
+// in the Journal, which reads exactly like a strategy that found no setups.
+//
+// Every correction below moves toward MORE safety, except one: a total-drawdown
+// level of zero is honoured as "switched off", because that is what a shipped
+// build's own label told the operator it meant. Read on.
+//
+// Pure: no terminal calls, so every branch is testable.
+bool XSparkCandleFlowResolveLimits(const double raw_risk_pct,
+                                   const double raw_daily_dd_pct,
+                                   const double raw_total_dd_pct,
+                                   const bool raw_use_killswitch,
+                                   double &risk_pct,
+                                   double &daily_dd_pct,
+                                   double &total_dd_pct,
+                                   bool &use_killswitch,
+                                   string &corrections)
+{
+   risk_pct = raw_risk_pct;
+   daily_dd_pct = raw_daily_dd_pct;
+   total_dd_pct = raw_total_dd_pct;
+   use_killswitch = raw_use_killswitch;
+   corrections = "";
+
+   bool corrected = false;
+
+   if(!MathIsValidNumber(risk_pct) || risk_pct <= 0.0)
+   {
+      corrections += StringFormat("Money risked on one trade was %.4f, which cannot size a trade; using %.2f%%. ",
+                                  raw_risk_pct,
+                                  XSPARK_CANDLEFLOW_DEFAULT_RISK_PCT);
+      risk_pct = XSPARK_CANDLEFLOW_DEFAULT_RISK_PCT;
+      corrected = true;
+   }
+   else if(risk_pct > XSPARK_CANDLEFLOW_MAX_RISK_PCT)
+   {
+      // Clamped DOWN, never refused. The operator asked for more risk than this
+      // strategy allows itself; running at the ceiling is what they would have
+      // got by typing the ceiling, and it is strictly safer than what they
+      // asked for. Refusing to start protects nothing.
+      corrections += StringFormat("Money risked on one trade was %.2f%%, above this bot's %.2f%% ceiling; using the ceiling. ",
+                                  raw_risk_pct,
+                                  XSPARK_CANDLEFLOW_MAX_RISK_PCT);
+      risk_pct = XSPARK_CANDLEFLOW_MAX_RISK_PCT;
+      corrected = true;
+   }
+
+   if(!MathIsValidNumber(daily_dd_pct) || daily_dd_pct <= 0.0 || daily_dd_pct >= 100.0)
+   {
+      // A daily limit of zero halts trading at zero drawdown, permanently. The
+      // recommended value is the only sane replacement.
+      corrections += StringFormat("The daily loss limit was %.4f, which is not a usable percentage; using %.2f%%. ",
+                                  raw_daily_dd_pct,
+                                  XSPARK_CANDLEFLOW_DEFAULT_DAILY_DD_PCT);
+      daily_dd_pct = XSPARK_CANDLEFLOW_DEFAULT_DAILY_DD_PCT;
+      corrected = true;
+   }
+
+   if(!MathIsValidNumber(total_dd_pct) || total_dd_pct >= 100.0)
+   {
+      corrections += StringFormat("The emergency stop level was %.4f, which is not a usable percentage; using %.2f%%. ",
+                                  raw_total_dd_pct,
+                                  XSPARK_CANDLEFLOW_DEFAULT_TOTAL_DD_PCT);
+      total_dd_pct = XSPARK_CANDLEFLOW_DEFAULT_TOTAL_DD_PCT;
+      corrected = true;
+   }
+   else if(total_dd_pct <= 0.0)
+   {
+      // THE ONE CORRECTION THAT REDUCES PROTECTION, and it is deliberate. A
+      // shipped build labelled this setting "(0 = off)", so an operator who
+      // typed 0 was following the instructions in front of them. MetaTrader
+      // keeps a value across a recompile while the identifier survives, and
+      // this one did - so that 0 outlives the build that meant it. Reading it
+      // as "off" is honouring what they were told, not guessing; the
+      // alternative silently re-arms a control they deliberately disabled.
+      // It is stated at CRITICAL and names the switch that replaced it.
+      corrections += StringFormat("The emergency stop level was 0, which an earlier build read as OFF, so the emergency stop is OFF. "
+                                  "Use the emergency-stop switch instead, and set the level back to %.2f%%. ",
+                                  XSPARK_CANDLEFLOW_DEFAULT_TOTAL_DD_PCT);
+      total_dd_pct = XSPARK_CANDLEFLOW_DEFAULT_TOTAL_DD_PCT;
+      use_killswitch = false;
+      corrected = true;
+   }
+
+   // A daily limit at or above the emergency stop simply never fires, because
+   // the emergency stop closes everything first. That is harmless - the
+   // stricter control still acts - so it is reported and left alone rather than
+   // corrected into something the operator did not ask for.
+   if(use_killswitch && daily_dd_pct >= total_dd_pct)
+   {
+      corrections += StringFormat("The daily loss limit (%.2f%%) is at or above the emergency stop (%.2f%%), so it can never act; the emergency stop applies first. ",
+                                  daily_dd_pct,
+                                  total_dd_pct);
+      corrected = true;
+   }
+
+   return !corrected;
+}
+
 // Broker-facing safeguards. Spare margin wanted beyond the trade's own, and the
 // age past which a quote is too stale to act on.
 #define XSPARK_CANDLEFLOW_MARGIN_BUFFER_PCT 20.0

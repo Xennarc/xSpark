@@ -59,6 +59,7 @@ string DoubleToString(double v,int) {return std::to_string(v);}
 // IDENTITY_SOURCE
 // UNOPPOSED_SOURCE
 // KILLSWITCH_RESTORE_SOURCE
+// RESOLVE_LIMITS_SOURCE
 bool XSparkAdjustProtectionLevels(const string&,EXSparkSignalDirection,double,double sl,double tp,bool,
                                   double& out_sl,double& out_tp,string&) {out_sl=sl;out_tp=tp;return true;}
 class CXSparkLogger {public:
@@ -276,6 +277,69 @@ void Run() {
   }
   Check("later OnInits with the input still true never chase equity down",peak==7500.0 && equity==5500.0);
   Check("and every one of them warns that the input is still armed",warned==4);
+ }
+
+ // A NUMBER THE OPERATOR TYPED IS NEVER A REASON TO REFUSE TO START. These used
+ // to return false from XSparkFlowValidateInputs, which returns INIT_FAILED,
+ // which means OnTick never runs - and in the Strategy Tester that looks exactly
+ // like a strategy that found no setups: a finished run, zero trades, one line
+ // in the Journal. On a live chart it is worse, because open positions stop
+ // being managed. Each case below must now RESOLVE and report.
+ {
+  double risk=0,daily=0,total=0; bool ks=false; string note;
+
+  Check("the shipped defaults need no correction at all",
+        XSparkCandleFlowResolveLimits(1.0,15.0,25.0,true,risk,daily,total,ks,note)
+        && risk==1.0 && daily==15.0 && total==25.0 && ks && note=="");
+
+  // The regression itself. A build shipped this setting labelled "(0 = off)";
+  // MetaTrader keeps the value across a recompile because the identifier
+  // survived, so that 0 outlives the build that meant it.
+  Check("a zero emergency-stop level is honoured as OFF, not refused",
+        !XSparkCandleFlowResolveLimits(1.0,15.0,0.0,true,risk,daily,total,ks,note)
+        && !ks && total==25.0 && note.find("OFF")!=string::npos);
+  Check("and the operator still keeps the trade risk they set",risk==1.0);
+
+  // Risk above the ceiling clamps DOWN. Refusing to start protects nothing;
+  // running at the ceiling is strictly safer than what was asked for.
+  Check("risk above the ceiling clamps to the ceiling rather than refusing",
+        !XSparkCandleFlowResolveLimits(5.0,15.0,25.0,true,risk,daily,total,ks,note)
+        && risk==3.5 && ks && total==25.0);
+  Check("risk at the ceiling exactly is not a correction",
+        XSparkCandleFlowResolveLimits(3.5,15.0,25.0,true,risk,daily,total,ks,note) && risk==3.5);
+
+  Check("a zero risk cannot size a trade and falls back to the recommended one",
+        !XSparkCandleFlowResolveLimits(0.0,15.0,25.0,true,risk,daily,total,ks,note) && risk==1.0);
+
+  // A daily limit of zero halts trading at zero drawdown, permanently.
+  Check("a zero daily limit falls back rather than halting at once",
+        !XSparkCandleFlowResolveLimits(1.0,0.0,25.0,true,risk,daily,total,ks,note) && daily==15.0);
+  Check("a daily limit of 100 or more falls back",
+        !XSparkCandleFlowResolveLimits(1.0,100.0,25.0,true,risk,daily,total,ks,note) && daily==15.0);
+
+  Check("an emergency stop of 100 or more falls back and stays armed",
+        !XSparkCandleFlowResolveLimits(1.0,15.0,100.0,true,risk,daily,total,ks,note)
+        && total==25.0 && ks);
+
+  // Harmless, so reported and left alone rather than corrected into something
+  // nobody asked for: the stricter control still acts first.
+  Check("a daily limit above the emergency stop is reported, not rewritten",
+        !XSparkCandleFlowResolveLimits(1.0,30.0,25.0,true,risk,daily,total,ks,note)
+        && daily==30.0 && total==25.0 && note.find("never act")!=string::npos);
+  Check("and it is not even reported when the emergency stop is switched off",
+        XSparkCandleFlowResolveLimits(1.0,30.0,25.0,false,risk,daily,total,ks,note)
+        && daily==30.0 && !ks && note=="");
+
+  // Switching off by the switch must survive untouched - that is the operator's
+  // documented way to run a full-year backtest.
+  Check("the switch alone turns the emergency stop off with no correction",
+        XSparkCandleFlowResolveLimits(1.0,15.0,25.0,false,risk,daily,total,ks,note)
+        && !ks && total==25.0 && note=="");
+
+  // Several at once must all be corrected, not just the first.
+  Check("several bad settings are all corrected in one pass",
+        !XSparkCandleFlowResolveLimits(9.0,0.0,0.0,true,risk,daily,total,ks,note)
+        && risk==3.5 && daily==15.0 && total==25.0 && !ks);
  }
 
  // Candle-anchor trailing, exercising the manager loop itself.
