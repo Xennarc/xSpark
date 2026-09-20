@@ -22,7 +22,7 @@ $mql = Join-Path $OutputRoot 'MQL5'
 New-Item -ItemType Directory -Path (Join-Path $mql 'Include') -Force | Out-Null
 Copy-Item -Path (Join-Path $standardIncludes '*') -Destination (Join-Path $mql 'Include') -Recurse -Force
 Copy-Item -Path (Join-Path $repo 'MQL5\*') -Destination $mql -Recurse -Force
-$targets = @((Join-Path $mql 'Experts\XSpark\XSpark.mq5'), (Join-Path $mql 'Experts\XSparkFlow\XSparkFlow.mq5'))
+$targets = @((Join-Path $mql 'Experts\XSpark\XSpark.mq5'), (Join-Path $mql 'Experts\XSparkFlow\XSparkFlow.mq5'), (Join-Path $mql 'Experts\XSparkScalp\XSparkScalp.mq5'))
 $targets += @(Get-ChildItem -LiteralPath (Join-Path $mql 'Scripts\Tests') -Filter '*.mq5' | ForEach-Object { $_.FullName })
 $failed = @()
 foreach ($target in $targets) {

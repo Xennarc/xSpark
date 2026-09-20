@@ -23,6 +23,8 @@ FILES = [
     "MQL5/Include/XSpark/Strategy/EntryGates.mqh",
     "MQL5/Include/XSpark/Strategy/ChartPatterns.mqh",
     "MQL5/Include/XSpark/Strategy/EntrySettings.mqh",
+    # AutoTune carries the shared calibration sample floor TrendScalp clamps to.
+    "MQL5/Include/XSpark/Core/AutoTune.mqh",
     "MQL5/Scripts/Tests/TestMarketStructure.mq5",
     "MQL5/Scripts/Tests/TestChartPatterns.mq5",
     "MQL5/Scripts/Tests/TestEntrySettings.mq5",
@@ -34,10 +36,11 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     body = PREAMBLE + '\n'.join(adapt((ROOT / f).read_text()) for f in FILES)
     body += (ROOT / 'tools/portable_mql_stubs.hpp').read_text()
     for file in ['Strategy/ScoringEngine.mqh', 'Core/StateStore.mqh', 'Risk/RiskManager.mqh', 'Strategy/ScoreBotV3.mqh',
-                 'Strategy/CandleFlow.mqh']:
+                 'Strategy/CandleFlow.mqh', 'Strategy/TrendScalp.mqh']:
         body += adapt((ROOT / 'MQL5/Include/XSpark' / file).read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestConcurrentRisk.mq5').read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestCandleFlow.mq5').read_text())
+    body += adapt((ROOT / 'MQL5/Scripts/Tests/TestTrendScalp.mq5').read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestStrategyIdentity.mq5').read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestTrailingStop.mq5').read_text())
     body += adapt((ROOT / 'MQL5/Scripts/Tests/TestProfitLadder.mq5').read_text())
@@ -73,7 +76,8 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     # EA must therefore hand SafetyManager a plain input, and its shipped
     # drawdown defaults must satisfy the ordering its own validator enforces -
     # a daily stop at or above the emergency stop can never fire.
-    for ea in ['MQL5/Experts/XSpark/XSpark.mq5', 'MQL5/Experts/XSparkFlow/XSparkFlow.mq5']:
+    for ea in ['MQL5/Experts/XSpark/XSpark.mq5', 'MQL5/Experts/XSparkFlow/XSparkFlow.mq5',
+               'MQL5/Experts/XSparkScalp/XSparkScalp.mq5']:
         text = (ROOT / ea).read_text()
         call = text.index('g_safety_manager.Initialize(')
         args = [line.split('//')[0].strip().rstrip(',')
@@ -145,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
                           ('// ACCOUNT_EXPOSURE_SOURCE', adapt((ROOT / 'MQL5/Include/XSpark/Risk/AccountExposure.mqh').read_text()))]:
         position_tests = position_tests.replace(marker, value)
     body += position_tests
-    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); RunChartPatternTests(); RunEntrySettingsTests(); MultiPositionTests::Run(); RunConcurrentRiskTests(); RunCandleFlowTests(); RunStrategyIdentityTests(); RunTrailingStopTests(); RunProfitLadderTests(); Print("TOTAL passed=",g_passed+g_pattern_passed+g_settings_passed+g_concurrent_passed+g_flow_passed+g_identity_passed+g_trail_passed+g_ladder_passed," failed=",g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed+g_ladder_failed); return g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed+g_ladder_failed ? 1 : 0; }\n')
+    source.write_text(body + '\nint main() { OnStart(); TestBoundaries(); RunChartPatternTests(); RunEntrySettingsTests(); MultiPositionTests::Run(); RunConcurrentRiskTests(); RunCandleFlowTests(); RunStrategyIdentityTests(); RunTrailingStopTests(); RunProfitLadderTests(); RunTrendScalpTests(); Print("TOTAL passed=",g_passed+g_pattern_passed+g_settings_passed+g_concurrent_passed+g_flow_passed+g_identity_passed+g_trail_passed+g_ladder_passed+g_scalp_passed," failed=",g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed+g_ladder_failed+g_scalp_failed); return g_failed+g_pattern_failed+g_settings_failed+g_concurrent_failed+g_flow_failed+g_identity_failed+g_trail_failed+g_ladder_failed+g_scalp_failed ? 1 : 0; }\n')
     exe = Path(tmp) / 'logic'
     subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-pedantic',
                     '-fsanitize=address,undefined', '-g', str(source), '-o', str(exe)], check=True)

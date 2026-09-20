@@ -26,6 +26,7 @@ bool MathIsValidNumber(double a) {return std::isfinite(a);}
 template<class T> int ArraySize(const std::vector<T>& a) {return int(a.size());}
 template<class T, size_t N> int ArraySize(const T (&)[N]) {return int(N);}
 template<class T> int ArrayResize(std::vector<T>& a,int n) {a.resize(n); return n;}
+template<class T> bool ArraySort(std::vector<T>& a) {std::sort(a.begin(),a.end()); return true;}
 inline const char* FmtArg(const string& s) {return s.c_str();}
 template<class T> T FmtArg(T x) {return x;}
 template<class... T> string StringFormat(const char* f,T... v) {

@@ -41,6 +41,11 @@ void TestSeverityMapping()
    Check("SESSION BLOCKED is blocked", XSparkDashboardSeverity("SESSION BLOCKED") == XSPARK_UI_SEV_BLOCKED);
    Check("STALE QUOTE is blocked", XSparkDashboardSeverity("STALE QUOTE") == XSPARK_UI_SEV_BLOCKED);
    Check("WEEKEND CLOSE is blocked", XSparkDashboardSeverity("WEEKEND CLOSE") == XSPARK_UI_SEV_BLOCKED);
+   // TrendScalp's two gates, and OPPOSING EXPOSURE, which XSparkFlow already
+   // raised as a status nothing had mapped - so it rendered as a fault.
+   Check("COST BLOCKED is blocked", XSparkDashboardSeverity("COST BLOCKED") == XSPARK_UI_SEV_BLOCKED);
+   Check("DAILY CAP is blocked", XSparkDashboardSeverity("DAILY CAP") == XSPARK_UI_SEV_BLOCKED);
+   Check("OPPOSING EXPOSURE is blocked", XSparkDashboardSeverity("OPPOSING EXPOSURE") == XSPARK_UI_SEV_BLOCKED);
 
    Check("KILLSWITCH is a fault", XSparkDashboardSeverity("KILLSWITCH") == XSPARK_UI_SEV_FAULT);
    Check("DD HALT is a fault", XSparkDashboardSeverity("DD HALT") == XSPARK_UI_SEV_FAULT);

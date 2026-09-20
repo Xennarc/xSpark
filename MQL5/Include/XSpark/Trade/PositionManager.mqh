@@ -53,6 +53,14 @@ private:
    int    m_flatten_remaining_exposure;
    string m_flatten_last_signature;
    datetime m_last_protection_repair_time;
+   // RAM-only record of the last closure's measured commission, so an EA can
+   // compare what the broker actually charged against the commission it was
+   // told to expect. Per lot of ENTRY volume, both ways, because that is how
+   // the operator's input is expressed. Rebuilt from history on every closure,
+   // never persisted: a restart simply has nothing to compare until the next
+   // trade closes.
+   long   m_last_closure_identifier;
+   double m_last_closure_commission_per_lot;
    CTrade m_trade;
    CXSparkStateStore m_store;
    XSparkTradeState m_states[];
@@ -800,6 +808,52 @@ private:
       }
    }
 
+   // Sums DEAL_COMMISSION over EVERY deal of one position - entry and exit
+   // alike - and the entry volume, from whatever history selection is already
+   // in place. Kept apart from AccumulateSelectedClosureDeals on purpose: that
+   // walk sees closing deals only, and a broker that charges half the
+   // commission on the way in would be under-reported by exactly half.
+   void AccumulateSelectedCommission(const long filter_identifier,
+                                     double &commission,
+                                     double &entry_volume)
+   {
+      commission = 0.0;
+      entry_volume = 0.0;
+
+      if(filter_identifier == 0)
+         return;
+
+      const int deals = HistoryDealsTotal();
+
+      for(int index = 0; index < deals; index++)
+      {
+         const ulong deal = HistoryDealGetTicket(index);
+         if(deal == 0)
+            continue;
+
+         if(HistoryDealGetInteger(deal, DEAL_POSITION_ID) != filter_identifier)
+            continue;
+
+         if(HistoryDealGetString(deal, DEAL_SYMBOL) != m_symbol)
+            continue;
+
+         const long magic = HistoryDealGetInteger(deal, DEAL_MAGIC);
+         if(magic < 0 || (ulong)magic != m_magic_number)
+            continue;
+
+         const double deal_commission = HistoryDealGetDouble(deal, DEAL_COMMISSION);
+         if(MathIsValidNumber(deal_commission))
+            commission += deal_commission;
+
+         if(HistoryDealGetInteger(deal, DEAL_ENTRY) == DEAL_ENTRY_IN)
+         {
+            const double deal_volume = HistoryDealGetDouble(deal, DEAL_VOLUME);
+            if(MathIsValidNumber(deal_volume) && deal_volume > 0.0)
+               entry_volume += deal_volume;
+         }
+      }
+   }
+
    void ResetFlattenCampaign()
    {
       m_flatten_campaign_reason = "";
@@ -894,6 +948,80 @@ private:
 
       m_last_reason = "Partial close rejected: " + description;
       return false;
+   }
+
+   // A full close of ONE ticket, used only by the time stop and the session-end
+   // flatten. Mirrors ClosePartial: the target is re-checked as this instance's
+   // position first, because the caller's selection may be stale by the time
+   // the order is built, and a close sent to a stranger's ticket is the one
+   // mistake this class exists to make impossible.
+   //
+   // Returns the XSPARK_CLOSE_RESULT_* class of the LAST attempt, never a bare
+   // boolean: the caller responds differently to a refusal, an outage and a
+   // moved price. A moved price is answered within this call, up to
+   // XSPARK_TIME_EXIT_MAX_ATTEMPTS, because the position is still there and
+   // waiting a tick would only give the market more room to move. Every
+   // attempt logs the trade-server result (AGENTS.md rule 16).
+   int ClosePosition(const ulong ticket,
+                     const string action,
+                     CXSparkLogger &logger)
+   {
+      if(!PositionSelectByTicket(ticket) || !PositionMatchesInstance())
+      {
+         m_last_reason = action + " target is no longer an XSpark-managed position.";
+         return XSPARK_CLOSE_RESULT_REJECT;
+      }
+
+      const double volume_before = PositionGetDouble(POSITION_VOLUME);
+      PrepareTradeContext();
+
+      int outcome = XSPARK_CLOSE_RESULT_REJECT;
+
+      for(int attempt = 1; attempt <= XSPARK_TIME_EXIT_MAX_ATTEMPTS; attempt++)
+      {
+         // CTrade leaves its previous result in place when the ticket cannot be
+         // selected, so a position that vanished between attempts - a broker
+         // stop hit under a requote - must be noticed here rather than read
+         // as the earlier retcode. Nothing is left to close; reconciliation
+         // will find the closure in history.
+         if(attempt > 1 && (!PositionSelectByTicket(ticket) || !PositionMatchesInstance()))
+         {
+            logger.Info("PositionManager",
+                        StringFormat("%s ticket=%I64u is no longer live before attempt %d; nothing left to close.",
+                                     action,
+                                     ticket,
+                                     attempt));
+            m_last_reason = action + ": the position closed before the retry.";
+            return XSPARK_CLOSE_RESULT_DONE;
+         }
+
+         const bool local_result = m_trade.PositionClose(ticket);
+         const long retcode = (long)m_trade.ResultRetcode();
+         const string description = m_trade.ResultRetcodeDescription();
+         outcome = XSparkCloseRetcodeClass(retcode);
+
+         logger.Info("PositionManager",
+                     StringFormat("%s close ticket=%I64u attempt=%d local_result=%s retcode=%I64d description=%s volume=%s",
+                                  action,
+                                  ticket,
+                                  attempt,
+                                  local_result ? "true" : "false",
+                                  retcode,
+                                  description,
+                                  DoubleToString(volume_before, VolumeDigits())));
+
+         if(outcome != XSPARK_CLOSE_RESULT_RETRY)
+            break;
+      }
+
+      if(outcome == XSPARK_CLOSE_RESULT_DONE)
+         m_last_reason = action + " confirmed.";
+      else if(outcome == XSPARK_CLOSE_RESULT_DEFER)
+         m_last_reason = action + " deferred by the trade server.";
+      else
+         m_last_reason = action + " rejected by the trade server.";
+
+      return outcome;
    }
 
    double LegalPartialCloseVolume(const double initial_volume,
@@ -1250,6 +1378,20 @@ private:
             XSparkRLedgerRecordOutcome(m_r_ledger, totals.net_profit);
          }
 
+         // What the broker actually charged for this round trip, per lot
+         // opened, for the EA to hold against the commission it was told. Only
+         // recorded when the closure was found: a figure built from a partial
+         // history would be a number with nothing behind it. Commission is
+         // negative in MT5 history, so the magnitude is what is kept.
+         double closure_commission = 0.0;
+         double closure_entry_volume = 0.0;
+         AccumulateSelectedCommission(state.identifier, closure_commission, closure_entry_volume);
+
+         m_last_closure_identifier = state.identifier;
+         m_last_closure_commission_per_lot = closure_entry_volume > 0.0
+                                             ? MathAbs(closure_commission) / closure_entry_volume
+                                             : 0.0;
+
          // The plan's Stage 2 gate is that every exit record satisfies
          // mfe_r >= mae_r. A violation means the excursion tracking is wrong,
          // not that the market did something unusual, so it is surfaced rather
@@ -1291,6 +1433,8 @@ public:
       m_last_registration_bound_state = false;
       m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
+      m_last_closure_identifier = 0;
+      m_last_closure_commission_per_lot = 0.0;
       ResetFlattenCampaign();
       XSparkResetRLedger(m_r_ledger);
    }
@@ -1333,6 +1477,8 @@ public:
       m_last_registration_bound_state = false;
       m_last_registration_position_closed = false;
       m_last_protection_repair_time = 0;
+      m_last_closure_identifier = 0;
+      m_last_closure_commission_per_lot = 0.0;
       ResetFlattenCampaign();
 
       // The ledger is per-run, and MT5 reruns OnInit on a parameter change, so a
@@ -1762,6 +1908,76 @@ public:
          // it is.
          if(m_trail_plan.mode == XSPARK_TRAIL_CANDLE_ANCHOR)
          {
+            // Time-based exits first, because a position that is due to close
+            // has no use for a better stop. Both rules are the plan's, so a
+            // caller that sets neither never reaches a close from here; and
+            // the risk-distance guard above means a position adopted without a
+            // record is never time-closed (ADR-018) - its broker stop and
+            // target are the whole of its management.
+            //
+            // A flatten campaign already owns every close under this Magic
+            // Number and paces its own retries; sending a second close from
+            // here would race it for the same ticket.
+            const bool time_due = m_trail_plan.max_hold_seconds > 0 &&
+                                  m_states[index].open_time > 0 &&
+                                  (long)server_time - (long)m_states[index].open_time >= (long)m_trail_plan.max_hold_seconds;
+            const bool session_due = m_trail_plan.flatten_after > 0 &&
+                                     server_time >= m_trail_plan.flatten_after;
+
+            if((time_due || session_due) && m_flatten_campaign_reason == "")
+            {
+               if(m_states[index].time_exit_reject_count < XSPARK_TIME_EXIT_MAX_REJECTS &&
+                  (m_states[index].time_exit_retry_after == 0 || server_time >= m_states[index].time_exit_retry_after))
+               {
+                  if(m_trail_plan.exit_max_spread > 0.0 && ask - bid > m_trail_plan.exit_max_spread)
+                  {
+                     // Deferred, not attempted, and not counted: a rollover
+                     // spread is the market's doing, and paying it to leave a
+                     // trade a few minutes early is the cost this check exists
+                     // to avoid.
+                     m_states[index].time_exit_retry_after = server_time + XSPARK_TIME_EXIT_RETRY_SECONDS;
+                  }
+                  else
+                  {
+                     const int outcome = ClosePosition(ticket, time_due ? "Time stop" : "Session close", logger);
+
+                     if(outcome == XSPARK_CLOSE_RESULT_DONE)
+                     {
+                        // A partial fill is DONE too: the remainder keeps its
+                        // ticket and its open time, so this fires again on the
+                        // next pass. Reconcile prunes a full close and logs it.
+                        Reconcile(logger);
+                        continue;
+                     }
+
+                     m_states[index].time_exit_retry_after = server_time + XSPARK_TIME_EXIT_RETRY_SECONDS;
+
+                     if(outcome == XSPARK_CLOSE_RESULT_DEFER)
+                     {
+                        // An outage is nobody's fault and must not use up the
+                        // rejections that would latch the time stop off.
+                        m_states[index].time_exit_reject_count = 0;
+                     }
+                     else
+                     {
+                        m_states[index].time_exit_reject_count++;
+
+                        if(m_states[index].time_exit_reject_count >= XSPARK_TIME_EXIT_MAX_REJECTS)
+                        {
+                           logger.Error("PositionManager",
+                                        StringFormat("%s for ticket=%I64u was rejected %d times in a row; the time stop is off for this position until the EA restarts; its broker stop and target are unaffected.",
+                                                     time_due ? "Time stop" : "Session close",
+                                                     ticket,
+                                                     m_states[index].time_exit_reject_count));
+                        }
+                     }
+                  }
+               }
+
+               // Fall through: the position keeps its broker stop and target,
+               // and the trail below still runs on it.
+            }
+
             // The peak advances once per candle, identified by its timestamp, so
             // a tick storm inside one candle cannot ratchet it repeatedly and a
             // restart mid-candle cannot double-count the same extreme.
@@ -2199,11 +2415,11 @@ public:
       m_flatten_last_signature = signature;
    }
 
-   int CountEntryDealsSince(const datetime from_time, const datetime to_time)
+   // Counts this instance's entry deals in whatever history selection is
+   // already in place. Shared by the telemetry count and the fail-closed one
+   // below so the two can never disagree about what an entry is.
+   int CountSelectedEntryDeals()
    {
-      if(!HistorySelect(from_time, to_time))
-         return 0;
-
       int count = 0;
       const int deals = HistoryDealsTotal();
 
@@ -2225,6 +2441,33 @@ public:
       }
 
       return count;
+   }
+
+   int CountEntryDealsSince(const datetime from_time, const datetime to_time)
+   {
+      if(!HistorySelect(from_time, to_time))
+         return 0;
+
+      return CountSelectedEntryDeals();
+   }
+
+   // The daily cap's count, which fails CLOSED where TradesToday() fails to
+   // zero. TradesToday() is telemetry for the panel, and a zero there costs a
+   // wrong number on a screen; a zero here would let a bot whose history is
+   // unavailable trade as if it had not traded at all. AGENTS.md rule 23.
+   bool EntryDealsToday(int &count)
+   {
+      count = 0;
+
+      datetime now = TimeTradeServer();
+      if(now == 0)
+         now = TimeCurrent();
+
+      if(!HistorySelect(XSparkServerDayStart(now), now))
+         return false;
+
+      count = CountSelectedEntryDeals();
+      return true;
    }
 
    int TradesToday()
@@ -2369,6 +2612,43 @@ public:
    double RecordedFitness(const double k, const int min_trades)
    {
       return XSparkRLedgerFitness(m_r_ledger, k, min_trades);
+   }
+
+   // Cash outcomes from the same ledger. A scalper is judged on these rather
+   // than on mean R, and they are kept beside the R moments so a reader of the
+   // OnTester line sees both numbers from one closure path.
+   int RecordedOutcomeCount()
+   {
+      return m_r_ledger.outcomes;
+   }
+
+   int RecordedWins()
+   {
+      return m_r_ledger.wins;
+   }
+
+   int RecordedLosses()
+   {
+      return m_r_ledger.losses;
+   }
+
+   double RecordedWinRate()
+   {
+      return XSparkRLedgerWinRate(m_r_ledger);
+   }
+
+   // The last closure whose commission was measured, and what it cost per lot
+   // opened, both ways. Zero until a trade has closed since startup. An EA
+   // polls the identifier for a change and compares the figure against the
+   // commission it was configured with.
+   long LastClosureIdentifier()
+   {
+      return m_last_closure_identifier;
+   }
+
+   double LastClosureCommissionPerLot()
+   {
+      return m_last_closure_commission_per_lot;
    }
 
    // Positions still live at end of test. The journal's trade count should equal

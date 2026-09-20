@@ -5,6 +5,7 @@ namespace MultiPositionTests {
 struct FakePosition {
  ulong ticket; long id; double entry=100, stop=98, volume=1, tp=110;
  string symbol="TEST"; long magic=999; long type=0;
+ datetime open_time=0; // what the broker reports as POSITION_TIME
 };
 std::vector<FakePosition> live;
 std::map<long,XSparkTradeState> saved;
@@ -30,6 +31,7 @@ long PositionGetInteger(int p) {
  if(p==POSITION_IDENTIFIER) return b.id;
  if(p==POSITION_MAGIC) return b.magic;
  if(p==POSITION_TYPE) return b.type;
+ if(p==POSITION_TIME) return b.open_time;
  return 100;
 }
 double PositionGetDouble(int p) {
@@ -84,9 +86,33 @@ public:
  XSparkTrailPlan m_trail_plan = MakeTrailPlan();
  bool close_first_fully=false;
  bool reject_partials=false;
+ // The per-ticket full close the time stop uses. Records every call, answers
+ // with a configurable result class, and on DONE removes the position - or
+ // halves it when partial_time_closes is set, modelling a partial fill.
+ std::vector<ulong> close_calls;
+ int close_result=XSPARK_CLOSE_RESULT_DONE;
+ bool partial_time_closes=false;
+ int ClosePosition(ulong ticket,const string&,CXSparkLogger&) {
+  if(!PositionSelectByTicket(ticket)) return XSPARK_CLOSE_RESULT_REJECT;
+  close_calls.push_back(ticket);
+  if(close_result!=XSPARK_CLOSE_RESULT_DONE) return close_result;
+  if(partial_time_closes) live[selected].volume/=2;
+  else {live.erase(live.begin()+selected);selected=-1;}
+  return XSPARK_CLOSE_RESULT_DONE;
+ }
+ // Mirrors production: only the persisted fields come back from storage. The
+ // ticket and the open time are broker truth and stay as the live position
+ // reported them, and every RAM-only field starts fresh. A whole-struct copy
+ // here once hid a real defect (ADR-031), and would hide the restart re-arm
+ // of the time stop the same way.
  bool LoadPersistedState(XSparkTradeState& s) {
   if(!saved.count(s.identifier)) return false;
-  auto ticket=s.ticket; s=saved.at(s.identifier); s.ticket=ticket; return true;
+  auto ticket=s.ticket; auto open=s.open_time; s=saved.at(s.identifier);
+  s.ticket=ticket; s.open_time=open;
+  s.time_exit_retry_after=0; s.time_exit_reject_count=0;
+  s.profit_retry_after=0; s.profit_reject_count=0;
+  s.partial_block_logged=false; s.profit_block_logged=false;
+  return true;
  }
  bool PersistStateChecked(XSparkTradeState& s,CXSparkLogger&) {saved[s.identifier]=s;return true;}
  void ClearPersistedState(XSparkTradeState& s) {saved.erase(s.identifier);}
@@ -145,6 +171,18 @@ void SeedShort() {
   s.initial_sl=b.stop;s.initial_tp=90;s.initial_lots=1;s.initial_risk_distance=2;
   saved[b.id]=s;
  }
+}
+// The two long positions, opened this many seconds before the stub's server
+// clock (47000), for the time stop.
+void SeedAged(long age_seconds) {
+ Seed();
+ for(auto& b:live) b.open_time=TimeTradeServer()-age_seconds;
+}
+void TimeOnce(Manager& m, double bid, double ask, int max_hold_seconds, datetime flatten_after, double exit_max_spread, CXSparkLogger& logger) {
+ XSparkTrailPlan plan = MakeTrailPlan(XSPARK_TRAIL_CANDLE_ANCHOR);
+ plan.max_hold_seconds = max_hold_seconds; plan.flatten_after = flatten_after; plan.exit_max_spread = exit_max_spread;
+ m.SetTrailPlan(plan);
+ m.ManagePositions(bid,ask,1,0,0,0,false,20,0,logger);
 }
 void TrailOnce(Manager& m, double bid, double ask, double anchor_long, double anchor_short, CXSparkLogger& logger) {
  XSparkTrailPlan plan = MakeTrailPlan(XSPARK_TRAIL_CANDLE_ANCHOR);
@@ -581,6 +619,169 @@ void Run() {
         XSparkVolumeFromRiskInputs(1.0,3.0,0.01,1.0,0.01,100.0,0.01,volume,loss_per_lot,why,3.0) && VolumeIs(volume,0.01) && why.find("raised to the broker minimum")!=string::npos);
   Check("sizer: a volume that meets the minimum is never changed by the cap",
         XSparkVolumeFromRiskInputs(100.0,3.0,0.01,1.0,0.01,100.0,0.01,volume,loss_per_lot,why,3.0) && VolumeIs(volume,0.33));
+ }
+
+ // The time stop and the session-end flatten, exercising the manager loop
+ // itself. Ages are seeded against the stub's server clock; the positions are
+ // long from 100 with a stop at 98 and 1.00 lots, and the bid/ask passed to
+ // ManagePositions is the spread the exit check sees.
+ {
+  const datetime now = TimeTradeServer();
+  const datetime cooldown = now + XSPARK_TIME_EXIT_RETRY_SECONDS;
+
+  SeedAged(100);Manager young;
+  TimeOnce(young,100,100.02,3600,0,0,logger);
+  Check("time stop: a position younger than the limit is untouched",young.close_calls.empty() && live.size()==2 && young.m_states.size()==2 && live[0].stop==98);
+
+  SeedAged(100);live[0].open_time=now-3600;Manager at_limit;
+  TimeOnce(at_limit,100,100.02,3600,0,0,logger);
+  Check("time stop: a position held exactly the limit is closed and its state pruned",at_limit.close_calls.size()==1 && at_limit.close_calls[0]==11 && live.size()==1 && live[0].id==202 && at_limit.m_states.size()==1 && at_limit.m_states[0].identifier==202 && !saved.count(101) && saved.count(202));
+  Check("time stop: the younger position beside it is untouched",VolumeIs(live[0].volume,1) && live[0].stop==98);
+  SeedAged(5000);Manager over_limit;
+  TimeOnce(over_limit,100,100.02,3600,0,0,logger);
+  Check("time stop: every position over the limit is closed",over_limit.close_calls.size()==2 && live.empty() && over_limit.m_states.empty());
+
+  SeedAged(100);Manager session_past;
+  TimeOnce(session_past,100,100.02,0,now-1,0,logger);
+  Check("session close: a flatten time in the past closes every position",session_past.close_calls.size()==2 && live.empty());
+  SeedAged(100);Manager session_now;
+  TimeOnce(session_now,100,100.02,0,now,0,logger);
+  Check("session close: the flatten instant itself closes",session_now.close_calls.size()==2 && live.empty());
+  SeedAged(100);Manager session_future;
+  TimeOnce(session_future,100,100.02,0,now+1,0,logger);
+  Check("session close: a flatten time in the future closes nothing",session_future.close_calls.empty() && live.size()==2);
+
+  // A rejected close backs off instead of re-sending on every tick, and latches
+  // off after enough consecutive rejections. The broker stop is never touched.
+  SeedAged(5000);Manager refused_close;refused_close.close_result=XSPARK_CLOSE_RESULT_REJECT;
+  TimeOnce(refused_close,100,100.02,3600,0,0,logger);
+  Check("a rejected time stop is attempted once per position and backs off",refused_close.close_calls.size()==2 && live.size()==2 && refused_close.m_states[0].time_exit_reject_count==1 && refused_close.m_states[0].time_exit_retry_after==cooldown);
+  TimeOnce(refused_close,100,100.02,3600,0,0,logger);
+  Check("a rejected time stop is not retried inside the cooldown",refused_close.close_calls.size()==2);
+  Check("a rejected time stop leaves the broker stop where it was",live[0].stop==98 && live[1].stop==98);
+  for(int attempt=0;attempt<XSPARK_TIME_EXIT_MAX_REJECTS+2;attempt++) {
+   for(auto& s:refused_close.m_states) s.time_exit_retry_after=0;
+   TimeOnce(refused_close,100,100.02,3600,0,0,logger);
+  }
+  Check("five rejections latch the time stop off for the position",refused_close.close_calls.size()==size_t(2*XSPARK_TIME_EXIT_MAX_REJECTS) && refused_close.m_states[0].time_exit_reject_count==XSPARK_TIME_EXIT_MAX_REJECTS && live.size()==2);
+  Check("a latched time stop still leaves the stop and the size alone",live[0].stop==98 && VolumeIs(live[0].volume,1) && VolumeIs(live[1].volume,1));
+
+  // A restart re-arms. The backoff is RAM-only in production; the whole-struct
+  // storage double would have carried a persisted count straight back, so it
+  // is planted in storage here and must NOT come back.
+  for(auto& b:live) {saved.at(b.id).time_exit_reject_count=XSPARK_TIME_EXIT_MAX_REJECTS; saved.at(b.id).time_exit_retry_after=now+99999;}
+  Manager rearmed;rearmed.close_result=XSPARK_CLOSE_RESULT_REJECT;
+  TimeOnce(rearmed,100,100.02,3600,0,0,logger);
+  Check("a restart re-arms the time stop with exactly one attempt per position",rearmed.close_calls.size()==2 && rearmed.close_calls[0]==11 && rearmed.close_calls[1]==22 && rearmed.m_states[0].time_exit_reject_count==1);
+  TimeOnce(rearmed,100,100.02,3600,0,0,logger);
+  Check("and the re-armed attempt backs off like any other",rearmed.close_calls.size()==2);
+
+  // An outage is nobody's fault: attempted, deferred, never counted, and it
+  // clears whatever count the position had.
+  SeedAged(5000);Manager outage;outage.close_result=XSPARK_CLOSE_RESULT_DEFER;
+  outage.Reconcile(logger);
+  for(auto& s:outage.m_states) s.time_exit_reject_count=3;
+  TimeOnce(outage,100,100.02,3600,0,0,logger);
+  Check("a deferred close is attempted, not counted, and resets a prior count",outage.close_calls.size()==2 && live.size()==2 && outage.m_states[0].time_exit_reject_count==0 && outage.m_states[1].time_exit_reject_count==0 && outage.m_states[0].time_exit_retry_after==cooldown);
+  TimeOnce(outage,100,100.02,3600,0,0,logger);
+  Check("a deferred close waits out its cooldown",outage.close_calls.size()==2);
+
+  // A wide spread defers WITHOUT a close call, and the close goes through once
+  // the spread is back inside the limit and the cooldown has passed.
+  SeedAged(5000);Manager wide;
+  TimeOnce(wide,100,100.2,3600,0,0.05,logger);
+  Check("a wide spread defers the time stop without a close call",wide.close_calls.empty() && live.size()==2 && wide.m_states[0].time_exit_retry_after==cooldown && wide.m_states[0].time_exit_reject_count==0);
+  TimeOnce(wide,100,100.02,3600,0,0.05,logger);
+  Check("a narrowed spread still waits out the deferral",wide.close_calls.empty());
+  for(auto& s:wide.m_states) s.time_exit_retry_after=0;
+  TimeOnce(wide,100,100.02,3600,0,0.05,logger);
+  Check("once the spread is inside the limit the time stop closes",wide.close_calls.size()==2 && live.empty());
+  SeedAged(5000);Manager unchecked_spread;
+  TimeOnce(unchecked_spread,100,100.2,3600,0,0,logger);
+  Check("a zero spread limit means no spread check",unchecked_spread.close_calls.size()==2 && live.empty());
+
+  SeedAged(1000000);Manager limits_off;
+  TimeOnce(limits_off,100,100.02,0,0,0,logger);
+  Check("with both limits off a position is never time-closed",limits_off.close_calls.empty() && live.size()==2 && live[0].stop==98);
+
+  // ADR-018: a position adopted without a record has no original risk, and
+  // that PROPERTY - not a separate guard - is what keeps it out of the time
+  // stop. Its broker stop and target are the whole of its management.
+  SeedAged(1000000);saved.clear();Manager adopted_old;
+  TimeOnce(adopted_old,100,100.02,60,now-1,0,logger);
+  Check("a position adopted without a record is never time-closed",adopted_old.close_calls.empty() && live.size()==2 && adopted_old.m_states.size()==2);
+  Check("and it is unmanaged because its original risk is unknown",adopted_old.m_states[0].initial_risk_distance==0.0 && adopted_old.m_states[1].initial_risk_distance==0.0);
+
+  // ScoreBot's mode never reaches the time stop, whatever the plan says.
+  SeedAged(1000000);Manager atr_mode;
+  XSparkTrailPlan timed_atr = MakeTrailPlan(XSPARK_TRAIL_ATR_AFTER_PARTIAL);
+  timed_atr.max_hold_seconds=60; timed_atr.flatten_after=now-1;
+  atr_mode.SetTrailPlan(timed_atr);
+  atr_mode.ManagePositions(99,99.1,1,2.5,50,2,false,20,0,logger);
+  Check("the partial-then-trail mode never time-closes",atr_mode.close_calls.empty() && atr_mode.partial_calls.empty() && live.size()==2);
+
+  // Another bot's position and another symbol's position, both far over the
+  // limit, are not this instance's to close.
+  SeedAged(5000);
+  live.push_back({33,303});live.back().magic=770331;live.back().open_time=now-1000000;
+  live.push_back({44,404});live.back().symbol="OTHER";live.back().open_time=now-1000000;
+  Manager foreign;
+  TimeOnce(foreign,100,100.02,3600,0,0,logger);
+  Check("the time stop closes this bot's positions and nobody else's",foreign.close_calls.size()==2 && foreign.close_calls[0]==11 && foreign.close_calls[1]==22 && live.size()==2 && live[0].id==303 && live[1].id==404);
+  Check("the foreign positions keep their size and stop",VolumeIs(live[0].volume,1) && VolumeIs(live[1].volume,1) && live[0].stop==98 && live[1].stop==98);
+
+  // A partial fill is DONE: the remainder keeps its ticket and its open time,
+  // the row stays, and the next pass closes the rest.
+  SeedAged(5000);Manager partial_fill;partial_fill.partial_time_closes=true;
+  TimeOnce(partial_fill,100,100.02,3600,0,0,logger);
+  Check("a partially filled time stop closes once per position and keeps the rows",partial_fill.close_calls.size()==2 && live.size()==2 && VolumeIs(live[0].volume,0.5) && VolumeIs(live[1].volume,0.5) && partial_fill.m_states.size()==2);
+  Check("a partial fill sets no backoff, so the remainder is retried at once",partial_fill.m_states[0].time_exit_retry_after==0 && partial_fill.m_states[0].time_exit_reject_count==0);
+  partial_fill.partial_time_closes=false;
+  TimeOnce(partial_fill,100,100.02,3600,0,0,logger);
+  Check("the next pass closes the remainder and prunes",partial_fill.close_calls.size()==4 && live.empty() && partial_fill.m_states.empty());
+
+  // A flatten campaign already owns every close under this Magic Number.
+  SeedAged(5000);Manager campaign;campaign.m_flatten_campaign_reason="Killswitch flatten";
+  TimeOnce(campaign,100,100.02,3600,now-1,0,logger);
+  Check("an open flatten campaign suppresses the time stop",campaign.close_calls.empty() && live.size()==2 && campaign.m_flatten_campaign_reason=="Killswitch flatten");
+
+  // The retcode classifier itself, one code of each class and the boundary
+  // ones a broker actually returns.
+  Check("retcode class: done, partial and placed are DONE",
+        XSparkCloseRetcodeClass(TRADE_RETCODE_DONE)==XSPARK_CLOSE_RESULT_DONE &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_DONE_PARTIAL)==XSPARK_CLOSE_RESULT_DONE &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_PLACED)==XSPARK_CLOSE_RESULT_DONE &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_POSITION_CLOSED)==XSPARK_CLOSE_RESULT_DONE);
+  Check("retcode class: a moved price is RETRY",
+        XSparkCloseRetcodeClass(TRADE_RETCODE_REQUOTE)==XSPARK_CLOSE_RESULT_RETRY &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_PRICE_CHANGED)==XSPARK_CLOSE_RESULT_RETRY &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_PRICE_OFF)==XSPARK_CLOSE_RESULT_RETRY);
+  Check("retcode class: an outage or a closed market is DEFER",
+        XSparkCloseRetcodeClass(TRADE_RETCODE_MARKET_CLOSED)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_TRADE_DISABLED)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_FROZEN)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_CONNECTION)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_TIMEOUT)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_TOO_MANY_REQUESTS)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_ONLY_REAL)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_LIMIT_ORDERS)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_LIMIT_VOLUME)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_SERVER_DISABLES_AT)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_CLIENT_DISABLES_AT)==XSPARK_CLOSE_RESULT_DEFER &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_LOCKED)==XSPARK_CLOSE_RESULT_DEFER);
+  Check("retcode class: a refusal of this request is REJECT, and so is anything unknown",
+        XSparkCloseRetcodeClass(TRADE_RETCODE_REJECT)==XSPARK_CLOSE_RESULT_REJECT &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_INVALID_STOPS)==XSPARK_CLOSE_RESULT_REJECT &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_NO_MONEY)==XSPARK_CLOSE_RESULT_REJECT &&
+        XSparkCloseRetcodeClass(TRADE_RETCODE_ERROR)==XSPARK_CLOSE_RESULT_REJECT &&
+        XSparkCloseRetcodeClass(0)==XSPARK_CLOSE_RESULT_REJECT);
+
+  // The plan's reset switches every time exit off, so a caller that never
+  // sets them - every caller before TrendScalp - is unchanged.
+  XSparkTrailPlan fresh; XSparkResetTrailPlan(fresh);
+  Check("a reset plan carries no time exit",fresh.max_hold_seconds==0 && fresh.flatten_after==0 && fresh.exit_max_spread==0.0);
+  XSparkTradeState blank; XSparkResetTradeState(blank);
+  Check("a reset state carries no time-exit backoff",blank.time_exit_retry_after==0 && blank.time_exit_reject_count==0);
  }
 }
 } // namespace

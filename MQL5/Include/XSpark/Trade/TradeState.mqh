@@ -346,7 +346,89 @@ struct XSparkTradeState
    // sent again on every tick for the rest of the trade.
    datetime               profit_retry_after;     // no attempt before this server time
    int                    profit_reject_count;    // consecutive rejections; latches the ladder off
+   // RAM-only backoff for the time stop and the session-end flatten, for the
+   // same reason as the pair above: once a position is past its hold limit it
+   // stays past it, so a rejected close would otherwise be re-sent on every
+   // tick until the broker stop or the target ended the trade. Never
+   // persisted: a restart rebuilds every record from broker truth and gets one
+   // fresh attempt, which is the behaviour the profit ladder already has.
+   datetime               time_exit_retry_after;  // no attempt before this server time
+   int                    time_exit_reject_count; // consecutive rejections; latches the time stop off
 };
+
+// Pacing for the per-ticket full close that the time stop and the session-end
+// flatten use. Thirty seconds between attempts is the ladder's cadence, long
+// enough that a broker refusing on price has a new price to refuse on and short
+// enough that a session-end close still lands inside the session. Five
+// consecutive rejections is the ladder's latch as well: something the broker
+// has refused five times in a row is not going to start working on the sixth,
+// and the position keeps its broker stop and target throughout.
+#define XSPARK_TIME_EXIT_RETRY_SECONDS 30
+#define XSPARK_TIME_EXIT_MAX_REJECTS 5
+// A requote is answered within the same pass because the position is still
+// there and only the price moved; three attempts covers a moving market without
+// turning one management pass into a burst of orders.
+#define XSPARK_TIME_EXIT_MAX_ATTEMPTS 3
+
+// What a close attempt's trade-server result means for the position that sent
+// it. Four classes, because the four call for four different responses and a
+// single "did it work" boolean collapses the three that did not into one.
+#define XSPARK_CLOSE_RESULT_DONE 0   // the close was accepted, in full or in part: reconcile
+#define XSPARK_CLOSE_RESULT_RETRY 1  // the price moved under the request: send again now
+#define XSPARK_CLOSE_RESULT_DEFER 2  // the market or the connection, not this position: wait, do not count
+#define XSPARK_CLOSE_RESULT_REJECT 3 // this request is refused: count it, latch off after enough
+
+// Classifies a trade-server return code from a full close.
+//
+// A partial fill is DONE: the remainder keeps its ticket, its identifier and
+// its open time, so the same rule fires on it again on the next pass. The
+// DEFER set is everything that is true of the market or the terminal rather
+// than of this request - a closed market, disabled trading, a frozen level, a
+// lost connection, a busy server - and is deliberately not counted, because
+// counting it would latch the time stop off during exactly the outage it
+// should survive. Everything else is a refusal of this request, and counting
+// those is what stops a rejected close from being re-sent on every tick.
+int XSparkCloseRetcodeClass(const long retcode)
+{
+   // A position the server reports as already closed is a close that has
+   // nothing left to do: the next reconciliation finds it in history.
+   if(retcode == TRADE_RETCODE_DONE ||
+      retcode == TRADE_RETCODE_DONE_PARTIAL ||
+      retcode == TRADE_RETCODE_PLACED ||
+      retcode == TRADE_RETCODE_POSITION_CLOSED)
+   {
+      return XSPARK_CLOSE_RESULT_DONE;
+   }
+
+   if(retcode == TRADE_RETCODE_REQUOTE ||
+      retcode == TRADE_RETCODE_PRICE_CHANGED ||
+      retcode == TRADE_RETCODE_PRICE_OFF)
+   {
+      return XSPARK_CLOSE_RESULT_RETRY;
+   }
+
+   // Autotrading switched off at either end, or a request the server is
+   // still processing, is likewise the terminal's state rather than this
+   // request's fault: an operator who pauses the bot for ten minutes must
+   // not come back to a time stop that has latched itself off.
+   if(retcode == TRADE_RETCODE_MARKET_CLOSED ||
+      retcode == TRADE_RETCODE_TRADE_DISABLED ||
+      retcode == TRADE_RETCODE_FROZEN ||
+      retcode == TRADE_RETCODE_CONNECTION ||
+      retcode == TRADE_RETCODE_TIMEOUT ||
+      retcode == TRADE_RETCODE_TOO_MANY_REQUESTS ||
+      retcode == TRADE_RETCODE_ONLY_REAL ||
+      retcode == TRADE_RETCODE_LIMIT_ORDERS ||
+      retcode == TRADE_RETCODE_LIMIT_VOLUME ||
+      retcode == TRADE_RETCODE_SERVER_DISABLES_AT ||
+      retcode == TRADE_RETCODE_CLIENT_DISABLES_AT ||
+      retcode == TRADE_RETCODE_LOCKED)
+   {
+      return XSPARK_CLOSE_RESULT_DEFER;
+   }
+
+   return XSPARK_CLOSE_RESULT_REJECT;
+}
 
 // What the caller wants done to open stops on this pass.
 //
@@ -371,6 +453,16 @@ struct XSparkTrailPlan
    // caller that set one and forgot the other would manage the trade by halves.
    // An empty ladder is the strategy's original behaviour and costs nothing.
    XSparkProfitLadder ladder;
+   // Time-based exits, which belong on the plan for the same reason the ladder
+   // does: they decide what happens to an open trade on this pass. A caller
+   // that leaves all three at zero - every caller before TrendScalp - gets a
+   // manager that never closes a position on time, exactly as before.
+   int      max_hold_seconds;    // close a position held at least this long; 0 = off
+   datetime flatten_after;       // close every managed position once server time reaches this; 0 = off
+   // While the spread is wider than this the close is deferred rather than
+   // sent, so a time stop that comes due across the daily rollover waits for
+   // the rollover spread to pass instead of paying it. 0 = no check.
+   double   exit_max_spread;
 };
 
 void XSparkResetTrailPlan(XSparkTrailPlan &plan)
@@ -385,6 +477,9 @@ void XSparkResetTrailPlan(XSparkTrailPlan &plan)
    plan.atr = 0.0;
    XSparkResetTrailTuning(plan.tuning);
    XSparkResetProfitLadder(plan.ladder);
+   plan.max_hold_seconds = 0;
+   plan.flatten_after = 0;
+   plan.exit_max_spread = 0.0;
 }
 
 void XSparkResetTradeState(XSparkTradeState &state)
@@ -413,6 +508,8 @@ void XSparkResetTradeState(XSparkTradeState &state)
    state.profit_block_logged = false;
    state.profit_retry_after = 0;
    state.profit_reject_count = 0;
+   state.time_exit_retry_after = 0;
+   state.time_exit_reject_count = 0;
 }
 
 #endif
