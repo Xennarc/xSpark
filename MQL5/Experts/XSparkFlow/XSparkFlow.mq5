@@ -165,6 +165,15 @@ XSparkTrailTuning g_trail_tuning;
 // config in OnInit so the two can never disagree.
 double g_flow_min_stop_atr_mult = XSPARK_CANDLEFLOW_MIN_STOP_ATR_MULT;
 
+// The risk and drawdown numbers the EA actually runs with. They are what the
+// operator typed unless XSparkCandleFlowResolveLimits had to correct it, and
+// every consumer below reads these rather than the raw inputs - so a corrected
+// value is corrected everywhere, not just where someone remembered.
+double g_flow_risk_pct = XSPARK_CANDLEFLOW_DEFAULT_RISK_PCT;
+double g_flow_daily_dd_pct = XSPARK_CANDLEFLOW_DEFAULT_DAILY_DD_PCT;
+double g_flow_total_dd_pct = XSPARK_CANDLEFLOW_DEFAULT_TOTAL_DD_PCT;
+bool   g_flow_use_killswitch = true;
+
 // When this instrument's weekend starts, read from the instrument. Resolved
 // once in OnInit and seeded with the fallback so a path that somehow reached
 // OnTick first would still close early rather than carry the gap.
@@ -265,47 +274,38 @@ bool XSparkFlowValidateInputs()
       return false;
    }
 
-   // Only what an operator can still get wrong is checked here. The slot count,
-   // the risk ceilings, the weekend time and the price tolerances are constants
-   // now, and a constant checked against another constant is not validation - it
-   // is a comment that costs a branch. The test suite covers them instead.
-   if(!MathIsValidNumber(InpFlowRiskPct) || InpFlowRiskPct <= 0.0 ||
-      InpFlowRiskPct > XSPARK_CANDLEFLOW_MAX_RISK_PCT)
-   {
-      g_logger.Critical("EA",
-                        StringFormat("Money risked on one trade must be above 0 and no more than %.2f%%.",
-                                     XSPARK_CANDLEFLOW_MAX_RISK_PCT));
-      return false;
-   }
+   // A NUMBER THE OPERATOR TYPED IS NEVER A REASON TO REFUSE TO START.
+   //
+   // Everything above this line is a fact about the account or the chart that
+   // no fallback can repair: the wrong margin mode merges positions, a stolen
+   // Magic Number manages another bot's trades, an unsupported period has no
+   // trend timeframe. Those are genuinely unrunnable.
+   //
+   // A percentage outside its range is not. Returning false here returns
+   // INIT_FAILED, and OnTick then never runs - so the trailing stop, the
+   // break-even lock, the profit ladder, the weekend close and the killswitch
+   // flatten all stop while live positions sit open at the broker. ADR-020
+   // decided that trade-off once already and decided it the other way. The
+   // resolver corrects, says what it corrected at CRITICAL, and lets the EA
+   // run.
+   g_flow_risk_pct = InpFlowRiskPct;
+   g_flow_daily_dd_pct = InpFlowMaxDailyDDPct;
+   g_flow_total_dd_pct = InpFlowMaxTotalDDPct;
+   g_flow_use_killswitch = InpFlowUseTotalDDKillSwitch;
 
-   if(!MathIsValidNumber(InpFlowMaxDailyDDPct) || InpFlowMaxDailyDDPct <= 0.0 || InpFlowMaxDailyDDPct >= 100.0)
-   {
-      g_logger.Critical("EA", "The daily stop must be a percentage above 0 and below 100.");
-      return false;
-   }
-
-   // The level is required to be a usable level even while the switch is off,
-   // so that turning the switch back on cannot reveal a configuration that was
-   // never checked. Off is expressed once, by the switch.
-   if(!MathIsValidNumber(InpFlowMaxTotalDDPct) || InpFlowMaxTotalDDPct <= 0.0 || InpFlowMaxTotalDDPct >= 100.0)
-   {
-      g_logger.Critical("EA",
-                        "The emergency stop level must be a percentage above 0 and below 100. "
-                        "To switch the emergency stop off, use its own setting rather than the level.");
-      return false;
-   }
-
-   // A daily stop at or above the emergency stop can never fire: the emergency
-   // stop closes everything first. Only meaningful while the emergency stop is
-   // switched on.
-   if(InpFlowUseTotalDDKillSwitch && InpFlowMaxDailyDDPct >= InpFlowMaxTotalDDPct)
-   {
-      g_logger.Critical("EA",
-                        StringFormat("The daily stop (%.2f%%) must be below the emergency stop (%.2f%%), or the daily one can never act.",
+   string limit_corrections = "";
+   if(!XSparkCandleFlowResolveLimits(InpFlowRiskPct,
                                      InpFlowMaxDailyDDPct,
-                                     InpFlowMaxTotalDDPct));
-      return false;
-   }
+                                     InpFlowMaxTotalDDPct,
+                                     InpFlowUseTotalDDKillSwitch,
+                                     g_flow_risk_pct,
+                                     g_flow_daily_dd_pct,
+                                     g_flow_total_dd_pct,
+                                     g_flow_use_killswitch,
+                                     limit_corrections))
+      g_logger.Critical("EA",
+                        "Settings were corrected so the bot could start. " + limit_corrections +
+                        "Fix them in Inputs so this does not repeat.");
 
    return true;
 }
@@ -1072,7 +1072,7 @@ void XSparkFlowEvaluateNewBarCore()
    XSparkScoreBotReport report;
    const bool eligible_signal = g_strategy.Evaluate(g_indicator_cache, signal, report);
    g_last_report = report;
-   g_last_report.selected_risk_pct = InpFlowRiskPct;
+   g_last_report.selected_risk_pct = g_flow_risk_pct;
 
    g_logger.Info("CandleFlow",
                  StringFormat("bar=%s dir=%s O=%.8f H=%.8f L=%.8f C=%.8f atr=%.8f anchor=%.8f status=%s",
@@ -1361,9 +1361,9 @@ int OnInit()
                                    true,
                                    XSPARK_CANDLEFLOW_SEED_SPREAD_CAP_POINTS,
                                    XSPARK_CANDLEFLOW_MAX_SPREAD_ATR_PCT,
-                                   InpFlowUseTotalDDKillSwitch,
-                                   InpFlowMaxTotalDDPct,
-                                   InpFlowMaxDailyDDPct,
+                                   g_flow_use_killswitch,
+                                   g_flow_total_dd_pct,
+                                   g_flow_daily_dd_pct,
                                    XSPARK_CANDLEFLOW_MAX_QUOTE_AGE_SECONDS,
                                    InpFlowClearKillswitchLatch,
                                    g_score_point_size,
@@ -1380,9 +1380,9 @@ int OnInit()
    // One risk percentage, presented to RiskManager as three identical tiers.
    // CandleFlow has no score to grade exposure by, so the tier lookup must not
    // be able to change the answer.
-   if(!g_risk_manager.Initialize(InpFlowRiskPct,
-                                 InpFlowRiskPct,
-                                 InpFlowRiskPct,
+   if(!g_risk_manager.Initialize(g_flow_risk_pct,
+                                 g_flow_risk_pct,
+                                 g_flow_risk_pct,
                                  XSPARK_CANDLEFLOW_MAX_RISK_PCT,
                                  XSPARK_CANDLEFLOW_MAX_OPEN_TRADES,
                                  XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT))
@@ -1448,7 +1448,7 @@ int OnInit()
    const double concurrent_cap = XSparkConcurrentRiskCap(XSPARK_CANDLEFLOW_MAX_OPEN_TRADES, XSPARK_CANDLEFLOW_MAX_RISK_PCT, XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT);
    g_logger.Info("RiskManager",
                  StringFormat("Trade slots=%d; per-entry risk %.2f%%; per-entry ceiling %.3f%%; account cap %.2f%%.",
-                              XSPARK_CANDLEFLOW_MAX_OPEN_TRADES, InpFlowRiskPct, concurrent_cap, XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT));
+                              XSPARK_CANDLEFLOW_MAX_OPEN_TRADES, g_flow_risk_pct, concurrent_cap, XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT));
 
    g_logger.Info("CandleFlow",
                  StringFormat("Rule: closed %s candle direction; stop beyond the wick by %.2f x range, floor %.2f x range.",

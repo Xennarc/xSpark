@@ -28,6 +28,38 @@ bool XSparkDirectionIsUnopposed(const string symbol, const ulong magic,
    return true;
 }
 
+// Decides what an initialising SafetyManager does with the PERSISTED
+// total-drawdown peak and latch, given the operator's clear-the-latch input.
+//
+// The clear input must be a one-shot: it may only act when there is a latch to
+// act on. MT5 reruns OnInit on an input change, a recompile, a chart-period
+// change, a reattach and a terminal restart, so a clear that also re-anchored
+// the peak when nothing was latched re-anchored it on every one of those. An
+// input left at true after a reset - which the log asks the operator to undo,
+// and which is therefore exactly the thing they forget - then reset the ruin
+// stop's measurement to whatever hole the account was in, repeatedly, and the
+// killswitch could never fire again. That is the failure the persisted peak
+// exists to prevent, reached through a different door.
+//
+// Pure so every branch is testable without a terminal or a trade server.
+void XSparkResolveKillswitchRestore(const bool clear_requested,
+                                    const bool stored_latch,
+                                    const double stored_peak,
+                                    bool &clear_a_latch,
+                                    bool &adopt_stored_peak,
+                                    bool &clear_is_inert)
+{
+   // Only a real latch is clearable, and only clearing one re-anchors the peak.
+   clear_a_latch = clear_requested && stored_latch;
+
+   // Anything else keeps the peak that was persisted, when there is one.
+   adopt_stored_peak = !clear_a_latch && stored_peak > 0.0;
+
+   // Asked to clear with nothing latched: the peak stands, and the operator is
+   // told the input is still armed rather than left to discover it later.
+   clear_is_inert = clear_requested && !stored_latch;
+}
+
 class CXSparkSafetyManager
 {
 private:
@@ -270,7 +302,17 @@ public:
       const double stored_peak = m_store.Get("tP", 0.0);
       const bool stored_latch = m_store.Get("tL", 0.0) >= 0.5;
 
-      if(clear_killswitch_latch)
+      bool clear_a_latch = false;
+      bool adopt_stored_peak = false;
+      bool clear_is_inert = false;
+      XSparkResolveKillswitchRestore(clear_killswitch_latch,
+                                     stored_latch,
+                                     stored_peak,
+                                     clear_a_latch,
+                                     adopt_stored_peak,
+                                     clear_is_inert);
+
+      if(clear_a_latch)
       {
          // Deliberate operator reset. A dedicated input rather than a side
          // effect of restarting, so it cannot happen by accident, and it
@@ -281,11 +323,11 @@ public:
          m_store.Set("tL", 0.0);
          logger.Critical("SafetyManager",
                          StringFormat("Total DD killswitch latch CLEARED by operator input. High-water equity "
-                                      "re-anchored to %.2f. Set InpClearKillswitchLatch back to false before "
-                                      "leaving the EA running.",
+                                      "re-anchored to %.2f. Set the clear-the-emergency-stop input back to "
+                                      "false before leaving the EA running.",
                                       live_equity));
       }
-      else if(stored_peak > 0.0)
+      else if(adopt_stored_peak)
       {
          m_runtime_high_water_equity = stored_peak;
          m_total_dd_killswitch_latched = stored_latch;
@@ -294,7 +336,7 @@ public:
             logger.Critical("SafetyManager",
                             StringFormat("Total DD killswitch latch RESTORED from persisted state (peak %.2f, "
                                          "equity %.2f). New entries stay blocked until the latch is cleared "
-                                         "explicitly via InpClearKillswitchLatch.",
+                                         "explicitly via this EA's clear-the-emergency-stop input.",
                                          stored_peak,
                                          live_equity));
          else
@@ -310,6 +352,16 @@ public:
          m_store.Set("tP", live_equity);
          m_store.Set("tL", 0.0);
       }
+
+      // An armed clear input that found nothing to clear left the peak alone,
+      // which is the whole point of the one-shot. Say so: the operator either
+      // meant to clear a latch that is not there, or forgot to set the input
+      // back after a reset, and both are worth one line in the log.
+      if(clear_is_inert)
+         logger.Warn("SafetyManager",
+                     StringFormat("The clear-the-emergency-stop input is still true, but nothing is latched. "
+                                  "The high-water equity was left at %.2f. Set the input back to false.",
+                                  m_runtime_high_water_equity));
 
       // A latch is a fact about the account, not about the switch: it records
       // that equity already fell past the limit. Switching the killswitch off
@@ -374,7 +426,7 @@ public:
             m_drawdown_state_valid = false;
 
          m_last_reason = StringFormat("Total DD killswitch latched at %.2f%% drawdown from persisted high-water equity %.2f. "
-                                      "The latch survives restarts; clear it deliberately with InpClearKillswitchLatch.",
+                                      "The latch survives restarts; clear it deliberately with this EA's clear-the-emergency-stop input.",
                                       m_total_dd_pct,
                                       m_runtime_high_water_equity);
          logger.Critical("SafetyManager", m_last_reason);

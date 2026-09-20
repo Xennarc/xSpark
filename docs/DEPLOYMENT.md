@@ -57,7 +57,7 @@ The VPS is production infrastructure, not the primary development environment.
 - Confirm automated trading permissions in MT5.
 - Confirm account-level and EA-level risk limits.
 - Read the startup line reporting the consecutive-loss tolerance, and confirm the number is one you are willing to sit through. It states how many consecutive full-stop losses latch the killswitch and the daily halt at the configured risk. A WARNING on that line means ordinary variance will latch the killswitch.
-- Confirm `InpClearKillswitchLatch` is **false**. The killswitch latch and the drawdown high-water mark now survive restarts, so leaving this input true would re-anchor the ruin stop on the next restart.
+- Confirm `InpClearKillswitchLatch` is **false**. It acts only when a latch is actually in force, so leaving it true no longer re-anchors the ruin stop on every restart — it logs a WARNING that the input is still armed. Set it back anyway: an input left on is an input you have stopped reading, and the next latch it meets is the one it clears.
 - After a killswitch latch: do not simply restart. Restarting preserves the latch by design. Review why it fired, then set `InpClearKillswitchLatch` true, attach, confirm the CRITICAL line reporting the reset, and set it back to false.
 - At the shipped defaults (3.0% per trade, 25% total, 15% daily) a 25% account drawdown is a permitted outcome of ordinary variance, not a fault. Confirm that is the drawdown you intend to accept before funding the account.
 - Confirm VPS time, connectivity, and MT5 login state.
