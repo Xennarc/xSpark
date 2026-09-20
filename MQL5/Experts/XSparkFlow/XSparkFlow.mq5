@@ -22,10 +22,12 @@
 // managing each other's positions.
 //
 // The rule: a closed base-timeframe candle that finished above its open opens a
-// long, below its open opens a short. No take-profit. The stop is placed beyond
-// that candle's far wick by a buffer, and is re-anchored to the far wick of
-// every later closed candle, tightening only. Change the chart period to change
-// the timeframe the rule runs on - nothing else needs tuning.
+// long, below its open opens a short. The stop is placed beyond that candle's
+// far wick by a buffer, and is re-anchored to the far wick of every later closed
+// candle, tightening only. Part of the trade is banked at configured distances
+// as it runs, and the remainder exits on that trailing stop unless a hard target
+// is configured too. Change the chart period to change the timeframe the rule
+// runs on - nothing else needs tuning.
 //
 // Setup guide and settings: docs/STRATEGY_CANDLEFLOW.md.
 
@@ -35,11 +37,12 @@ input bool   InpFlowAutoTuneForSymbol = true; // Auto-adjust settings to this ma
 input int    InpFlowMaxOpenTrades = 1; // How many trades this bot may hold at once (1-10)
 
 // WHAT THIS BOT DOES, in one paragraph. When a candle finishes higher than it
-// started, it buys. When a candle finishes lower than it started, it sells.
-// There is no profit target: the trade is closed by a stop-loss that follows
-// the price and only ever moves in your favour. Group 02 decides which candles
-// count, group 03 decides where the stop starts, and group 04 decides how it
-// follows. Everything after that is risk, safety and display.
+// started, it buys. When a candle finishes lower than it started, it sells. The
+// trade is protected by a stop-loss that follows the price and only ever moves
+// in your favour, and it can bank profit in steps along the way. Group 02
+// decides which candles count, group 03 decides where the stop starts, group 04
+// decides how it follows, and group 05 decides where profit comes off the
+// table. Everything after that is risk, safety and display.
 input group "02. Which candles count as a signal"
 input double InpFlowMinBodyATRMult = 0.0; // Ignore candles smaller than this x typical size (0 = all)
 
@@ -66,7 +69,35 @@ input double InpFlowTrailTightenFullR = XSPARK_TRAIL_DEFAULT_TIGHTEN_FULL_R; // 
 input double InpFlowBreakevenAtR = XSPARK_TRAIL_DEFAULT_BREAKEVEN_R; // Protect your entry at this much profit x amount risked
 input double InpFlowBreakevenOffsetR = XSPARK_TRAIL_DEFAULT_BREAKEVEN_OFFSET_R; // Park that stop this far past entry x amount risked
 
-input group "05. How much money to risk"
+// WHERE THE MONEY COMES OFF THE TABLE. With these all at 0 the trade has one
+// exit, the trailing stop, and it has to give back the whole trail distance
+// before that stop can act - so a trade that runs a long way and then turns
+// around is banked well below the best price it saw. Each level below closes a
+// slice of the trade once it has moved a fixed distance IN YOUR FAVOUR, which
+// is upward on a buy and downward on a sell, and whatever is left keeps running
+// on the trailing stop. "The amount risked" is the distance from your entry to
+// your first stop, so "2 x the amount risked" is twice that. Set BOTH of a
+// level's numbers to 0 to switch that level off - a level with one number set
+// and the other at 0 is refused at startup and blocks every new trade. The
+// levels are used in order, so level 2 does nothing unless level 1 is set. At
+// most 90% of the trade can be closed this way, so a part always remains under
+// the trailing stop.
+//
+// A small position may not be able to use them. Each step has to close at least
+// the broker's minimum lot AND leave at least that much behind, so on a minimum
+// of 0.01 lots a two-step ladder needs roughly 0.03 lots to work at all. A step
+// that cannot be closed legally is skipped, logged once, and the whole position
+// simply stays on its trailing stop.
+input group "05. Take-profit levels - bank profit as the trade runs"
+input double InpFlowTP1AtR = XSPARK_LADDER_DEFAULT_LEVEL1_R; // Take some profit at this gain x amount risked (0 = off)
+input double InpFlowTP1ClosePct = XSPARK_LADDER_DEFAULT_LEVEL1_PCT; // Close this much there, % of starting size (0 = level off)
+input double InpFlowTP2AtR = XSPARK_LADDER_DEFAULT_LEVEL2_R; // Take more profit at this gain x amount risked (0 = off)
+input double InpFlowTP2ClosePct = XSPARK_LADDER_DEFAULT_LEVEL2_PCT; // Close this much more, % of starting size (0 = level off)
+input double InpFlowTP3AtR = XSPARK_LADDER_DEFAULT_LEVEL3_R; // Take profit again at this gain x amount risked (0 = off)
+input double InpFlowTP3ClosePct = XSPARK_LADDER_DEFAULT_LEVEL3_PCT; // Close this much again, % of starting size (0 = level off)
+input double InpFlowFinalTargetR = XSPARK_LADDER_DEFAULT_FINAL_TARGET_R; // Close the rest at this gain x amount risked (0 = off)
+
+input group "06. How much money to risk"
 input double InpFlowRiskPct = 1.0; // Money risked on one trade (% of your balance)
 input double InpFlowMaxRiskPct = 3.5; // Hard ceiling on one trade, whatever else is set (%)
 input double InpFlowMaxAccountRiskPct = 6.0; // Ceiling on all open risk, this bot and any other (%)
@@ -74,12 +105,12 @@ input double InpFlowMaxDailyDDPct = 15.0; // Stop opening trades if the account 
 input bool   InpFlowUseTotalDDKillSwitch = true; // Use the emergency stop that closes everything
 input double InpFlowMaxTotalDDPct = 25.0; // Account fall that triggers the emergency stop (%)
 
-input group "06. Weekend protection"
+input group "07. Weekend protection"
 input bool   InpFlowUseWeekendClose = true; // Close this bot's trades before the market shuts Friday
 input int    InpFlowWeekendCloseHour = 20; // Friday closing hour on the broker's clock (0-23)
 input int    InpFlowWeekendCloseMinute = 0; // Friday closing minute (0-59)
 
-input group "07. On-screen panel and logging"
+input group "08. On-screen panel and logging"
 input ENUM_BASE_CORNER InpFlowDashboardCorner = CORNER_LEFT_UPPER; // Which corner the panel sits in
 input int    InpFlowDashboardMarginX = 12; // Panel gap from the left or right edge (pixels)
 input int    InpFlowDashboardMarginY = 18; // Panel gap from the top or bottom edge (pixels)
@@ -90,14 +121,14 @@ input int    InpFlowDashboardSizePct = 125; // Panel size, 125-200% (bigger is e
 
 // The two limits below are read ONLY by the filter above them, and only when
 // auto-adjust is off. Turning the filter off makes both numbers do nothing.
-input group "08. Optional filter - skip quiet or wild markets"
+input group "09. Optional filter - skip quiet or wild markets"
 input bool   InpFlowUseVolatilityGate = false; // Only trade when the market is moving a normal amount
 input double InpFlowATRMinPoints = 80.0; // Filter: quietest market allowed (price points)
 input double InpFlowATRMaxPoints = 800.0; // Filter: wildest market allowed (price points)
 
 // "Buy/sell gap" is the spread: the difference between the price you can buy at
 // and the price you can sell at. It is a cost you pay on every trade.
-input group "09. Advanced - auto-adjust percentages"
+input group "10. Advanced - auto-adjust percentages"
 input double InpFlowQuietMarketPct = 60.0; // Quiet limit, as % of this market's normal movement
 input double InpFlowWildMarketPct = 600.0; // Wild limit, as % of this market's normal movement
 input double InpFlowEntrySlipPct = 25.0; // Price drift allowed when opening (% of smallest stop)
@@ -105,30 +136,43 @@ input double InpFlowExitSlipPct = 85.0; // Price drift allowed when closing (% o
 input double InpFlowSpreadCapPct = 40.0; // Widest buy/sell gap allowed (% of smallest stop)
 input double InpFlowMaxSpreadATRPct = 10.0; // Widest buy/sell gap allowed (% of typical candle)
 
-input group "10. Advanced - broker safety checks"
+input group "11. Advanced - broker safety checks"
 input bool   InpFlowUseSpreadFilter = true; // Skip trades when the buy/sell gap is too wide
 input bool   InpFlowUseStopLevelValidation = true; // Respect the broker's minimum stop distance
 input bool   InpFlowUseMarginCheck = true; // Check there is enough free margin before opening
 input double InpFlowMarginBufferPct = 20.0; // Spare margin wanted on top of the trade's own (%)
 input int    InpFlowMaxQuoteAgeSeconds = 15; // Refuse to trade on prices older than this (seconds)
 
-input group "11. Advanced - manual limits, only when auto-adjust is off"
+input group "12. Advanced - manual limits, only when auto-adjust is off"
 input double InpFlowMaxSpreadPoints = 50.0; // Widest buy/sell gap allowed (price points)
 input double InpFlowEntryDeviationPoints = XSPARK_CANDLEFLOW_ENTRY_DEVIATION_POINTS; // Price drift allowed when opening (price points)
 input double InpFlowExitDeviationPoints = XSPARK_CANDLEFLOW_EXIT_DEVIATION_POINTS; // Price drift allowed when closing (price points)
 
-input group "12. Advanced - bot identity"
+input group "13. Advanced - bot identity"
 input ulong  InpFlowMagicNumber = XSPARK_CANDLEFLOW_MAGIC_DEFAULT; // This bot's ID tag - a different one per chart
 input string InpFlowOrderComment = XSPARK_CANDLEFLOW_COMMENT_DEFAULT; // Label shown beside these trades in your history
 
-input group "13. Recovery - use once, then switch back off"
+input group "14. Recovery - use once, then switch back off"
 input bool   InpFlowClearKillswitchLatch = false; // Clear the emergency stop once, then set back to false
 
-// CandleFlow sends no take-profit, so the execution engine's reward-ratio
-// bounds never apply to any plan it produces. The engine still validates its
-// configuration at startup, so it is handed a trivially valid pair rather than
-// a disabled one - a value it can never consume cannot mislead a reader.
+// With no hard target configured CandleFlow sends no take-profit, so the
+// execution engine's reward-ratio bounds never apply to any plan it produces.
+// The engine still validates its configuration at startup, so it is handed a
+// trivially valid pair rather than a disabled one - a value it can never
+// consume cannot mislead a reader.
 #define XSPARK_FLOW_UNUSED_RR 1.0
+
+// How far the broker-valid target may sit from the one the operator asked for
+// before the entry is refused rather than taken on terms nobody chose.
+//
+// The band is deliberately asymmetric. Broker stop-level validation only ever
+// pushes a take-profit FURTHER from the market, never closer, so the lower edge
+// exists only to absorb price-normalisation rounding while the upper edge is
+// the question "is this still the trade that was intended". A broker that has
+// to push the target more than a quarter past the requested distance is
+// answering no, and the entry is refused rather than silently retargeted.
+#define XSPARK_FLOW_TARGET_RR_MIN_FACTOR 0.95
+#define XSPARK_FLOW_TARGET_RR_MAX_FACTOR 1.25
 
 CXSparkLogger          g_logger;
 CXSparkMarketState     g_market_state;
@@ -177,6 +221,11 @@ double   g_closed_high = 0.0;
 double   g_closed_low = 0.0;
 datetime g_closed_time = 0;
 XSparkTrailTuning g_trail_tuning;
+// Scaled profit taking. Built once from the inputs and handed to PositionManager
+// with every trailing plan. An empty ladder is the strategy's original
+// behaviour, and is what a refused configuration falls back to so that a
+// profit-taking mistake can never disable a protective control.
+XSparkProfitLadder g_profit_ladder;
 
 string g_ui_decision_status = "", g_ui_decision_reason = "";
 string g_ui_entry_style = "Single-factor candle";
@@ -192,6 +241,30 @@ XSparkScoreBotReport g_last_report;
 string XSparkFlowBoolToString(const bool value)
 {
    return value ? "true" : "false";
+}
+
+// The configured ladder, in one line for the startup journal. The journal is the
+// only place an operator can confirm what the EA actually loaded, so a ladder
+// that was refused and emptied has to read as "off" here rather than echoing the
+// inputs that were rejected.
+string XSparkFlowLadderSummary()
+{
+   const int levels = XSparkProfitLadderActiveLevels(g_profit_ladder);
+
+   if(levels <= 0)
+      return "off";
+
+   string summary = "";
+
+   for(int index = 0; index < levels; index++)
+   {
+      summary += StringFormat("%s%.2fR/%.0f%%",
+                              index == 0 ? "" : ", ",
+                              g_profit_ladder.level_r[index],
+                              g_profit_ladder.level_pct[index]);
+   }
+
+   return summary;
 }
 
 string XSparkFlowDeinitReasonToString(const int reason)
@@ -482,6 +555,36 @@ void XSparkFlowVerboseBlock(const string component, const string reason)
 // volume is bounded here, against the live quote, because that is the price the
 // position is opened at - and because the floor that stops a thin candle from
 // producing an oversized position is only meaningful measured from the fill.
+// The planning-time take-profit price, from the reward ratio the signal carries.
+//
+// Planning only. The execution engine re-derives the target at send time from
+// the same ratio and the stop distance it actually gets, which is the only
+// distance the target is meaningful against - so this value exists to be checked
+// against the broker's stop level before the order is built, and to be shown to
+// the operator. A plan with no ratio has no target and the field stays zero,
+// which is exactly what the engine reads as "send no take-profit".
+bool XSparkFlowApplyPlanTarget(XSparkTradePlan &plan)
+{
+   plan.final_tp = 0.0;
+
+   if(!MathIsValidNumber(plan.dynamic_rr) || plan.dynamic_rr <= 0.0)
+      return true;
+
+   double target = 0.0;
+   if(!XSparkProfitLadderTargetPrice(plan.direction,
+                                     plan.entry_reference,
+                                     plan.risk_distance,
+                                     plan.dynamic_rr,
+                                     target))
+   {
+      g_last_block_reason = "The take-profit target could not be derived from the stop distance.";
+      return false;
+   }
+
+   plan.final_tp = XSparkNormalizePrice(plan.symbol, target);
+   return true;
+}
+
 bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
                                 const double risk_pct,
                                 XSparkTradePlan &plan)
@@ -570,9 +673,10 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
    // planning time would be silently discarded on the send path.
    plan.theoretical_sl = XSparkNormalizePrice(signal.symbol, bounded_stop);
    plan.final_sl = XSparkNormalizePrice(signal.symbol, adjusted_sl);
-   plan.final_tp = 0.0; // no target, by design
    plan.risk_distance = risk_distance;
-   plan.dynamic_rr = XSPARK_CANDLEFLOW_NO_TARGET_RR;
+   // Zero unless the operator configured a hard target, in which case this is
+   // the ratio the engine re-derives the take-profit from at send time.
+   plan.dynamic_rr = signal.dynamic_rr;
    plan.score = signal.score;
    plan.effective_threshold = signal.effective_threshold;
    plan.risk_pct = risk_pct;
@@ -581,6 +685,9 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
    plan.session_weight = signal.session_weight;
    plan.pattern_id = (EXSparkScoreBotPatternId)signal.pattern_id;
    plan.pattern_name = signal.pattern_name;
+
+   if(!XSparkFlowApplyPlanTarget(plan))
+      return false;
 
    double final_sl = 0.0;
    double final_tp = 0.0;
@@ -603,6 +710,11 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
    {
       plan.final_sl = final_sl;
       plan.risk_distance = MathAbs(plan.entry_reference - plan.final_sl);
+
+      // The target is a multiple of the stop distance, so a stop the broker moved
+      // is a target that moved with it. Re-derived rather than carried forward.
+      if(!XSparkFlowApplyPlanTarget(plan))
+         return false;
 
       if(!g_position_sizer.CalculateVolume(signal.symbol,
                                            risk_pct,
@@ -633,10 +745,46 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
       }
    }
 
-   if(final_tp != 0.0)
+   const bool wants_target = MathIsValidNumber(plan.dynamic_rr) && plan.dynamic_rr > 0.0;
+
+   if(!wants_target && final_tp != 0.0)
    {
       g_last_block_reason = "Protection validation produced a take-profit for a no-target plan.";
       return false;
+   }
+
+   if(wants_target && final_tp <= 0.0)
+   {
+      g_last_block_reason = "A take-profit target is configured but protection validation produced none.";
+      return false;
+   }
+
+   // The broker-valid target, which stop-level validation may have pushed
+   // further out than the requested distance. The engine re-derives and
+   // re-validates it against the refreshed quote before the order is sent; this
+   // is what the panel and the journal report in the meantime.
+   plan.final_tp = wants_target ? final_tp : 0.0;
+
+   // Judge the target HERE as well as at send time. The execution engine marks
+   // the signal bar as consumed before its first send attempt, so a target the
+   // engine would refuse discards that candle entirely; refusing it at planning
+   // time costs the same trade and leaves a reason on the panel instead.
+   if(wants_target)
+   {
+      const double planned_rr = plan.risk_distance > 0.0
+                                ? MathAbs(plan.final_tp - plan.entry_reference) / plan.risk_distance
+                                : 0.0;
+
+      if(planned_rr < InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MIN_FACTOR - 0.0000001 ||
+         planned_rr > InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MAX_FACTOR + 0.0000001)
+      {
+         g_last_block_reason = StringFormat("Broker-valid target is %.2f times the amount risked; the setting asks for %.2f and %.2f-%.2f is accepted.",
+                                            planned_rr,
+                                            InpFlowFinalTargetR,
+                                            InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MIN_FACTOR,
+                                            InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MAX_FACTOR);
+         return false;
+      }
    }
 
    return true;
@@ -647,10 +795,11 @@ void XSparkFlowLogEntry(XSparkTradePlan &plan,
                         const bool registered_exactly)
 {
    g_logger.Info("EA",
-                 StringFormat("Entry confirmed direction=%s entry=%s SL=%s TP=none lots=%s risk=%.2f%% candle=%s anchor_stop=%s order=%I64u deal=%I64u position_id=%I64d exact=%s",
+                 StringFormat("Entry confirmed direction=%s entry=%s SL=%s TP=%s lots=%s risk=%.2f%% candle=%s anchor_stop=%s order=%I64u deal=%I64u position_id=%I64d exact=%s",
                               XSparkDirectionName(plan.direction),
                               DoubleToString(plan.entry_reference, g_market_state.Digits()),
                               DoubleToString(plan.final_sl, g_market_state.Digits()),
+                              plan.final_tp > 0.0 ? DoubleToString(plan.final_tp, g_market_state.Digits()) : "none",
                               DoubleToString(plan.volume, 2),
                               plan.risk_pct,
                               TimeToString(plan.signal_bar_time, TIME_DATE | TIME_MINUTES),
@@ -1163,6 +1312,16 @@ int OnInit()
    config.atr_min_points = InpFlowATRMinPoints;
    config.atr_max_points = InpFlowATRMaxPoints;
    config.score_point_size = g_score_point_size;
+   config.final_target_r = InpFlowFinalTargetR;
+
+   XSparkResetProfitLadder(g_profit_ladder);
+   g_profit_ladder.level_r[0] = InpFlowTP1AtR;
+   g_profit_ladder.level_pct[0] = InpFlowTP1ClosePct;
+   g_profit_ladder.level_r[1] = InpFlowTP2AtR;
+   g_profit_ladder.level_pct[1] = InpFlowTP2ClosePct;
+   g_profit_ladder.level_r[2] = InpFlowTP3AtR;
+   g_profit_ladder.level_pct[2] = InpFlowTP3ClosePct;
+   g_profit_ladder.final_target_r = InpFlowFinalTargetR;
 
    XSparkResetTrailTuning(g_trail_tuning);
    g_trail_tuning.min_trail_atr_mult = InpFlowMinTrailATRMult;
@@ -1184,6 +1343,20 @@ int OnInit()
       g_config_valid = false;
       g_config_reason += " " + trail_reason;
    }
+
+   // Profit taking is refused separately, and the ladder is EMPTIED rather than
+   // carried through. New entries are blocked either way, but a mistyped
+   // take-profit level must never be able to disable the trailing stop that
+   // protects a position already open - so the plan the manager receives stays
+   // valid and simply stops taking profit.
+   string ladder_reason = "";
+   if(!XSparkValidateProfitLadder(g_profit_ladder, ladder_reason))
+   {
+      XSparkResetProfitLadder(g_profit_ladder);
+      g_config_valid = false;
+      g_config_reason += " " + ladder_reason;
+   }
+
    if(!g_config_valid)
       g_logger.Critical("CandleFlow", g_config_reason + " New entries blocked; existing positions remain managed.");
 
@@ -1238,6 +1411,18 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   // A target the ladder validation refused never reaches the engine: the band
+   // stays at the placeholder, and g_config_valid already blocks every entry, so
+   // no plan can carry a ratio these bounds would then have to judge.
+   double flow_min_rr = XSPARK_FLOW_UNUSED_RR;
+   double flow_max_rr = XSPARK_FLOW_UNUSED_RR;
+
+   if(g_config_valid && MathIsValidNumber(InpFlowFinalTargetR) && InpFlowFinalTargetR > 0.0)
+   {
+      flow_min_rr = InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MIN_FACTOR;
+      flow_max_rr = InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MAX_FACTOR;
+   }
+
    if(!g_execution_engine.Initialize(InpFlowMagicNumber,
                                      InpFlowOrderComment,
                                      InpFlowEntryDeviationPoints,
@@ -1245,8 +1430,8 @@ int OnInit()
                                      InpFlowUseStopLevelValidation,
                                      InpFlowUseMarginCheck,
                                      InpFlowMarginBufferPct,
-                                     XSPARK_FLOW_UNUSED_RR,
-                                     XSPARK_FLOW_UNUSED_RR,
+                                     flow_min_rr,
+                                     flow_max_rr,
                                      InpFlowMaxQuoteAgeSeconds,
                                      InpFlowMaxOpenTrades,
                                      InpFlowMaxAccountRiskPct))
@@ -1292,9 +1477,13 @@ int OnInit()
                                  : "off"));
 
    g_logger.Info("CandleFlow",
-                 StringFormat("Rule: closed %s candle direction; no take-profit; stop beyond the wick by %.2f x range + %.2f%% of the candle + %.2f points; "
+                 StringFormat("Rule: closed %s candle direction; take-profit levels %s; final target %s; stop beyond the wick by %.2f x range + %.2f%% of the candle + %.2f points; "
                               "stop floor %.2f x range; ceiling %s; body filter %s; movement gate %s.",
                               EnumToString(g_base_timeframe),
+                              XSparkFlowLadderSummary(),
+                              InpFlowFinalTargetR > 0.0
+                                 ? StringFormat("%.2fR, accepted broker-valid band %.2f-%.2f", InpFlowFinalTargetR, flow_min_rr, flow_max_rr)
+                                 : "off",
                               InpFlowBufferATRMult,
                               InpFlowBufferRangePct,
                               InpFlowBufferPoints,
@@ -1437,6 +1626,7 @@ void OnTick()
    trail_plan.closed_time = g_closed_time;
    trail_plan.atr = g_latest_closed_atr14;
    trail_plan.tuning = g_trail_tuning;
+   trail_plan.ladder = g_profit_ladder;
 
    if(!g_position_manager.SetTrailPlan(trail_plan))
       g_logger.Critical("PositionManager",

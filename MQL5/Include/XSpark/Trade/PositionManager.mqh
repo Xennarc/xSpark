@@ -145,6 +145,7 @@ private:
       ok = m_store.Set(PositionStateKey(state.identifier, "ma"), state.mae_price) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "pk"), state.trail_peak) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "pt"), (double)state.trail_peak_time) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "pl"), (double)state.profit_levels_taken) && ok;
 
       if(!ok)
          m_last_reason = "Failed to persist XSpark position state to terminal global variables.";
@@ -198,6 +199,12 @@ private:
       state.mae_price = m_store.Get(PositionStateKey(state.identifier, "ma"), state.mae_price);
       state.trail_peak = m_store.Get(PositionStateKey(state.identifier, "pk"), state.trail_peak);
       state.trail_peak_time = (datetime)m_store.Get(PositionStateKey(state.identifier, "pt"), (double)state.trail_peak_time);
+      // Sanitised rather than trusted. A stored mask that names a step this build
+      // does not have is read as "nothing banked", which is only safe because
+      // every step is re-tested against the live price before it can fire: a
+      // level the trade has not reached cannot be re-taken by forgetting it.
+      state.profit_levels_taken =
+         XSparkProfitLadderSanitizeMask((int)m_store.Get(PositionStateKey(state.identifier, "pl"), 0.0));
       return true;
    }
 
@@ -218,8 +225,11 @@ private:
       m_store.Delete(PositionStateKey(state.identifier, "bt"));
       m_store.Delete(PositionStateKey(state.identifier, "pi"));
       m_store.Delete(PositionStateKey(state.identifier, "rd"));
+      m_store.Delete(PositionStateKey(state.identifier, "mf"));
+      m_store.Delete(PositionStateKey(state.identifier, "ma"));
       m_store.Delete(PositionStateKey(state.identifier, "pk"));
       m_store.Delete(PositionStateKey(state.identifier, "pt"));
+      m_store.Delete(PositionStateKey(state.identifier, "pl"));
    }
 
    void RemoveStateAt(const int index)
@@ -906,6 +916,135 @@ private:
       return close_volume;
    }
 
+   // Scaled profit taking for one position on one management pass.
+   //
+   // Returns true when a step was banked. A confirmed partial is followed by a
+   // Reconcile, and Reconcile compacts the state array and can rebind a broker
+   // ticket - so a true return obliges the caller to re-resolve its own cursor,
+   // its ticket and anything it read from the position, before doing anything
+   // else with that row. Using the index this pass started with afterwards is
+   // exactly the stale-cursor bug the snapshot loop above exists to prevent.
+   //
+   // Returns false for every other outcome - no step due, no legal volume, a
+   // rejected close - and nothing has been disturbed. A step that could not be
+   // closed is deliberately NOT recorded as taken, so it is retried while its
+   // trigger price still holds.
+   //
+   // At most one step per call, by design. Each step is its own broker
+   // operation, and a pass that sent several would size the later ones from a
+   // volume the earlier ones have not been confirmed to have changed.
+   bool ApplyProfitLadder(const int index,
+                          const long identifier,
+                          const ulong snapshot_ticket,
+                          const double current_volume,
+                          const double exit_side_price,
+                          CXSparkLogger &logger)
+   {
+      if(index < 0 || index >= ArraySize(m_states))
+         return false;
+
+      if(!XSparkProfitLadderIsEnabled(m_trail_plan.ladder))
+         return false;
+
+      const ulong ticket = m_states[index].ticket;
+      const int digits = SymbolDigits();
+
+      int level_index = -1;
+      double close_pct = 0.0;
+      double trigger_price = 0.0;
+
+      // The trigger is measured against the exit-side price the caller sampled,
+      // and against the ORIGINAL entry risk. A position adopted without persisted
+      // state has no original risk, and the caller has already refused to manage
+      // it before reaching here.
+      if(!XSparkProfitLadderDueLevel(m_states[index].direction,
+                                     m_states[index].entry,
+                                     m_states[index].initial_risk_distance,
+                                     exit_side_price,
+                                     m_trail_plan.ladder,
+                                     m_states[index].profit_levels_taken,
+                                     level_index,
+                                     close_pct,
+                                     trigger_price))
+      {
+         return false;
+      }
+
+      // Sized from the volume the position OPENED with, never from what is left.
+      // Percentages of a shrinking remainder would bank a different share of the
+      // trade at every step than the operator configured, and would never reach
+      // zero, so the ladder could not be reasoned about from the Inputs tab.
+      const double close_volume = LegalPartialCloseVolume(m_states[index].initial_lots,
+                                                          current_volume,
+                                                          close_pct);
+
+      if(close_volume <= 0.0)
+      {
+         // Once a trigger price is crossed it stays crossed, so an unconditional
+         // warning here would repeat on every tick for the rest of the trade.
+         if(!m_states[index].profit_block_logged)
+         {
+            m_states[index].profit_block_logged = true;
+            logger.Warn("PositionManager",
+                        StringFormat("Take-profit level %d for ticket=%I64u has no legal close volume: initial=%s current=%s share=%.2f%%. "
+                                     "The whole position stays on its trailing stop.",
+                                     level_index + 1,
+                                     ticket,
+                                     DoubleToString(m_states[index].initial_lots, VolumeDigits()),
+                                     DoubleToString(current_volume, VolumeDigits()),
+                                     close_pct));
+         }
+
+         return false;
+      }
+
+      logger.Info("PositionManager",
+                  StringFormat("Take-profit level %d reached ticket=%I64u target=%s price=%s current_volume=%s close_volume=%s",
+                               level_index + 1,
+                               ticket,
+                               DoubleToString(trigger_price, digits),
+                               DoubleToString(exit_side_price, digits),
+                               DoubleToString(current_volume, VolumeDigits()),
+                               DoubleToString(close_volume, VolumeDigits())));
+
+      if(!ClosePartial(ticket, close_volume, logger))
+         return false;
+
+      Reconcile(logger);
+
+      int active_index = FindStateByIdentifier(identifier);
+      if(active_index < 0)
+         active_index = FindStateByTicket(ticket);
+      if(active_index < 0)
+         active_index = FindStateByTicket(snapshot_ticket);
+
+      if(active_index < 0)
+      {
+         logger.Error("PositionManager",
+                      StringFormat("Take-profit level %d was banked for identifier=%I64d but its state row vanished; "
+                                   "the step was not recorded and may repeat.",
+                                   level_index + 1,
+                                   identifier));
+         return true;
+      }
+
+      // Record the step before anything else can fail. Leaving the bit clear
+      // re-fires the same close on the next tick, which would keep banking the
+      // same share of the trade until the residual runs out.
+      m_states[active_index].profit_levels_taken =
+         XSparkProfitLadderMarkTaken(m_states[active_index].profit_levels_taken, level_index);
+      m_states[active_index].profit_block_logged = false;
+      PersistStateChecked(m_states[active_index], logger);
+
+      logger.Info("PositionManager",
+                  StringFormat("Take-profit level %d banked ticket=%I64u identifier=%I64d steps_taken=%d",
+                               level_index + 1,
+                               m_states[active_index].ticket,
+                               identifier,
+                               m_states[active_index].profit_levels_taken));
+      return true;
+   }
+
    void LogClosureIfPossible(XSparkTradeState &state, CXSparkLogger &logger)
    {
       datetime to_time = TimeTradeServer();
@@ -1497,6 +1636,46 @@ public:
                }
             }
 
+            // Profit first, then protection, in that order and on the same pass.
+            //
+            // Banking a step runs a Reconcile, which can compact the state array
+            // and rebind a broker ticket, so nothing sampled before it is still
+            // trustworthy afterwards. Everything the trail needs is therefore
+            // re-resolved below rather than reused - and the trail still runs,
+            // because the tick that just made the trade enough progress to bank a
+            // step is exactly the tick on which the stop most wants ratcheting.
+            ulong  trail_ticket = ticket;
+            double trail_tp = current_tp;
+
+            if(ApplyProfitLadder(index, identifiers[snapshot], tickets[snapshot],
+                                 current_volume, exit_side_price, logger))
+            {
+               index = FindStateByIdentifier(identifiers[snapshot]);
+               if(index < 0)
+                  index = FindStateByTicket(tickets[snapshot]);
+               if(index < 0)
+                  continue;
+
+               trail_ticket = m_states[index].ticket;
+
+               // A failed PositionSelectByTicket does NOT clear the terminal's
+               // previous selection, so without this the ratchet below would
+               // compare against whichever position MT5 still had selected.
+               if(!PositionSelectByTicket(trail_ticket) || !PositionMatchesInstance() ||
+                  !XSparkPositionIdentityMatches(PositionGetInteger(POSITION_IDENTIFIER),
+                                                 m_states[index].identifier))
+               {
+                  continue;
+               }
+
+               trail_tp = PositionGetDouble(POSITION_TP);
+
+               // direction, entry and risk_distance are NOT re-read. The
+               // identity check above proves this is the same broker position,
+               // and Reconcile leaves an already-tracked row's strategy metadata
+               // alone - it only adopts positions it did not already have.
+            }
+
             const double anchor = direction == XSPARK_SIGNAL_BUY ? m_trail_plan.anchor_long
                                                                  : m_trail_plan.anchor_short;
 
@@ -1541,11 +1720,11 @@ public:
                                  (live_sl <= 0.0 || adjusted_sl > live_sl) :
                                  (live_sl <= 0.0 || adjusted_sl < live_sl);
 
-            if(tighter && ModifyPositionStops(ticket, adjusted_sl, current_tp, "Candle trail", logger))
+            if(tighter && ModifyPositionStops(trail_ticket, adjusted_sl, trail_tp, "Candle trail", logger))
             {
                logger.Info("PositionManager",
                            StringFormat("Trail ticket=%I64u oldSL=%s newSL=%s anchor=%s peak=%s peakR=%.2f %s",
-                                        ticket,
+                                        trail_ticket,
                                         DoubleToString(live_sl, digits),
                                         DoubleToString(adjusted_sl, digits),
                                         DoubleToString(anchor, digits),
@@ -2050,6 +2229,15 @@ public:
    {
       string reason = "";
       if(!XSparkValidateTrailTuning(plan.tuning, reason))
+      {
+         m_last_reason = reason;
+         return false;
+      }
+
+      // Refused as one object. A plan whose trail was accepted and whose ladder
+      // was not would take profit on rules nothing validated, so neither half is
+      // adopted unless both are usable and the previous plan stays in force.
+      if(!XSparkValidateProfitLadder(plan.ladder, reason))
       {
          m_last_reason = reason;
          return false;

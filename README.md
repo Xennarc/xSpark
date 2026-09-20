@@ -11,9 +11,11 @@ XSpark has implemented its first strategy, ScoreBot_v3 MAX_SHARPE, behind safety
 A second strategy, [CandleFlow](docs/STRATEGY_CANDLEFLOW.md), ships as a separate
 Expert Advisor (`XSparkFlow.mq5`) that reuses the same safety, risk, execution,
 position-management and dashboard components. It is a single-factor rule: the
-direction of the closed candle, no take-profit, and a stop that re-anchors to
-each later candle's far wick. Both EAs can run on one account under different
-Magic Numbers. CandleFlow is untested and unvalidated for profitability.
+direction of the closed candle, a stop that re-anchors to each later candle's far
+wick, and a configurable ladder of partial take-profits that banks part of the
+trade at fixed distances while the rest runs on that stop. Both EAs can run on
+one account under different Magic Numbers. CandleFlow is untested and unvalidated
+for profitability.
 
 The EA is still under development and not production-approved. Trading is disabled by default with `InpEnableTrading = false`.
 

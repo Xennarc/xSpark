@@ -10,8 +10,25 @@
 ; WHAT THE BOT DOES
 ;   A 30-minute candle finishes higher than it started  -> it buys.
 ;   A 30-minute candle finishes lower than it started   -> it sells.
-;   There is no profit target. The trade ends when its stop-loss is hit.
+;   It banks 30% of the trade once it is 1.5 times the amount risked in
+;   front, and another 30% at 3 times. The remaining 40% has no target and
+;   ends when its stop-loss is hit.
 ;   The stop only ever moves in your favour, never away.
+;
+; WHY IT BANKS PROFIT IN STEPS
+;   A trailing stop can only act after the price has come back by the whole
+;   trail distance, so a trade that runs a long way and then turns around is
+;   closed well below the best price it saw. The two steps take most of that
+;   move off the table before the turn can reach it, and the 40% that is left
+;   keeps the open-ended upside the rule exists for.
+;
+;   Set InpFlowTP1AtR and InpFlowTP2AtR to 0 to get the original behaviour,
+;   where the trailing stop is the only exit.
+;
+;   A step needs enough lots to be legal: it must close at least the broker's
+;   minimum and leave at least that much behind. On a 0.01 minimum a two-step
+;   ladder needs about 0.03 lots. Below that the steps are skipped, logged
+;   once, and the trade simply runs on its trailing stop.
 ;
 ; HOW THE STOP MOVES, in plain terms
 ;   It starts just past the signal candle's far end.
@@ -48,6 +65,14 @@ InpFlowTrailTightenStartR=1.0
 InpFlowTrailTightenFullR=4.0
 InpFlowBreakevenAtR=1.2
 InpFlowBreakevenOffsetR=0.1
+
+InpFlowTP1AtR=1.5
+InpFlowTP1ClosePct=30.0
+InpFlowTP2AtR=3.0
+InpFlowTP2ClosePct=30.0
+InpFlowTP3AtR=0.0
+InpFlowTP3ClosePct=0.0
+InpFlowFinalTargetR=0.0
 
 InpFlowRiskPct=1.0
 InpFlowMaxRiskPct=3.5

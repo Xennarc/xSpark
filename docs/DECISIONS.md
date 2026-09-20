@@ -324,3 +324,57 @@ What did NOT change is anything that decides whether to trade. The body filter s
 That is the more useful file. It is the baseline the full configuration has to beat in the Tester, and the honest instruction attached to it is that if the stack does not beat the plain trail over the same period, the stack should be turned off rather than tuned. A preset that lets you disprove the default is worth more than one that repeats it.
 
 No profitability claim is made. The defaults are plausible, not measured, and neither configuration has been backtested.
+
+## ADR-031 - CandleFlow Banks Profit In Steps, And The Steps Only Ever Remove Exposure
+
+CandleFlow had one exit. The trailing stop was the whole thing, and a trailing stop can only act after the price has already come back — by the full trail distance, which on the shipped 3.0 ATR chandelier is a long way. The consequence is structural rather than a tuning error: a trade that runs a long way and turns around is booked well below the best price it saw, and the equity curve rises and then hands a large part of it back. An operator running it reported exactly that.
+
+Three things could have been done about it. Tightening the trail is the obvious one and the wrong one: it buys back the give-back by being stopped out of the moves that were still intact, which is the failure ADR-029's floor exists to prevent. A single hard take-profit is the second, and it caps the one part of the trade the strategy exists to hold. The third is to take money off the table on the way, in steps, and leave the rest running — which costs the give-back only on the part still open and leaves the open-ended upside untouched.
+
+### The ladder is a property of the position, not of the rule
+
+`Trade/ProfitLadder.mqh` sits beside `Trade/TrailingStop.mqh` for the same reason that one is not in `Strategy/`: taking profit in steps is something that happens to an open position, and `PositionManager` is what owns open positions. `CandleFlow.mqh` never sees the ladder. It gained exactly one field, a reward ratio for the optional hard target, because publishing a reward ratio on a signal is what `StrategyInterface` is already for.
+
+Every step is a multiple of the distance from the entry to that position's **first** stop, and every share is a percentage of the volume the position **opened** with. Percentages of a shrinking remainder were the alternative and are worse in a way that is not obvious until it bites: they bank a different share of the trade at every step than the one configured, and they never reach zero, so the ladder cannot be reasoned about from the Inputs tab.
+
+### Removing exposure is not weakening a risk control
+
+AGENTS.md rule 5 says never silently weaken a risk control, and rule 26 bars recovery sizing. A partial take-profit does neither, and it is worth saying why rather than asserting it. A step only ever closes volume the position already has. It cannot add, cannot re-enter, and cannot size from a previous outcome. The maximum loss of a trade after a step has fired is strictly smaller than it was before. The direction of the change is monotonic and it points the safe way, which is the reason this can ship on by default while a control that could ever increase exposure could not.
+
+What it does change is the *distribution* of outcomes, and that is a strategy question rather than a safety one. It is also the question the operator asked.
+
+### The steps can never close the whole position
+
+At most 90% of a trade may be banked across every step, and a configuration asking for more is refused at startup. This is a real invariant rather than a convenience: the residual is what keeps the trailing stop, the break-even lock and the weekend close in charge of the trade, and it means the only broker operation the ladder can ever cause is a partial close. No per-ticket full-close path was added, and `FlattenManagedExposure` — which loops every position under the Magic Number and latches a campaign shared with the killswitch — is not reachable from here.
+
+One step fires per management pass. Each is its own broker operation, and a pass that sent three would size the second and third from a volume the first had not been confirmed to have changed. A candle that jumps through every level banks one step per pass instead, at whatever the market is then, which is at or beyond the level either way because a trigger is only reached from the profitable side.
+
+### Profit first, then protection, on the same pass
+
+Banking a step runs a reconciliation, and reconciliation compacts the state array and can rebind a broker ticket. The first version of this ended the pass there and let the trail resume on the next tick. That is safe and it is wrong: the tick that made the trade enough progress to bank a step is the tick its stop most wants ratcheting on, and under the Strategy Tester's open-prices modelling "the next tick" is a whole candle later. The step now re-resolves the state row by identifier, re-selects the position, re-reads the live take-profit, and falls through to the trail. A failed re-selection leaves the position alone entirely, because a failed `PositionSelectByTicket` does not clear the terminal's previous selection and the ratchet would otherwise compare against a stranger's stop.
+
+### Which steps were banked is persisted, as a bitmask
+
+A step re-fired after a restart closes the same share of the trade twice. A step forgotten leaves money the operator configured to bank sitting on the trailing stop. Both are the failure `partial_done` was introduced for, and the fix is the same: record it before anything else can fail, and persist it.
+
+It is a bitmask rather than a count because a step that could not be closed does not block the steps above it — so the banked set is not necessarily a leading run. A stored value naming a step this build does not have is read as "nothing banked", which is only safe because every step is re-tested against the live price before it can fire.
+
+That new key exposed an older defect. `PersistState` wrote the two excursion keys and `ClearPersistedState` never deleted them, so every closed position left two terminal global variables behind until the once-per-session orphan sweep happened to run. They are deleted now, and the three key lists are compared **as source** by `tools/test_portable_logic.py`: the portable storage doubles copy whole structs, so a key missing from one list is invisible to any behavioural fixture, which is precisely how the omission survived. The build now fails on it.
+
+### The hard target ships off, and that is a recommendation
+
+`InpFlowFinalTargetR` puts a real broker-side take-profit on the remainder, and it defaults to zero. ADR-030 argued that a default nobody would recommend is a homework assignment, and this is not that: a fixed cap on the one part of the trade deliberately left running is the opposite of what the ladder above it is for. It exists for an operator who wants an exit that fills while the terminal is closed, and it is theirs to switch on.
+
+It is also the only setting in the group that reaches the entry path. `ExecutionEngine` already accepted a positive reward ratio; what changed is that XSparkFlow now hands it a real band instead of the placeholder pair. The band is 0.95× to 1.25× the requested distance and it is asymmetric on purpose, because broker stop-level validation only ever pushes a take-profit further from the market: the lower edge absorbs price rounding, the upper edge asks whether this is still the trade that was intended. Equal bounds would have been the natural-looking choice and would have rejected essentially every entry, because the reward-ratio comparison uses a 1e-7 epsilon while price normalisation moves the realised ratio by thousands of times that.
+
+That refusal is now also made at planning time. The engine marks a signal bar consumed before its first send attempt, so a target it would reject discards the candle entirely; refusing it earlier costs the same trade and leaves a reason on the panel instead of a warning in the journal.
+
+With the target at zero the send path is byte-for-byte what it was, and the defensive refusal that guarantees it — "a no-target plan produced a take-profit price" — is untouched.
+
+### The baseline preset had to change or it would have stopped being a baseline
+
+A `.set` file applies only the identifiers it lists. `xauusd-m30-candleflow-plain-trail.set` exists to be the honest comparison for the trailing stack, and left alone it would have silently become "plain trail plus ladder" the moment the ladder defaulted on. It now writes all seven take-profit settings out as explicit zeros. The same applies to any file an operator saved before this change: loading it restores their old trail settings and leaves the ladder at its new defaults, which is worth knowing before a Tester run is read as a comparison.
+
+### What is still unmeasured
+
+The step distances and shares are plausible, not measured, in exactly the sense ADR-029 used the phrase. No backtest, forward test or live result is recorded in this repository, including the one the operator described. The defaults are a recommendation for the failure that was reported; whether they are the right numbers is a question for the Strategy Tester, and the way to ask it is the same A/B the trailing stack already has — the two presets, the same period, both directions of the comparison run rather than assumed.

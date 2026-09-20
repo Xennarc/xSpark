@@ -60,6 +60,7 @@ public:
  int m_managed_position_count=0,m_unmanaged_position_count=0,m_flatten_attempts=0;
  std::vector<XSparkTradeState> m_states;
  std::vector<ulong> partial_calls, modify_calls;
+ std::vector<double> partial_volumes;
  XSparkTrailPlan m_trail_plan = MakeTrailPlan();
  bool close_first_fully=false;
  bool LoadPersistedState(XSparkTradeState& s) {
@@ -76,10 +77,22 @@ public:
  void FlattenManagedExposure(const string&,CXSparkLogger&,bool) {}
  void RepairMissingProtection(datetime,CXSparkLogger&) {}
  int VolumeDigits() {return 2;}
- double LegalPartialCloseVolume(double initial,double current,double pct) {return std::min(current,initial*pct/100);}
+ int SymbolDigits() {return 2;}
+ double volume_min=0.01, volume_step=0.01;
+ // Mirrors the production bounds: round the share of the INITIAL volume down to
+ // the lot step, refuse it below the broker minimum, refuse a close that would
+ // take the whole position, and refuse one that would leave an illegal residual.
+ double LegalPartialCloseVolume(double initial,double current,double pct) {
+  if(initial<=0||current<=0||pct<=0||volume_min<=0||volume_step<=0) return 0;
+  const double close=std::floor(initial*pct/100/volume_step+1e-9)*volume_step;
+  if(close<volume_min-1e-9||close>=current) return 0;
+  if(current-close<volume_min-1e-9) return 0;
+  return close;
+ }
  bool ClosePartial(ulong ticket,double volume,CXSparkLogger&) {
   if(!PositionSelectByTicket(ticket)) return false;
   partial_calls.push_back(ticket);
+  partial_volumes.push_back(volume);
   if(close_first_fully && ticket==11) {live.erase(live.begin()+selected);selected=-1;}
   else live[selected].volume-=volume;
   return true;
@@ -135,6 +148,20 @@ void TrailPlanned(Manager& m, double bid, double ask, CXSparkLogger& logger,
  plan.tuning.tighten_full_r = full_r;
  plan.tuning.breakeven_at_r = be_r;
  plan.tuning.breakeven_offset_r = be_offset;
+ m.SetTrailPlan(plan);
+ m.ManagePositions(bid,ask,1,0,0,0,false,20,0,logger);
+}
+// Lot arithmetic is a chain of divisions and multiplications by the lot step,
+// so an exact comparison here would be testing binary representation rather
+// than the rule. A tolerance far below the smallest lot step is the real check.
+bool VolumeIs(double actual, double expected) {return std::abs(actual-expected) < 0.000000001;}
+void LadderOnce(Manager& m, double bid, double ask, CXSparkLogger& logger,
+                double r1, double pct1, double r2, double pct2,
+                double anchor_long = 0, double anchor_short = 0) {
+ XSparkTrailPlan plan = MakeTrailPlan(XSPARK_TRAIL_CANDLE_ANCHOR);
+ plan.anchor_long = anchor_long; plan.anchor_short = anchor_short;
+ plan.ladder.level_r[0] = r1; plan.ladder.level_pct[0] = pct1;
+ plan.ladder.level_r[1] = r2; plan.ladder.level_pct[1] = pct2;
  m.SetTrailPlan(plan);
  m.ManagePositions(bid,ask,1,0,0,0,false,20,0,logger);
 }
@@ -253,5 +280,82 @@ void Run() {
  Check("exposure includes foreign trades but counts own slots",XSparkReadAccountExposure("TEST",999,all,own,other,count,reason) && all==6 && own==4 && other==2 && count==2);
  live[2].stop=0;
  Check("foreign position without stop blocks account admission",!XSparkReadAccountExposure("TEST",999,all,own,other,count,reason));
+
+ // Scaled profit taking, exercising the manager loop itself. The seeded
+ // positions are long from 100 with 2.0 of initial risk and 1.00 lots, so a
+ // step at 1.0R triggers at 102 and one at 2.0R at 104.
+ Seed();Manager ladder;
+ LadderOnce(ladder,101.9,102.0,logger,1.0,30,2.0,30);
+ Check("no step fires before its price is reached",ladder.partial_calls.empty() && VolumeIs(live[0].volume,1));
+ LadderOnce(ladder,102,102.1,logger,1.0,30,2.0,30);
+ Check("the first step closes its share of the starting size",ladder.partial_calls.size()==2 && VolumeIs(live[0].volume,0.7) && VolumeIs(live[1].volume,0.7));
+ Check("the banked step is recorded and persisted",ladder.m_states[0].profit_levels_taken==1 && saved.at(101).profit_levels_taken==1);
+ LadderOnce(ladder,102,102.1,logger,1.0,30,2.0,30);
+ Check("a banked step never fires twice at the same price",ladder.partial_calls.size()==2 && VolumeIs(live[0].volume,0.7));
+ LadderOnce(ladder,104,104.1,logger,1.0,30,2.0,30);
+ Check("the second step banks a share of the starting size, not of the remainder",ladder.partial_calls.size()==4 && VolumeIs(live[0].volume,0.4));
+ // 30% of the 1.00 lots the position OPENED with, both times. 30% of the 0.70
+ // remainder would have been 0.21, which is what a ladder sized from the live
+ // volume would have sent on the second step.
+ Check("every step is sized from the opening volume",VolumeIs(ladder.partial_volumes[0],0.3) && VolumeIs(ladder.partial_volumes[3],0.3));
+ Check("both banked steps are recorded",ladder.m_states[0].profit_levels_taken==3 && saved.at(101).profit_levels_taken==3);
+ LadderOnce(ladder,106,106.1,logger,1.0,30,2.0,30);
+ Check("an exhausted ladder stops closing",ladder.partial_calls.size()==4 && VolumeIs(live[0].volume,0.4));
+
+ // A restart mid-ladder must not re-bank what the trade already banked.
+ Manager reopened;
+ LadderOnce(reopened,104,104.1,logger,1.0,30,2.0,30);
+ Check("a restart mid-ladder repeats no step",reopened.partial_calls.empty() && VolumeIs(live[0].volume,0.4));
+ Check("a restart mid-ladder restores the banked steps",reopened.m_states[0].profit_levels_taken==3);
+
+ // Profit first, then protection, on the SAME pass: the tick that banked a
+ // step is the tick the stop most wants ratcheting on, and the state array it
+ // was banked through has been re-resolved by then.
+ Seed();Manager ordered;
+ LadderOnce(ordered,102,102.1,logger,1.0,30,2.0,30,/*anchor_long*/101);
+ Check("the pass that banks a step also trails the remainder",ordered.partial_calls.size()==2 && live[0].stop==101);
+ Check("banking and trailing on one pass keeps the position's own target",VolumeIs(live[0].tp,110));
+ LadderOnce(ordered,102,102.1,logger,1.0,30,2.0,30,103);
+ Check("the next pass trails normally with nothing left to bank",live[0].stop==103 && ordered.partial_calls.size()==2);
+
+ // A broker take-profit belongs to the position, and neither the ladder nor the
+ // trail may remove it. The seeded positions carry one at 110.
+ Seed();Manager keeps_target;
+ LadderOnce(keeps_target,102,102.1,logger,1.0,30,2.0,30,101);
+ Check("trailing never erases a live broker take-profit",VolumeIs(live[0].tp,110) && VolumeIs(live[1].tp,110));
+
+ // A ladder is only ever consulted by the candle-anchor exit; ScoreBot's mode
+ // must behave exactly as it always has.
+ Seed();Manager other_mode;
+ XSparkTrailPlan atr_plan = MakeTrailPlan(XSPARK_TRAIL_ATR_AFTER_PARTIAL);
+ atr_plan.ladder.level_r[0]=1.0; atr_plan.ladder.level_pct[0]=30;
+ other_mode.SetTrailPlan(atr_plan);
+ other_mode.ManagePositions(102,102.1,1,2.5,50,2,false,20,0,logger);
+ Check("the ladder never runs in the partial-then-trail mode",other_mode.partial_calls.empty() && VolumeIs(live[0].volume,1));
+
+ // A step whose share rounds below the broker minimum is skipped, and the
+ // position keeps every lot it has rather than being closed on a guess.
+ Seed();Manager tiny;
+ for(auto& b:live) {b.volume=0.02; saved[b.id].initial_lots=0.02;}
+ LadderOnce(tiny,102,102.1,logger,1.0,30,2.0,30);
+ Check("a step with no legal volume closes nothing",tiny.partial_calls.empty() && VolumeIs(live[0].volume,0.02));
+ Check("a skipped step is not recorded as banked",tiny.m_states[0].profit_levels_taken==0);
+
+ // Shorts bank on the way down.
+ SeedShort();Manager ladder_short;
+ LadderOnce(ladder_short,98.1,98.2,logger,1.0,30,2.0,30);
+ Check("a short's step is not due while price is above it",ladder_short.partial_calls.empty() && VolumeIs(live[0].volume,1));
+ LadderOnce(ladder_short,97.9,98.0,logger,1.0,30,2.0,30);
+ Check("a short banks its first step at its own price",ladder_short.partial_calls.size()==2 && VolumeIs(live[0].volume,0.7));
+
+ // An invalid ladder is refused as a whole plan, and the previously accepted
+ // plan stays in force rather than the trade being managed on nothing.
+ Seed();Manager refused;
+ XSparkTrailPlan bad = MakeTrailPlan(XSPARK_TRAIL_CANDLE_ANCHOR);
+ bad.ladder.level_r[0]=1.0; bad.ladder.level_pct[0]=60;
+ bad.ladder.level_r[1]=2.0; bad.ladder.level_pct[1]=60;
+ Check("a ladder that would close the whole position is refused by the manager",!refused.SetTrailPlan(bad));
+ refused.ManagePositions(102,102.1,1,0,0,0,false,20,0,logger);
+ Check("a refused ladder banks nothing",refused.partial_calls.empty() && VolumeIs(live[0].volume,1));
 }
 } // namespace

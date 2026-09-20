@@ -2,6 +2,7 @@
 #define XSPARK_TRADE_TRADE_STATE_MQH
 
 #include <XSpark/Strategy/ScoreBotTypes.mqh>
+#include <XSpark/Trade/ProfitLadder.mqh>
 #include <XSpark/Trade/TrailingStop.mqh>
 
 // How PositionManager moves a stop once a position is live.
@@ -284,7 +285,16 @@ struct XSparkTradeState
    // make a candle-close trail depend on when a tick happened to arrive.
    double                 trail_peak;
    datetime               trail_peak_time;        // the candle the peak was last advanced on
+   // Which scaled take-profit steps this position has already banked, one bit
+   // per step. Persisted, because a step re-fired after a restart would close
+   // the same share of the trade twice and a step forgotten would leave money
+   // the operator configured to bank sitting on the trailing stop instead.
+   int                    profit_levels_taken;
    bool                   partial_block_logged;   // RAM-only: throttles the "no legal partial" warning
+   // RAM-only: throttles the "no legal volume for this take-profit step"
+   // warning. Once a trigger price is crossed it stays crossed, so an
+   // unconditional warning would repeat on every tick for the rest of the trade.
+   bool                   profit_block_logged;
 };
 
 // What the caller wants done to open stops on this pass.
@@ -304,6 +314,12 @@ struct XSparkTrailPlan
    datetime closed_time;         // identifies the candle, so one candle updates a peak once
    double   atr;
    XSparkTrailTuning tuning;
+   // Scaled profit taking for the same position on the same pass. It travels
+   // with the trail for the same reason the anchors and the closed-candle
+   // extremes do: both decide what happens to one open trade on one pass, and a
+   // caller that set one and forgot the other would manage the trade by halves.
+   // An empty ladder is the strategy's original behaviour and costs nothing.
+   XSparkProfitLadder ladder;
 };
 
 void XSparkResetTrailPlan(XSparkTrailPlan &plan)
@@ -317,6 +333,7 @@ void XSparkResetTrailPlan(XSparkTrailPlan &plan)
    plan.closed_time = 0;
    plan.atr = 0.0;
    XSparkResetTrailTuning(plan.tuning);
+   XSparkResetProfitLadder(plan.ladder);
 }
 
 void XSparkResetTradeState(XSparkTradeState &state)
@@ -340,7 +357,9 @@ void XSparkResetTradeState(XSparkTradeState &state)
    state.mae_price = 0.0;
    state.trail_peak = 0.0;
    state.trail_peak_time = 0;
+   state.profit_levels_taken = 0;
    state.partial_block_logged = false;
+   state.profit_block_logged = false;
 }
 
 #endif

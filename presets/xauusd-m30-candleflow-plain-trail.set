@@ -2,7 +2,13 @@
 ;
 ; A deliberately stripped baseline for the Strategy Tester. The stop follows the
 ; last finished candle and nothing else: no following behind the best price, no
-; tightening as the trade matures, no protecting the entry.
+; tightening as the trade matures, no protecting the entry, and no profit taken
+; in steps along the way.
+;
+; The take-profit levels are written out as explicit zeros rather than left out.
+; A .set file only applies the settings it lists, so an omitted level would keep
+; whatever was already in the dialog - and the comparison this file exists for
+; would then be measuring the ladder as well as the trail.
 ;
 ; Run this against xauusd-m30-candleflow.set over the same period. If the full
 ; configuration does not beat this one, the extra machinery is not earning its
@@ -33,6 +39,14 @@ InpFlowTrailTightenStartR=0.0
 InpFlowTrailTightenFullR=0.0
 InpFlowBreakevenAtR=0.0
 InpFlowBreakevenOffsetR=0.0
+
+InpFlowTP1AtR=0.0
+InpFlowTP1ClosePct=0.0
+InpFlowTP2AtR=0.0
+InpFlowTP2ClosePct=0.0
+InpFlowTP3AtR=0.0
+InpFlowTP3ClosePct=0.0
+InpFlowFinalTargetR=0.0
 
 InpFlowRiskPct=1.0
 InpFlowMaxRiskPct=3.5

@@ -5,8 +5,9 @@ in its own Expert Advisor, `MQL5/Experts/XSparkFlow/XSparkFlow.mq5`, and reuses
 every shared component unchanged: safety, risk, sizing, execution, position
 management, state persistence and the chart dashboard.
 
-**Nothing in this document is a profitability claim.** CandleFlow has not been
-backtested, forward-tested or traded. Trading is disabled by default.
+**Nothing in this document is a profitability claim.** No backtest, forward test
+or live result is recorded in this repository, and none of the numbers below was
+measured. Trading is disabled by default.
 
 ## The rule
 
@@ -17,13 +18,14 @@ One factor, one candle:
 - A closed base-timeframe candle that finished **below** its open opens a
   **short**.
 - A candle that closed exactly at its open is not a signal.
-- **No take-profit.** The trade has one exit: its stop.
 - The stop is placed beyond that candle's **far wick** by a buffer — below the
   low for a long, above the high for a short.
 - On every later closed candle the stop is **re-anchored** to that candle's far
   wick, plus the same buffer. It can only ever tighten.
+- Part of the trade is **banked at fixed distances** as it runs, and the
+  remainder exits on that trailing stop.
 
-That is the whole strategy. There is no score, no pattern library, no trend
+That is the whole entry rule. There is no score, no pattern library, no trend
 filter and no session weighting.
 
 ## Changing the timeframe
@@ -48,6 +50,10 @@ rather than in points.
 | `InpFlowMinStopATRMult` | 0.25 | Stop floor. A stop closer than this to the fill is widened to it. |
 | `InpFlowMaxStopATRMult` | 0.0 | Stop ceiling. A wider stop refuses the entry. 0 disables it. |
 | `InpFlowMinBodyATRMult` | 0.0 | Ignore candles whose body is smaller than this. 0 disables it, keeping the rule literally single-factor. |
+| `InpFlowTP1AtR` / `InpFlowTP1ClosePct` | **1.5 / 30** | Bank 30% of the opening size once the trade is 1.5× its own risk in front. |
+| `InpFlowTP2AtR` / `InpFlowTP2ClosePct` | **3.0 / 30** | Bank another 30% at 3×. |
+| `InpFlowTP3AtR` / `InpFlowTP3ClosePct` | 0.0 / 0.0 | A third step, off by default. |
+| `InpFlowFinalTargetR` | 0.0 | A hard broker take-profit for whatever is left. Off by default — see below. |
 | `InpFlowUseVolatilityGate` | false | Only enter while the average range is inside the auto-calibrated band. Off by default. |
 | `InpFlowRiskPct` | 1.0 | Risk per trade, as a percentage of balance. |
 | `InpFlowUseWeekendClose` | true | Flatten this bot's trades before the Friday close. On by default: a position held on a trailing stop with no target carries the weekend gap. |
@@ -68,8 +74,9 @@ range plus a fixed pad is a valid configuration.
 
 ## The trailing stop
 
-CandleFlow has no take-profit, so the trailing stop **is** the strategy's exit.
-It is built from four layers. On each closed candle every enabled layer proposes
+The trailing stop is the exit for whatever the take-profit ladder leaves running,
+and the only exit at all when the ladder is switched off. It is built from four
+layers. On each closed candle every enabled layer proposes
 a stop, the **most protective** one wins, and the result is then bounded by the
 floor and by a one-way ratchet that refuses anything looser than the live stop.
 
@@ -81,6 +88,9 @@ floor and by a one-way ratchet that refuses anything looser than the live stop.
 | Breakeven lock | `InpFlowBreakevenAtR` / `InpFlowBreakevenOffsetR` | **1.2 / 0.1** | entry ± offset, once the trade has been that far in front |
 | Floor | `InpFlowMinTrailATRMult` | **0.35** | not a proposer — it pushes the winner away from the market if it landed too close |
 
+The trail governs whatever the take-profit ladder has not banked. The two are
+independent: the ladder never moves a stop, and the trail never closes volume.
+
 **The whole stack is on by default.** The numbers live in
 `Trade/TrailingStop.mqh` as `XSPARK_TRAIL_DEFAULT_*`, which is what the EA's
 inputs read and what `TestTrailingStop.mq5` validates — so a default that would
@@ -91,6 +101,112 @@ earns its complexity, run `presets/xauusd-m30-candleflow-plain-trail.set`
 against `presets/xauusd-m30-candleflow.set` over the same period: the plain file
 turns every layer off and leaves only the candle trail. If the full
 configuration does not beat it, turn the layers off rather than tuning them.
+
+## The take-profit ladder
+
+A trailing stop can only act **after** the price has come back. That is the whole
+cost of trailing: a trade that runs 6R and turns around is closed once the move
+has retraced by the full trail distance, which on the shipped 3.0 ATR chandelier
+is a long way. The equity curve rises and then gives a large part of it back, and
+the trade is booked well below the best price it ever saw.
+
+The ladder takes money off the table on the way, so the retrace only costs the
+part still running.
+
+| Step | Fires when the trade is | Closes | Leaves |
+| --- | --- | --- | --- |
+| 1 | 1.5 × its own initial risk in front | 30% of the **opening** size | 70% |
+| 2 | 3.0 × in front | another 30% of the opening size | 40% |
+| 3 | off by default | — | — |
+
+Every distance is a multiple of the distance from the entry to the **first** stop,
+so the ladder rescales with the instrument and the timeframe exactly as the trail
+does. Every percentage is of the volume the position **opened** with, never of
+what is left — percentages of a shrinking remainder would bank a different share
+of the trade at each step than the one configured, and would never reach zero.
+
+The arithmetic lives in `Trade/ProfitLadder.mqh`, beside the trailing stop and
+for the same reason: taking profit in steps is a property of an open position,
+not of an entry rule. `PositionManager` applies it; `CandleFlow.mqh` never sees
+it.
+
+### What a step can and cannot do
+
+- **It only ever removes exposure.** There is no adding, no re-entry and no
+  sizing from a previous outcome. A step cannot increase the risk the entry was
+  sized for, which is why it can ship on by default.
+- **It can never close the whole position.** The steps may close at most 90%
+  between them, and a configuration asking for more is refused at startup. The
+  residual is what keeps the trailing stop, the break-even lock and the weekend
+  close in charge of the trade.
+- **One step per management pass.** Each step is its own broker operation, and a
+  pass that sent three of them would size the second and third from a volume the
+  first has not been confirmed to have changed. A candle that jumps through every
+  level banks one step per pass instead, at whatever the market is then — which
+  is at or beyond the level either way, because a trigger is only ever reached
+  from the profitable side.
+- **The trigger is the exit-side price** — the Bid for a long, the Ask for a
+  short — because that is the price the position could actually be closed at.
+- **Profit first, then protection, on the same pass.** Banking a step runs a
+  reconciliation that can compact the state array and rebind a broker ticket, so
+  everything the trail needs is re-resolved afterwards rather than reused. The
+  trail still runs: the tick that made the trade enough progress to bank a step
+  is the tick its stop most wants ratcheting on.
+
+### A step that cannot be taken is skipped, not forced
+
+MT5 refuses a partial close that is below the symbol's minimum volume or that
+would leave a residual below it. A step whose share rounds under either bound is
+therefore skipped, logged once, and the whole position simply stays on its
+trailing stop.
+
+This is the common case on a small account, not an edge case. With a 0.01
+minimum lot the shipped two-step ladder needs roughly **0.03 lots** on the
+position before either step can fire. Below that the ladder is inert and the
+journal says so once per position.
+
+### Which steps have been banked survives a restart
+
+The set of banked steps is a bitmask persisted per position alongside the trail
+peak. A step re-fired after a restart would close the same share of the trade
+twice; a step forgotten would leave money the operator configured to bank sitting
+on the trailing stop instead. A stored value naming a step this build does not
+have is read as "nothing banked", which is safe only because every step is
+re-tested against the live price before it can fire — a level the trade has not
+reached cannot be re-taken by forgetting it.
+
+It is a bitmask rather than a count because a step that could not be closed does
+not block the steps above it, so the banked set is not necessarily a prefix.
+
+### The hard target ships off, and that is the recommendation
+
+`InpFlowFinalTargetR` places a real broker-side take-profit on the whole
+remainder. It is off by default, and not out of caution about an unproven
+feature: a fixed cap on the one part of the trade that is deliberately left
+running is the opposite of what the ladder above it is for. It exists for an
+operator who wants an exit that fills while the terminal is closed, and it is
+theirs to switch on.
+
+Switching it on is the only setting in the group that reaches the **entry** path.
+The execution engine derives the target from the ratio at send time and then
+judges the broker-valid result against a band of 0.95× to 1.25× the requested
+distance. The band is asymmetric because broker stop-level validation only ever
+pushes a take-profit *further* from the market: the lower edge absorbs price
+rounding, and the upper edge is the question "is this still the trade that was
+intended". A broker that has to push the target past the upper edge refuses the
+entry rather than silently retargeting it, and the refusal is made at planning
+time so the candle's signal is not consumed first.
+
+With `InpFlowFinalTargetR = 0` the order is sent with `TP = 0` exactly as before,
+and the defensive refusal that guarantees it is unchanged.
+
+### Turning the whole thing off
+
+Set `InpFlowTP1AtR` and `InpFlowTP2AtR` to 0 and the strategy is the original
+no-target rule, price for price. `presets/xauusd-m30-candleflow-plain-trail.set`
+writes all seven settings out as explicit zeros — a `.set` file applies only the
+identifiers it lists, so a baseline that omitted them would silently be measuring
+the ladder as well as the trail.
 
 ### The floor is not optional
 
@@ -229,12 +345,15 @@ Two shared components gained an additive, default-off capability:
    the send. ScoreBot_v3 always supplies a positive ratio, so its path is
    untouched.
 
-2. **`PositionManager.ManagePositions`** gained a trailing mode. The default,
+2. **`PositionManager.ManagePositions`** gained a trailing mode and, within it,
+   the take-profit ladder. The default,
    `XSPARK_TRAIL_ATR_AFTER_PARTIAL`, is ScoreBot_v3's existing behaviour —
    partial close, break-even, then an ATR trail. `XSPARK_TRAIL_CANDLE_ANCHOR`
-   takes an anchor price per direction from the caller, applies no partial and
-   no break-even step, and ratchets the stop toward the anchor, tightening only.
-   A missing anchor leaves the broker stop exactly where it is.
+   takes an anchor price per direction from the caller, applies no
+   break-even step, and ratchets the stop toward the anchor, tightening only.
+   A missing anchor leaves the broker stop exactly where it is. The ladder runs
+   inside that mode only, so a ladder handed to ScoreBot_v3's mode is never
+   consulted at all.
 
 `RiskManager` grades exposure by score and CandleFlow has no score, so every
 signal presents the same fixed value and XSparkFlow sets all three risk tiers to
@@ -261,7 +380,19 @@ anchor-trailing path of `PositionManager` through the C++ adapter and runs them:
 - the stop floor and ceiling, including a price that has already moved through
   the anchor;
 - the one-way ratchet in the manager loop, long and short, and that a missing
-  anchor leaves the stop untouched.
+  anchor leaves the stop untouched;
+- the take-profit ladder: validation of every refusable configuration, the
+  trigger prices in both directions, the banked-step bitmask, and — through the
+  real `ManagePositions` source against broker doubles — that a step closes a
+  share of the *opening* volume, never fires twice, is restored after a restart,
+  is skipped when no legal volume exists, never runs in ScoreBot's trailing mode,
+  and never erases a live broker take-profit.
+
+It also compares, as source rather than behaviour, the three key lists that write,
+restore and delete per-position state. The portable storage doubles copy whole
+structs, so a key missing from one of those lists is invisible to a behavioural
+fixture; that is how a pre-existing failure to delete the excursion keys went
+unnoticed, and the check now fails the build on it.
 
 This is **not** an MQL5 compiler and it does not emulate MT5. Native compilation
 is done with `tools/compile_mt5.ps1` on Windows, and broker behaviour must be
