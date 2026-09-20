@@ -687,6 +687,13 @@ void TestEntryDriftBound()
    Check("faults always carry a reason", StringLen(reason) > 0);
 }
 
+// A NaN produced at runtime, so the compiler cannot fold the check away.
+double ledger_nan_probe()
+{
+   const double infinity = 1.0e308 * 10.0;
+   return infinity - infinity;
+}
+
 // The optimisation fitness. The property that matters most is the one the plan
 // warns about: the fitness must NOT reward trading more at identical evidence.
 void TestRLedgerFitness()
@@ -710,22 +717,25 @@ void TestRLedgerFitness()
    Check("mean R is correct", NearlyEqual(XSparkRLedgerMean(ledger), 0.5));
    Check("min R is tracked", NearlyEqual(ledger.min_r, -1.0));
    Check("max R is tracked", NearlyEqual(ledger.max_r, 2.0));
-   Check("wins and losses are counted", ledger.wins == 2 && ledger.losses == 2);
-   Check("the win rate is wins over every recorded trade", NearlyEqual(XSparkRLedgerWinRate(ledger), 0.5));
+   Check("the R moments record no outcome by themselves", ledger.outcomes == 0 && ledger.wins == 0 && ledger.losses == 0);
+   Check("an empty outcome record has no win rate", NearlyEqual(XSparkRLedgerWinRate(ledger), 0.0));
 
-   // A scratch is neither a win nor a loss, and it still counts against the
-   // rate: three winners out of five recorded trades is 60%, not 75%.
-   XSparkRLedger scratched;
-   XSparkResetRLedger(scratched);
-   Check("an empty ledger has no win rate", NearlyEqual(XSparkRLedgerWinRate(scratched), 0.0));
-   XSparkRLedgerAdd(scratched, 1.0);
-   XSparkRLedgerAdd(scratched, 1.0);
-   XSparkRLedgerAdd(scratched, 1.0);
-   XSparkRLedgerAdd(scratched, 0.0);
-   XSparkRLedgerAdd(scratched, -1.0);
-   Check("a scratch is neither a win nor a loss",
-         scratched.count == 5 && scratched.wins == 3 && scratched.losses == 1);
-   Check("a scratch still counts against the win rate", NearlyEqual(XSparkRLedgerWinRate(scratched), 0.6));
+   // Outcomes are judged in cash. A time-stop exit a few points in front is a
+   // positive R and, after commission, a losing trade; it must count as one.
+   // A scratch that netted exactly zero is neither, and still counts against
+   // the rate: three winners out of five outcomes is 60%, not 75%.
+   XSparkRLedger outcomes;
+   XSparkResetRLedger(outcomes);
+   XSparkRLedgerRecordOutcome(outcomes, 12.50);
+   XSparkRLedgerRecordOutcome(outcomes, 0.05);
+   XSparkRLedgerRecordOutcome(outcomes, 3.00);
+   XSparkRLedgerRecordOutcome(outcomes, 0.0);
+   XSparkRLedgerRecordOutcome(outcomes, -0.07);
+   Check("wins and losses are counted in cash",
+         outcomes.outcomes == 5 && outcomes.wins == 3 && outcomes.losses == 1);
+   Check("a scratch still counts against the win rate", NearlyEqual(XSparkRLedgerWinRate(outcomes), 0.6));
+   XSparkRLedgerRecordOutcome(outcomes, ledger_nan_probe());
+   Check("an unusable outcome is not recorded", outcomes.outcomes == 5);
 
    // Sample stdev of {2,-1,-1,2}: deviations 1.5,-1.5,-1.5,1.5 -> sum sq 9 -> /3 = 3 -> sqrt = 1.7320508
    Check("sample stdev uses n-1", NearlyEqual(XSparkRLedgerStdDev(ledger), MathSqrt(3.0)));

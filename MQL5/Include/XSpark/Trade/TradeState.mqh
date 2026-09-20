@@ -183,11 +183,14 @@ struct XSparkRLedger
    double sum_r_squared;
    double min_r;
    double max_r;
-   // A trade that closed in front (R > 0) and one that closed behind (R < 0).
-   // A trade that closed exactly at its entry is neither, so wins + losses may
-   // be below the count. Kept beside the moments rather than derived from them
-   // because a scalper's stated objective is a win RATE, and a mean cannot be
-   // turned back into one.
+   // Outcomes counted in CASH, not in R. A time-stop exit two points in front
+   // is a positive R and, once commission is netted, a negative trade; a win
+   // rate that counted it as a win would flatter exactly the exits a scalper
+   // produces most. Recorded by a separate call from the R moments so the R
+   // arithmetic above stays what every existing test proves it is. A trade
+   // that netted exactly zero is an outcome that is neither a win nor a loss,
+   // and it still counts against the rate.
+   int    outcomes;
    int    wins;
    int    losses;
 };
@@ -199,6 +202,7 @@ void XSparkResetRLedger(XSparkRLedger &ledger)
    ledger.sum_r_squared = 0.0;
    ledger.min_r = 0.0;
    ledger.max_r = 0.0;
+   ledger.outcomes = 0;
    ledger.wins = 0;
    ledger.losses = 0;
 }
@@ -217,23 +221,34 @@ void XSparkRLedgerAdd(XSparkRLedger &ledger, const double r)
    ledger.count++;
    ledger.sum_r += r;
    ledger.sum_r_squared += r * r;
+}
 
-   if(r > 0.0)
+// One closed trade's outcome, judged on what actually reached the balance:
+// profit plus commission plus swap. Positive is a win, negative a loss, and
+// exactly zero is neither. An unusable number is not an outcome at all.
+void XSparkRLedgerRecordOutcome(XSparkRLedger &ledger, const double net_cash)
+{
+   if(!MathIsValidNumber(net_cash))
+      return;
+
+   ledger.outcomes++;
+
+   if(net_cash > 0.0)
       ledger.wins++;
-   else if(r < 0.0)
+   else if(net_cash < 0.0)
       ledger.losses++;
 }
 
-// Share of recorded trades that closed in front, as a fraction of ALL recorded
-// trades - a scratch counts against the rate rather than being dropped from
-// it, because a rate that ignored scratches would flatter a strategy whose
-// break-even lock turns winners into zeros. Zero when nothing is recorded.
+// Share of recorded outcomes that made money, as a fraction of ALL of them. A
+// scratch counts against the rate rather than being dropped from it, because
+// a rate that ignored scratches would flatter a strategy whose break-even
+// lock turns winners into zeros. Zero when nothing is recorded.
 double XSparkRLedgerWinRate(XSparkRLedger &ledger)
 {
-   if(ledger.count <= 0)
+   if(ledger.outcomes <= 0)
       return 0.0;
 
-   return (double)ledger.wins / (double)ledger.count;
+   return (double)ledger.wins / (double)ledger.outcomes;
 }
 
 double XSparkRLedgerMean(XSparkRLedger &ledger)

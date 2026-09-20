@@ -1243,7 +1243,12 @@ private:
          // including it would mean averaging a fabricated zero into the mean R
          // and quietly diluting the very statistic the optimisation reads.
          if(has_r)
+         {
             XSparkRLedgerAdd(m_r_ledger, realised_r);
+            // The win is judged on cash, not on R: commission and swap are
+            // in net_profit and are what decide whether the trade paid.
+            XSparkRLedgerRecordOutcome(m_r_ledger, totals.net_profit);
+         }
 
          // The plan's Stage 2 gate is that every exit record satisfies
          // mfe_r >= mae_r. A violation means the excursion tracking is wrong,

@@ -560,11 +560,13 @@ void Run() {
  // on. A scratch is neither a win nor a loss and still counts against the rate.
  XSparkRLedger ledger; XSparkResetRLedger(ledger);
  Check("an empty ledger has no win rate", XSparkRLedgerWinRate(ledger)==0.0);
- XSparkRLedgerAdd(ledger,1.0); XSparkRLedgerAdd(ledger,-1.0); XSparkRLedgerAdd(ledger,0.0); XSparkRLedgerAdd(ledger,0.5);
- Check("wins and losses are counted and a scratch is neither", ledger.count==4 && ledger.wins==2 && ledger.losses==1);
- Check("the win rate is wins over every recorded trade", XSparkRLedgerWinRate(ledger)==0.5);
- XSparkRLedgerAdd(ledger, std::numeric_limits<double>::quiet_NaN());
- Check("an unusable R is not recorded at all", ledger.count==4 && ledger.wins==2);
+ XSparkRLedgerRecordOutcome(ledger,12.5); XSparkRLedgerRecordOutcome(ledger,-0.07); XSparkRLedgerRecordOutcome(ledger,0.0); XSparkRLedgerRecordOutcome(ledger,0.05);
+ Check("wins and losses are counted in cash and a scratch is neither", ledger.outcomes==4 && ledger.wins==2 && ledger.losses==1);
+ Check("the win rate is wins over every recorded outcome", XSparkRLedgerWinRate(ledger)==0.5);
+ XSparkRLedgerRecordOutcome(ledger, std::numeric_limits<double>::quiet_NaN());
+ Check("an unusable outcome is not recorded at all", ledger.outcomes==4 && ledger.wins==2);
+ XSparkRLedgerAdd(ledger, 1.0);
+ Check("the R moments never record an outcome by themselves", ledger.count==1 && ledger.outcomes==4);
 
  // The small-account floor in the production sizing function: a budget too
  // small for the broker minimum is raised to it only inside an explicit cap,
