@@ -31,128 +31,59 @@
 //
 // Setup guide and settings: docs/STRATEGY_CANDLEFLOW.md.
 
+// WHAT YOU ACTUALLY CHOOSE, and why there is so little of it.
+//
+// A setting earns its place here only if you know something the code does not.
+// You know your account and your appetite for risk, so those are settings. You
+// do not know - and could not reasonably work out - how far a trailing stop
+// should sit behind the best price in multiples of the average candle, or what
+// slippage to allow as a percentage of the smallest stop. Those are not
+// settings; they are either fixed, or measured from the market itself.
+//
+// Everything the bot needs to know about THIS market - how wide the spread may
+// be, how much the price may drift while an order travels - it measures from
+// the instrument's own recent range when it starts. There is nothing to tune
+// per symbol, and no way to get it wrong.
 input group "01. Start here"
 input bool   InpFlowEnableTrading = false; // Place real trades (off = watch and log only)
-input bool   InpFlowAutoTuneForSymbol = true; // Auto-adjust settings to this market (leave on)
-input int    InpFlowMaxOpenTrades = 1; // How many trades this bot may hold at once (1-10)
-
-// WHAT THIS BOT DOES, in one paragraph. When a candle finishes higher than it
-// started, it buys. When a candle finishes lower than it started, it sells. The
-// trade is protected by a stop-loss that follows the price and only ever moves
-// in your favour, and it can bank profit in steps along the way. Group 02
-// decides which candles count, group 03 decides where the stop starts, group 04
-// decides how it follows, and group 05 decides where profit comes off the
-// table. Everything after that is risk, safety and display.
-input group "02. Which candles count as a signal"
-input double InpFlowMinBodyATRMult = 0.0; // Ignore candles smaller than this x typical size (0 = all)
-
-// The stop-loss starts just beyond the signal candle's far end - below the low
-// when buying, above the high when selling - so the trade is wrong only if the
-// candle that triggered it is undone. The gap settings below add together.
-input group "03. Where the stop-loss starts"
-input double InpFlowBufferATRMult = 0.10; // Gap past the candle's end, as x typical candle size
-input double InpFlowBufferRangePct = 0.0; // Extra gap, as % of the signal candle's own height
-input double InpFlowBufferPoints = 0.0; // Extra gap in price points (0 = none)
-input double InpFlowMinStopATRMult = 0.25; // Smallest stop allowed, as x typical candle size
-input double InpFlowMaxStopATRMult = 0.0; // Widest stop allowed; a wider one skips the trade (0 = off)
-
-// HOW THE STOP FOLLOWS. Each setting below suggests a place for the stop on
-// every finished candle, and the safest suggestion is used. The stop only ever
-// moves towards profit, never away. "The amount risked" means the distance from
-// your entry to your first stop - so "2 x the amount risked" is twice that.
-input group "04. Trailing stop - protects open profit"
-input double InpFlowMinTrailATRMult = XSPARK_TRAIL_DEFAULT_FLOOR_ATR; // Never park the stop closer than this x typical size
-input double InpFlowTrailATRMult = XSPARK_TRAIL_DEFAULT_ATR; // Follow this far behind the best price reached (0 = off)
-input double InpFlowTrailTightATRMult = XSPARK_TRAIL_DEFAULT_TIGHT_ATR; // Once the trade matures, follow this close instead
-input double InpFlowTrailTightenStartR = XSPARK_TRAIL_DEFAULT_TIGHTEN_START_R; // Start tightening at this much profit x amount risked
-input double InpFlowTrailTightenFullR = XSPARK_TRAIL_DEFAULT_TIGHTEN_FULL_R; // Fully tightened at this much profit x amount risked
-input double InpFlowBreakevenAtR = XSPARK_TRAIL_DEFAULT_BREAKEVEN_R; // Protect your entry at this much profit x amount risked
-input double InpFlowBreakevenOffsetR = XSPARK_TRAIL_DEFAULT_BREAKEVEN_OFFSET_R; // Park that stop this far past entry x amount risked
-
-// WHERE THE MONEY COMES OFF THE TABLE. With these all at 0 the trade has one
-// exit, the trailing stop, and it has to give back the whole trail distance
-// before that stop can act - so a trade that runs a long way and then turns
-// around is banked well below the best price it saw. Each level below closes a
-// slice of the trade once it has moved a fixed distance IN YOUR FAVOUR, which
-// is upward on a buy and downward on a sell, and whatever is left keeps running
-// on the trailing stop. "The amount risked" is the distance from your entry to
-// your first stop, so "2 x the amount risked" is twice that. Set BOTH of a
-// level's numbers to 0 to switch that level off - a level with one number set
-// and the other at 0 is refused at startup and blocks every new trade. The
-// levels are used in order, so level 2 does nothing unless level 1 is set. At
-// most 90% of the trade can be closed this way, so a part always remains under
-// the trailing stop.
-//
-// A small position may not be able to use them. Each step has to close at least
-// the broker's minimum lot AND leave at least that much behind, so on a minimum
-// of 0.01 lots a two-step ladder needs roughly 0.03 lots to work at all. A step
-// that cannot be closed legally is skipped, logged once, and the whole position
-// simply stays on its trailing stop.
-input group "05. Take-profit levels - bank profit as the trade runs"
-input double InpFlowTP1AtR = XSPARK_LADDER_DEFAULT_LEVEL1_R; // Take some profit at this gain x amount risked (0 = off)
-input double InpFlowTP1ClosePct = XSPARK_LADDER_DEFAULT_LEVEL1_PCT; // Close this much there, % of starting size (0 = level off)
-input double InpFlowTP2AtR = XSPARK_LADDER_DEFAULT_LEVEL2_R; // Take more profit at this gain x amount risked (0 = off)
-input double InpFlowTP2ClosePct = XSPARK_LADDER_DEFAULT_LEVEL2_PCT; // Close this much more, % of starting size (0 = level off)
-input double InpFlowTP3AtR = XSPARK_LADDER_DEFAULT_LEVEL3_R; // Take profit again at this gain x amount risked (0 = off)
-input double InpFlowTP3ClosePct = XSPARK_LADDER_DEFAULT_LEVEL3_PCT; // Close this much again, % of starting size (0 = level off)
-input double InpFlowFinalTargetR = XSPARK_LADDER_DEFAULT_FINAL_TARGET_R; // Close the rest at this gain x amount risked (0 = off)
-
-input group "06. How much money to risk"
 input double InpFlowRiskPct = 1.0; // Money risked on one trade (% of your balance)
-input double InpFlowMaxRiskPct = 3.5; // Hard ceiling on one trade, whatever else is set (%)
-input double InpFlowMaxAccountRiskPct = 6.0; // Ceiling on all open risk, this bot and any other (%)
+
+// HOW AN OPEN TRADE IS HANDLED. Two questions, asked once each. Every choice is
+// a complete, tested configuration, so there is no combination of numbers here
+// that can quietly stop the bot from trading.
+//
+// "The amount risked" means the distance from your entry to your first stop, so
+// "2 x the amount risked" is twice that distance in your favour.
+input group "02. How an open trade is handled"
+input EXSparkProfitStyle InpFlowProfitStyle = XSPARK_PROFIT_STYLE_BALANCED; // Taking profit as the trade runs
+input EXSparkTrailStyle  InpFlowTrailStyle = XSPARK_TRAIL_STYLE_BALANCED; // How much room the trade is given
+
+// THE DAILY LOSS LIMIT. A percentage of your account balance. Reaching it
+// pauses new entries for the rest of the broker day; open trades keep being
+// managed, and the next broker day starts clean.
+input group "03. Daily loss limit"
 input double InpFlowMaxDailyDDPct = 15.0; // Stop opening trades if the account falls this much today
-input bool   InpFlowUseTotalDDKillSwitch = true; // Use the emergency stop that closes everything
-input double InpFlowMaxTotalDDPct = 25.0; // Account fall that triggers the emergency stop (%)
 
-input group "07. Weekend protection"
-input bool   InpFlowUseWeekendClose = true; // Close this bot's trades before the market shuts Friday
-input int    InpFlowWeekendCloseHour = 20; // Friday closing hour on the broker's clock (0-23)
-input int    InpFlowWeekendCloseMinute = 0; // Friday closing minute (0-59)
+// THE EMERGENCY STOP. A separate, harsher control: it closes every trade this
+// bot owns and refuses to open another until you clear it deliberately.
+//
+// It is a switch rather than a level of zero because switching it off and
+// setting it back on must not make you retype the level you had. Testing is
+// exactly that case: over a long backtest the emergency stop would close the
+// account out partway through and leave the rest of the period untraded, so an
+// operator judging a full year turns it off, sees the whole equity curve, and
+// turns it back on for live trading with the level untouched.
+//
+// Off stops it from firing; it does not undo one that has already fired. A
+// latch from an earlier run still blocks entries, because it records that the
+// account did fall that far. Clearing that is a separate, deliberate act.
+input group "04. Emergency stop - off means the level below is ignored"
+input bool   InpFlowUseTotalDDKillSwitch = true; // Emergency stop: close everything on a big account fall
+input double InpFlowMaxTotalDDPct = 25.0; // Account fall that sets off the emergency stop (%)
 
-input group "08. On-screen panel and logging"
-input ENUM_BASE_CORNER InpFlowDashboardCorner = CORNER_LEFT_UPPER; // Which corner the panel sits in
-input int    InpFlowDashboardMarginX = 12; // Panel gap from the left or right edge (pixels)
-input int    InpFlowDashboardMarginY = 18; // Panel gap from the top or bottom edge (pixels)
-input bool   InpFlowVerboseLog = false; // Write detailed logs (for troubleshooting)
-input bool   InpFlowDashboardCompact = false; // Start with the small panel instead of the full one
-input bool   InpFlowDashboardAnimate = true; // Animate the panel so you can see it is running
-input int    InpFlowDashboardSizePct = 125; // Panel size, 125-200% (bigger is easier to read)
-
-// The two limits below are read ONLY by the filter above them, and only when
-// auto-adjust is off. Turning the filter off makes both numbers do nothing.
-input group "09. Optional filter - skip quiet or wild markets"
-input bool   InpFlowUseVolatilityGate = false; // Only trade when the market is moving a normal amount
-input double InpFlowATRMinPoints = 80.0; // Filter: quietest market allowed (price points)
-input double InpFlowATRMaxPoints = 800.0; // Filter: wildest market allowed (price points)
-
-// "Buy/sell gap" is the spread: the difference between the price you can buy at
-// and the price you can sell at. It is a cost you pay on every trade.
-input group "10. Advanced - auto-adjust percentages"
-input double InpFlowQuietMarketPct = 60.0; // Quiet limit, as % of this market's normal movement
-input double InpFlowWildMarketPct = 600.0; // Wild limit, as % of this market's normal movement
-input double InpFlowEntrySlipPct = 25.0; // Price drift allowed when opening (% of smallest stop)
-input double InpFlowExitSlipPct = 85.0; // Price drift allowed when closing (% of smallest stop)
-input double InpFlowSpreadCapPct = 40.0; // Widest buy/sell gap allowed (% of smallest stop)
-input double InpFlowMaxSpreadATRPct = 10.0; // Widest buy/sell gap allowed (% of typical candle)
-
-input group "11. Advanced - broker safety checks"
-input bool   InpFlowUseSpreadFilter = true; // Skip trades when the buy/sell gap is too wide
-input bool   InpFlowUseStopLevelValidation = true; // Respect the broker's minimum stop distance
-input bool   InpFlowUseMarginCheck = true; // Check there is enough free margin before opening
-input double InpFlowMarginBufferPct = 20.0; // Spare margin wanted on top of the trade's own (%)
-input int    InpFlowMaxQuoteAgeSeconds = 15; // Refuse to trade on prices older than this (seconds)
-
-input group "12. Advanced - manual limits, only when auto-adjust is off"
-input double InpFlowMaxSpreadPoints = 50.0; // Widest buy/sell gap allowed (price points)
-input double InpFlowEntryDeviationPoints = XSPARK_CANDLEFLOW_ENTRY_DEVIATION_POINTS; // Price drift allowed when opening (price points)
-input double InpFlowExitDeviationPoints = XSPARK_CANDLEFLOW_EXIT_DEVIATION_POINTS; // Price drift allowed when closing (price points)
-
-input group "13. Advanced - bot identity"
+input group "05. Advanced - rarely touched"
 input ulong  InpFlowMagicNumber = XSPARK_CANDLEFLOW_MAGIC_DEFAULT; // This bot's ID tag - a different one per chart
-input string InpFlowOrderComment = XSPARK_CANDLEFLOW_COMMENT_DEFAULT; // Label shown beside these trades in your history
-
-input group "14. Recovery - use once, then switch back off"
+input bool   InpFlowVerboseLog = false; // Write detailed logs (for troubleshooting)
 input bool   InpFlowClearKillswitchLatch = false; // Clear the emergency stop once, then set back to false
 
 // With no hard target configured CandleFlow sends no take-profit, so the
@@ -161,6 +92,14 @@ input bool   InpFlowClearKillswitchLatch = false; // Clear the emergency stop on
 // trivially valid pair rather than a disabled one - a value it can never
 // consume cannot mislead a reader.
 #define XSPARK_FLOW_UNUSED_RR 1.0
+
+// The panel's placement and size. Presentation, not strategy: an operator who
+// wants it elsewhere can drag the chart, and four inputs to move a box is four
+// inputs that are not about trading.
+#define XSPARK_FLOW_PANEL_CORNER CORNER_LEFT_UPPER
+#define XSPARK_FLOW_PANEL_MARGIN_X 12
+#define XSPARK_FLOW_PANEL_MARGIN_Y 18
+#define XSPARK_FLOW_PANEL_SIZE_PCT 125
 
 // How far the broker-valid target may sit from the one the operator asked for
 // before the entry is refused rather than taken on terms nobody chose.
@@ -221,6 +160,17 @@ double   g_closed_high = 0.0;
 double   g_closed_low = 0.0;
 datetime g_closed_time = 0;
 XSparkTrailTuning g_trail_tuning;
+// The stop floor the whole calibration is measured against. Seeded from the
+// strategy's own constant so it is never zero, and re-read from the validated
+// config in OnInit so the two can never disagree.
+double g_flow_min_stop_atr_mult = XSPARK_CANDLEFLOW_MIN_STOP_ATR_MULT;
+
+// When this instrument's weekend starts, read from the instrument. Resolved
+// once in OnInit and seeded with the fallback so a path that somehow reached
+// OnTick first would still close early rather than carry the gap.
+bool g_flow_use_weekend_close = true;
+int  g_flow_weekend_close_hour = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR;
+int  g_flow_weekend_close_minute = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE;
 // Scaled profit taking. Built once from the inputs and handed to PositionManager
 // with every trailing plan. An empty ladder is the strategy's original
 // behaviour, and is what a refused configuration falls back to so that a
@@ -315,49 +265,96 @@ bool XSparkFlowValidateInputs()
       return false;
    }
 
-   if(!XSparkTradeSlotsValid(InpFlowMaxOpenTrades))
-   {
-      g_logger.Critical("EA", "Maximum open trades must be between 1 and 10.");
-      return false;
-   }
-
+   // Only what an operator can still get wrong is checked here. The slot count,
+   // the risk ceilings, the weekend time and the price tolerances are constants
+   // now, and a constant checked against another constant is not validation - it
+   // is a comment that costs a branch. The test suite covers them instead.
    if(!MathIsValidNumber(InpFlowRiskPct) || InpFlowRiskPct <= 0.0 ||
-      !MathIsValidNumber(InpFlowMaxRiskPct) || InpFlowMaxRiskPct <= 0.0 ||
-      InpFlowRiskPct > InpFlowMaxRiskPct)
-   {
-      g_logger.Critical("EA", "Risk per trade must be positive and no greater than the maximum risk per trade.");
-      return false;
-   }
-
-   if(InpFlowMaxRiskPct > XSPARK_MAX_ALLOWED_RISK_PCT)
+      InpFlowRiskPct > XSPARK_CANDLEFLOW_MAX_RISK_PCT)
    {
       g_logger.Critical("EA",
-                        StringFormat("Maximum risk per trade %.2f%% exceeds the hard ceiling of %.2f%%.",
-                                     InpFlowMaxRiskPct,
-                                     XSPARK_MAX_ALLOWED_RISK_PCT));
+                        StringFormat("Money risked on one trade must be above 0 and no more than %.2f%%.",
+                                     XSPARK_CANDLEFLOW_MAX_RISK_PCT));
       return false;
    }
 
-   if(!MathIsValidNumber(InpFlowMaxAccountRiskPct) || InpFlowMaxAccountRiskPct <= 0.0)
+   if(!MathIsValidNumber(InpFlowMaxDailyDDPct) || InpFlowMaxDailyDDPct <= 0.0 || InpFlowMaxDailyDDPct >= 100.0)
    {
-      g_logger.Critical("EA", "The account risk cap must be a positive percentage.");
+      g_logger.Critical("EA", "The daily stop must be a percentage above 0 and below 100.");
       return false;
    }
 
-   if(InpFlowWeekendCloseHour < 0 || InpFlowWeekendCloseHour > 23 ||
-      InpFlowWeekendCloseMinute < 0 || InpFlowWeekendCloseMinute > 59)
+   // The level is required to be a usable level even while the switch is off,
+   // so that turning the switch back on cannot reveal a configuration that was
+   // never checked. Off is expressed once, by the switch.
+   if(!MathIsValidNumber(InpFlowMaxTotalDDPct) || InpFlowMaxTotalDDPct <= 0.0 || InpFlowMaxTotalDDPct >= 100.0)
    {
-      g_logger.Critical("EA", "Weekend close time must be a valid hour and minute.");
+      g_logger.Critical("EA",
+                        "The emergency stop level must be a percentage above 0 and below 100. "
+                        "To switch the emergency stop off, use its own setting rather than the level.");
       return false;
    }
 
-   if(InpFlowEntryDeviationPoints <= 0.0 || InpFlowExitDeviationPoints <= 0.0)
+   // A daily stop at or above the emergency stop can never fire: the emergency
+   // stop closes everything first. Only meaningful while the emergency stop is
+   // switched on.
+   if(InpFlowUseTotalDDKillSwitch && InpFlowMaxDailyDDPct >= InpFlowMaxTotalDDPct)
    {
-      g_logger.Critical("EA", "Entry and exit price tolerances must be positive.");
+      g_logger.Critical("EA",
+                        StringFormat("The daily stop (%.2f%%) must be below the emergency stop (%.2f%%), or the daily one can never act.",
+                                     InpFlowMaxDailyDDPct,
+                                     InpFlowMaxTotalDDPct));
       return false;
    }
 
    return true;
+}
+
+// Reads this symbol's own trading sessions and resolves when to flatten.
+//
+// The terminal call lives here and the decision lives in CandleFlow.mqh, which
+// is what lets every branch of the decision be tested without a trade server.
+// Session data that cannot be read is not an error: the pure function falls
+// back to closing early, which is the safe direction.
+void XSparkFlowResolveWeekendClose()
+{
+   datetime session_from = 0;
+   datetime session_to = 0;
+
+   // The last Friday session is the one that matters; a symbol may report
+   // several with a break between them.
+   bool friday_known = false;
+   int friday_end_hour = 0;
+   int friday_end_minute = 0;
+
+   for(uint index = 0; index < 8; index++)
+   {
+      if(!SymbolInfoSessionTrade(_Symbol, FRIDAY, index, session_from, session_to))
+         break;
+
+      friday_known = true;
+      const int seconds = (int)session_to;
+      friday_end_hour = (seconds / 3600) % 24;
+      friday_end_minute = (seconds % 3600) / 60;
+   }
+
+   // A symbol that trades on either weekend day has no weekend gap to protect
+   // against, so flattening for it would close a position for no reason.
+   const bool trades_at_weekend =
+      SymbolInfoSessionTrade(_Symbol, SATURDAY, 0, session_from, session_to) ||
+      SymbolInfoSessionTrade(_Symbol, SUNDAY, 0, session_from, session_to);
+
+   string weekend_reason = "";
+   XSparkCandleFlowWeekendClose(trades_at_weekend,
+                                friday_known,
+                                friday_end_hour,
+                                friday_end_minute,
+                                g_flow_use_weekend_close,
+                                g_flow_weekend_close_hour,
+                                g_flow_weekend_close_minute,
+                                weekend_reason);
+
+   g_logger.Info("CandleFlow", weekend_reason);
 }
 
 // Resolves the strategy point size for the chart symbol. Identical policy to
@@ -439,7 +436,7 @@ void XSparkFlowUpdateDashboard()
    live.currency = AccountInfoString(ACCOUNT_CURRENCY); live.entry_style = g_ui_entry_style;
    live.digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    live.connected = TerminalInfoInteger(TERMINAL_CONNECTED) != 0;
-   live.animate = InpFlowDashboardAnimate; live.bid = 0; live.ask = 0; live.quote_age = -1; live.quote_stamp = 0;
+   live.animate = true; live.bid = 0; live.ask = 0; live.quote_age = -1; live.quote_stamp = 0;
    MqlTick tick;
    live.quote_valid = SymbolInfoTick(_Symbol, tick) && tick.time > 0 &&
                       MathIsValidNumber(tick.bid) && MathIsValidNumber(tick.ask) && tick.bid > 0 && tick.ask >= tick.bid;
@@ -494,13 +491,13 @@ void XSparkFlowUpdateDashboard()
    { dashboard_status = "CONFIG BLOCKED"; dashboard_reason = g_config_reason; }
    else if(!g_safety_manager.ScorePointSizeConforms())
    { dashboard_status = "POINT SIZE FAULT"; dashboard_reason = "Instrument price units are not trusted."; }
-   else if(!g_safety_manager.EntryDriftBoundUsable() && (!InpFlowAutoTuneForSymbol || g_auto_tune_complete))
+   else if(!g_safety_manager.EntryDriftBoundUsable() && g_auto_tune_complete)
    { dashboard_status = "DRIFT GATE FAULT"; dashboard_reason = "Entry price tolerance cannot safely bound risk."; }
    else if(g_safety_manager.DailyHaltLatched())
    { dashboard_status = "DD HALT"; dashboard_reason = "Daily DD halt is latched for the broker day."; }
    else if(!live.connected)
    { dashboard_status = "DISCONNECTED"; dashboard_reason = "Terminal is not connected."; }
-   else if(!live.quote_valid || live.quote_age < 0 || live.quote_age > InpFlowMaxQuoteAgeSeconds)
+   else if(!live.quote_valid || live.quote_age < 0 || live.quote_age > XSPARK_CANDLEFLOW_MAX_QUOTE_AGE_SECONDS)
    { dashboard_status = "STALE QUOTE"; dashboard_reason = "Waiting for fresh broker prices."; }
    else if(!live.positions_valid)
    { dashboard_status = "STATE RECOVERY"; dashboard_reason = "Cannot read the broker position snapshot."; }
@@ -515,7 +512,7 @@ void XSparkFlowUpdateDashboard()
                       g_position_manager.TradesToday(),
                       g_position_manager.TradesLast24Hours(),
                       g_position_manager.ManagedPositionCount(),
-                      InpFlowMaxOpenTrades,
+                      XSPARK_CANDLEFLOW_MAX_OPEN_TRADES,
                       XSparkPriceToScorePoints(g_market_state.SpreadPrice(), g_score_point_size),
                       mode,
                       dashboard_status,
@@ -614,8 +611,8 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
                             entry_reference,
                             signal.desired_stop,
                             signal.atr14,
-                            InpFlowMinStopATRMult,
-                            InpFlowMaxStopATRMult,
+                            g_flow_min_stop_atr_mult,
+                            0.0,
                             bounded_stop,
                             bounded_distance,
                             bound_reason))
@@ -633,7 +630,7 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
                                     entry_reference,
                                     bounded_stop,
                                     0.0,
-                                    InpFlowUseStopLevelValidation,
+                                    true,
                                     adjusted_sl,
                                     ignored_tp,
                                     adjust_reason))
@@ -694,7 +691,7 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
    string final_adjust_reason = "";
 
    if(!g_execution_engine.ValidateInitialProtection(plan,
-                                                    InpFlowUseStopLevelValidation,
+                                                    true,
                                                     final_sl,
                                                     final_tp,
                                                     final_adjust_reason))
@@ -729,7 +726,7 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
       plan.volume = volume;
 
       if(!g_execution_engine.ValidateInitialProtection(plan,
-                                                       InpFlowUseStopLevelValidation,
+                                                       true,
                                                        final_sl,
                                                        final_tp,
                                                        final_adjust_reason))
@@ -903,7 +900,7 @@ void XSparkFlowEnterStateRecovery(XSparkTradePlan &plan, XSparkExecutionResult &
 // which is what every derived tolerance is measured against.
 bool XSparkFlowCalibrateForSymbol()
 {
-   if(!InpFlowAutoTuneForSymbol || g_auto_tune_complete)
+   if(g_auto_tune_complete)
       return true;
 
    double samples[];
@@ -929,12 +926,12 @@ bool XSparkFlowCalibrateForSymbol()
 
    string derive_reason = "";
    if(!XSparkDeriveAutoTune(reference_points,
-                            InpFlowQuietMarketPct,
-                            InpFlowWildMarketPct,
-                            InpFlowMinStopATRMult,
-                            InpFlowEntrySlipPct,
-                            InpFlowExitSlipPct,
-                            InpFlowSpreadCapPct,
+                            XSPARK_CANDLEFLOW_QUIET_MARKET_PCT,
+                            XSPARK_CANDLEFLOW_WILD_MARKET_PCT,
+                            g_flow_min_stop_atr_mult,
+                            XSPARK_CANDLEFLOW_ENTRY_SLIP_PCT,
+                            XSPARK_CANDLEFLOW_EXIT_SLIP_PCT,
+                            XSPARK_CANDLEFLOW_SPREAD_CAP_PCT,
                             g_auto_tune,
                             derive_reason))
    {
@@ -957,7 +954,7 @@ bool XSparkFlowCalibrateForSymbol()
    double bound_ratio = 0.0;
    string bound_reason = "";
    const int bound = XSparkEntryDriftBound(g_auto_tune.entry_deviation_points,
-                                           InpFlowMinStopATRMult,
+                                           g_flow_min_stop_atr_mult,
                                            g_auto_tune.atr_min_points,
                                            bound_min_stop,
                                            bound_ratio,
@@ -1104,10 +1101,13 @@ void XSparkFlowEvaluateNewBarCore()
       return;
    }
 
-   if(InpFlowUseWeekendClose &&
+   // A position held on a trailing stop with no target carries the weekend gap
+   // in full and the stop cannot act across it. Off only for an instrument that
+   // trades through the weekend, where there is no gap to carry.
+   if(g_flow_use_weekend_close &&
       g_position_manager.ShouldWeekendClose(g_market_state.ServerTime(),
-                                            InpFlowWeekendCloseHour,
-                                            InpFlowWeekendCloseMinute))
+                                            g_flow_weekend_close_hour,
+                                            g_flow_weekend_close_minute))
    {
       g_status = "WEEKEND CLOSE";
       g_last_block_reason = "Weekend close window is active; new entries are blocked.";
@@ -1195,7 +1195,7 @@ void XSparkFlowEvaluateNewBarCore()
          !XSparkAccountRiskWithinCap(open_risk_cash,
                                      prospective_risk_cash,
                                      AccountInfoDouble(ACCOUNT_BALANCE),
-                                     InpFlowMaxAccountRiskPct,
+                                     XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT,
                                      projected_pct,
                                      cap_reason))
       {
@@ -1212,26 +1212,25 @@ void XSparkFlowEvaluateNewBarCore()
       }
    }
 
-   if(InpFlowUseMarginCheck)
-   {
-      double required_margin = 0.0;
-      double free_margin = 0.0;
-      string margin_reason = "";
+   // Always checked. There is no configuration in which opening a trade the
+   // account cannot margin is the behaviour someone wanted.
+   double required_margin = 0.0;
+   double free_margin = 0.0;
+   string margin_reason = "";
 
-      if(!g_execution_engine.HasSufficientMargin(plan.symbol,
-                                                 plan.direction,
-                                                 plan.volume,
-                                                 plan.entry_reference,
-                                                 InpFlowMarginBufferPct,
-                                                 required_margin,
-                                                 free_margin,
-                                                 margin_reason))
-      {
-         g_status = "SCANNING";
-         g_last_block_reason = margin_reason;
-         XSparkFlowVerboseBlock("ExecutionEngine", g_last_block_reason);
-         return;
-      }
+   if(!g_execution_engine.HasSufficientMargin(plan.symbol,
+                                              plan.direction,
+                                              plan.volume,
+                                              plan.entry_reference,
+                                              XSPARK_CANDLEFLOW_MARGIN_BUFFER_PCT,
+                                              required_margin,
+                                              free_margin,
+                                              margin_reason))
+   {
+      g_status = "SCANNING";
+      g_last_block_reason = margin_reason;
+      XSparkFlowVerboseBlock("ExecutionEngine", g_last_block_reason);
+      return;
    }
 
    if(!g_execution_engine.CanSubmitSignal(plan.signal_bar_time))
@@ -1302,67 +1301,46 @@ int OnInit()
    }
 
    XSparkFlowResolveSessionScorePointSize();
+   XSparkFlowResolveWeekendClose();
 
+   // The rule's own geometry - the wick buffer, the stop floor, and the filters
+   // that are deliberately off - comes from the strategy's shipped defaults.
+   // Only the two things the EA knows are set here: the instrument's point size,
+   // and the target the chosen profit style implies.
    XSparkCandleFlowConfig config;
    XSparkDefaultCandleFlowConfig(config);
-   config.buffer_atr_mult = InpFlowBufferATRMult;
-   config.buffer_range_pct = InpFlowBufferRangePct;
-   config.buffer_fixed_price = XSparkScorePointsToPrice(InpFlowBufferPoints, g_score_point_size);
-   config.min_stop_atr_mult = InpFlowMinStopATRMult;
-   config.max_stop_atr_mult = InpFlowMaxStopATRMult;
-   config.min_body_atr_mult = InpFlowMinBodyATRMult;
-   config.use_volatility_gate = InpFlowUseVolatilityGate;
-   config.atr_min_points = InpFlowATRMinPoints;
-   config.atr_max_points = InpFlowATRMaxPoints;
    config.score_point_size = g_score_point_size;
-
-   XSparkResetProfitLadder(g_profit_ladder);
-   g_profit_ladder.level_r[0] = InpFlowTP1AtR;
-   g_profit_ladder.level_pct[0] = InpFlowTP1ClosePct;
-   g_profit_ladder.level_r[1] = InpFlowTP2AtR;
-   g_profit_ladder.level_pct[1] = InpFlowTP2ClosePct;
-   g_profit_ladder.level_r[2] = InpFlowTP3AtR;
-   g_profit_ladder.level_pct[2] = InpFlowTP3ClosePct;
-   g_profit_ladder.final_target_r = InpFlowFinalTargetR;
-
-   XSparkResetTrailTuning(g_trail_tuning);
-   g_trail_tuning.min_trail_atr_mult = InpFlowMinTrailATRMult;
-   g_trail_tuning.chandelier_atr_mult = InpFlowTrailATRMult;
-   g_trail_tuning.chandelier_tight_atr_mult = InpFlowTrailTightATRMult;
-   g_trail_tuning.tighten_start_r = InpFlowTrailTightenStartR;
-   g_trail_tuning.tighten_full_r = InpFlowTrailTightenFullR;
-   g_trail_tuning.breakeven_at_r = InpFlowBreakevenAtR;
-   g_trail_tuning.breakeven_offset_r = InpFlowBreakevenOffsetR;
+   g_flow_min_stop_atr_mult = config.min_stop_atr_mult;
 
    g_config_valid = XSparkValidateCandleFlowConfig(config, g_config_reason);
 
-   // The trailing stop is CandleFlow's only exit, so a configuration it cannot
-   // honour blocks new entries rather than being quietly ignored. Positions
-   // already open keep trailing on whatever the last accepted plan was.
+   // Both styles resolve to a complete, pre-validated configuration, and both
+   // resolvers run their validator anyway. A refusal here cannot come from
+   // anything an operator typed - it could only come from an edit to a preset
+   // table - so it is a build fault, and it is reported as one.
    string trail_reason = "";
-   if(!XSparkValidateTrailTuning(g_trail_tuning, trail_reason))
+   if(!XSparkTrailTuningForStyle(InpFlowTrailStyle, g_trail_tuning, trail_reason))
    {
       g_config_valid = false;
       g_config_reason += " " + trail_reason;
    }
 
    // Profit taking is refused separately, and the ladder is EMPTIED rather than
-   // carried through. New entries are blocked either way, but a mistyped
-   // take-profit level must never be able to disable the trailing stop that
-   // protects a position already open - so the plan the manager receives stays
-   // valid and simply stops taking profit.
+   // carried through. New entries are blocked either way, but a bad ladder must
+   // never be able to disable the trailing stop that protects a position
+   // already open - so the plan the manager receives stays valid and simply
+   // stops taking profit.
    string ladder_reason = "";
-   if(!XSparkValidateProfitLadder(g_profit_ladder, ladder_reason))
+   if(!XSparkProfitLadderForStyle(InpFlowProfitStyle, g_profit_ladder, ladder_reason))
    {
       XSparkResetProfitLadder(g_profit_ladder);
       g_config_valid = false;
       g_config_reason += " " + ladder_reason;
    }
 
-   // Taken from the VALIDATED ladder rather than from the raw input, and after
-   // the refusal above, so a ladder that was emptied cannot leave the strategy
-   // publishing a reward ratio the execution engine would then act on. The
-   // ladder owns this number; the strategy only reports it on the signal.
+   // Taken from the VALIDATED ladder, and after the refusal above, so a ladder
+   // that was emptied cannot leave the strategy publishing a reward ratio the
+   // execution engine would then act on.
    config.final_target_r = g_profit_ladder.final_target_r;
 
    if(!g_config_valid)
@@ -1379,14 +1357,14 @@ int OnInit()
    if(!g_safety_manager.Initialize(_Symbol,
                                    InpFlowMagicNumber,
                                    InpFlowEnableTrading,
-                                   InpFlowMaxOpenTrades,
-                                   InpFlowUseSpreadFilter,
-                                   InpFlowMaxSpreadPoints,
-                                   InpFlowMaxSpreadATRPct,
+                                   XSPARK_CANDLEFLOW_MAX_OPEN_TRADES,
+                                   true,
+                                   XSPARK_CANDLEFLOW_SEED_SPREAD_CAP_POINTS,
+                                   XSPARK_CANDLEFLOW_MAX_SPREAD_ATR_PCT,
                                    InpFlowUseTotalDDKillSwitch,
                                    InpFlowMaxTotalDDPct,
                                    InpFlowMaxDailyDDPct,
-                                   InpFlowMaxQuoteAgeSeconds,
+                                   XSPARK_CANDLEFLOW_MAX_QUOTE_AGE_SECONDS,
                                    InpFlowClearKillswitchLatch,
                                    g_score_point_size,
                                    g_score_point_size_conforms,
@@ -1405,9 +1383,9 @@ int OnInit()
    if(!g_risk_manager.Initialize(InpFlowRiskPct,
                                  InpFlowRiskPct,
                                  InpFlowRiskPct,
-                                 InpFlowMaxRiskPct,
-                                 InpFlowMaxOpenTrades,
-                                 InpFlowMaxAccountRiskPct))
+                                 XSPARK_CANDLEFLOW_MAX_RISK_PCT,
+                                 XSPARK_CANDLEFLOW_MAX_OPEN_TRADES,
+                                 XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT))
    {
       g_logger.Critical("RiskManager", g_risk_manager.LastReason());
       return INIT_FAILED;
@@ -1432,17 +1410,17 @@ int OnInit()
    }
 
    if(!g_execution_engine.Initialize(InpFlowMagicNumber,
-                                     InpFlowOrderComment,
-                                     InpFlowEntryDeviationPoints,
+                                     XSPARK_CANDLEFLOW_COMMENT_DEFAULT,
+                                     XSPARK_CANDLEFLOW_ENTRY_DEVIATION_POINTS,
                                      g_score_point_size,
-                                     InpFlowUseStopLevelValidation,
-                                     InpFlowUseMarginCheck,
-                                     InpFlowMarginBufferPct,
+                                     true,
+                                     true,
+                                     XSPARK_CANDLEFLOW_MARGIN_BUFFER_PCT,
                                      flow_min_rr,
                                      flow_max_rr,
-                                     InpFlowMaxQuoteAgeSeconds,
-                                     InpFlowMaxOpenTrades,
-                                     InpFlowMaxAccountRiskPct))
+                                     XSPARK_CANDLEFLOW_MAX_QUOTE_AGE_SECONDS,
+                                     XSPARK_CANDLEFLOW_MAX_OPEN_TRADES,
+                                     XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT))
    {
       g_logger.Critical("ExecutionEngine", g_execution_engine.LastReason());
       return INIT_FAILED;
@@ -1451,8 +1429,8 @@ int OnInit()
    if(!g_position_manager.Initialize(_Symbol,
                                      InpFlowMagicNumber,
                                      g_score_point_size,
-                                     InpFlowExitDeviationPoints,
-                                     InpFlowUseStopLevelValidation))
+                                     XSPARK_CANDLEFLOW_EXIT_DEVIATION_POINTS,
+                                     true))
    {
       g_logger.Critical("PositionManager", g_position_manager.LastReason());
       return INIT_FAILED;
@@ -1467,42 +1445,41 @@ int OnInit()
    if(g_indicator_cache.IsValid())
       g_latest_closed_atr14 = g_indicator_cache.ATR14Base();
 
-   const double concurrent_cap = XSparkConcurrentRiskCap(InpFlowMaxOpenTrades, InpFlowMaxRiskPct, InpFlowMaxAccountRiskPct);
+   const double concurrent_cap = XSparkConcurrentRiskCap(XSPARK_CANDLEFLOW_MAX_OPEN_TRADES, XSPARK_CANDLEFLOW_MAX_RISK_PCT, XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT);
    g_logger.Info("RiskManager",
                  StringFormat("Trade slots=%d; per-entry risk %.2f%%; per-entry ceiling %.3f%%; account cap %.2f%%.",
-                              InpFlowMaxOpenTrades, InpFlowRiskPct, concurrent_cap, InpFlowMaxAccountRiskPct));
+                              XSPARK_CANDLEFLOW_MAX_OPEN_TRADES, InpFlowRiskPct, concurrent_cap, XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT));
 
    g_logger.Info("CandleFlow",
-                 StringFormat("Trail: floor %.2f x range; peak trail %s; tightening %s; breakeven %s.",
-                              InpFlowMinTrailATRMult,
-                              InpFlowTrailATRMult > 0.0 ? DoubleToString(InpFlowTrailATRMult, 2) + " x range" : "off",
-                              InpFlowTrailTightenStartR > 0.0
-                                 ? StringFormat("%.2f x range from %.2fR to %.2fR",
-                                                InpFlowTrailTightATRMult, InpFlowTrailTightenStartR, InpFlowTrailTightenFullR)
-                                 : "off",
-                              InpFlowBreakevenAtR > 0.0
-                                 ? StringFormat("at %.2fR, stop %.2fR from entry", InpFlowBreakevenAtR, InpFlowBreakevenOffsetR)
-                                 : "off"));
-
-   g_logger.Info("CandleFlow",
-                 StringFormat("Rule: closed %s candle direction; take-profit levels %s; final target %s; stop beyond the wick by %.2f x range + %.2f%% of the candle + %.2f points; "
-                              "stop floor %.2f x range; ceiling %s; body filter %s; movement gate %s.",
+                 StringFormat("Rule: closed %s candle direction; stop beyond the wick by %.2f x range, floor %.2f x range.",
                               EnumToString(g_base_timeframe),
+                              config.buffer_atr_mult,
+                              g_flow_min_stop_atr_mult));
+
+   g_logger.Info("CandleFlow",
+                 StringFormat("Take profit [%s]: levels %s; final target %s.",
+                              EnumToString(InpFlowProfitStyle),
                               XSparkFlowLadderSummary(),
                               g_profit_ladder.final_target_r > 0.0
                                  ? StringFormat("%.2fR, accepted broker-valid band %.2f-%.2f", g_profit_ladder.final_target_r, flow_min_rr, flow_max_rr)
+                                 : "off"));
+
+   g_logger.Info("CandleFlow",
+                 StringFormat("Trail [%s]: floor %.2f x range; peak trail %s; tightening %s; breakeven %s.",
+                              EnumToString(InpFlowTrailStyle),
+                              g_trail_tuning.min_trail_atr_mult,
+                              g_trail_tuning.chandelier_atr_mult > 0.0 ? DoubleToString(g_trail_tuning.chandelier_atr_mult, 2) + " x range" : "off",
+                              g_trail_tuning.tighten_start_r > 0.0
+                                 ? StringFormat("%.2f x range from %.2fR to %.2fR",
+                                                g_trail_tuning.chandelier_tight_atr_mult, g_trail_tuning.tighten_start_r, g_trail_tuning.tighten_full_r)
                                  : "off",
-                              InpFlowBufferATRMult,
-                              InpFlowBufferRangePct,
-                              InpFlowBufferPoints,
-                              InpFlowMinStopATRMult,
-                              InpFlowMaxStopATRMult > 0.0 ? DoubleToString(InpFlowMaxStopATRMult, 2) : "off",
-                              InpFlowMinBodyATRMult > 0.0 ? DoubleToString(InpFlowMinBodyATRMult, 2) : "off",
-                              XSparkFlowBoolToString(InpFlowUseVolatilityGate)));
+                              g_trail_tuning.breakeven_at_r > 0.0
+                                 ? StringFormat("at %.2fR, stop %.2fR from entry", g_trail_tuning.breakeven_at_r, g_trail_tuning.breakeven_offset_r)
+                                 : "off"));
 
    g_current_base_bar_time = iTime(_Symbol, g_base_timeframe, 0);
    EventSetTimer(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE) ? 5 : 1);
-   g_dashboard.Configure(InpFlowDashboardCorner, InpFlowDashboardMarginX, InpFlowDashboardMarginY, InpFlowDashboardCompact, InpFlowDashboardAnimate, InpFlowDashboardSizePct);
+   g_dashboard.Configure(XSPARK_FLOW_PANEL_CORNER, XSPARK_FLOW_PANEL_MARGIN_X, XSPARK_FLOW_PANEL_MARGIN_Y, false, true, XSPARK_FLOW_PANEL_SIZE_PCT);
    g_dashboard.Initialize();
 
    g_logger.Info("EA", StringFormat("Symbol=%s digits=%d point=%s strategy_point_size=%s",
@@ -1647,9 +1624,9 @@ void OnTick()
                                       0.0,   // no partial close
                                       0.0,   // no partial close
                                       0.0,   // no ATR trail
-                                      InpFlowUseWeekendClose,
-                                      InpFlowWeekendCloseHour,
-                                      InpFlowWeekendCloseMinute,
+                                      g_flow_use_weekend_close,
+                                      g_flow_weekend_close_hour,
+                                      g_flow_weekend_close_minute,
                                       g_logger);
 
    // A take-profit close the broker confirmed and XSpark could not record

@@ -127,6 +127,54 @@ void RunCandleFlowTests()
    FlowCheck("a ceiling below the floor is refused",
              !XSparkValidateCandleFlowConfig(config, reason));
 
+   // The weekend close is read from the instrument rather than fixed, so every
+   // branch of that reading is proven here - including the ones that only
+   // happen on instruments this repository has never been run on.
+   bool use_close = true;
+   int close_hour = -1, close_minute = -1;
+   string close_reason = "";
+
+   FlowCheck("a market that trades at the weekend is not closed before it",
+             XSparkCandleFlowWeekendClose(true, true, 22, 0, use_close, close_hour, close_minute, close_reason) &&
+             !use_close);
+
+   FlowCheck("a readable Friday session closes the lead time before it ends",
+             XSparkCandleFlowWeekendClose(false, true, 22, 0, use_close, close_hour, close_minute, close_reason) &&
+             use_close && close_hour == 20 && close_minute == 0);
+
+   FlowCheck("a later session end moves the close with it",
+             XSparkCandleFlowWeekendClose(false, true, 23, 45, use_close, close_hour, close_minute, close_reason) &&
+             use_close && close_hour == 21 && close_minute == 45);
+
+   FlowCheck("an earlier session end moves it the other way",
+             XSparkCandleFlowWeekendClose(false, true, 17, 30, use_close, close_hour, close_minute, close_reason) &&
+             use_close && close_hour == 15 && close_minute == 30);
+
+   FlowCheck("an unreadable session falls back rather than carrying the gap",
+             XSparkCandleFlowWeekendClose(false, false, 0, 0, use_close, close_hour, close_minute, close_reason) &&
+             use_close && close_hour == XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR &&
+             close_minute == XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE);
+
+   // ShouldWeekendClose bounds-checks nothing, so an out-of-range hour would
+   // silently never fire on a Friday. These are the values that must never
+   // reach it.
+   FlowCheck("an impossible session hour falls back rather than being used",
+             XSparkCandleFlowWeekendClose(false, true, 26, 0, use_close, close_hour, close_minute, close_reason) &&
+             close_hour == XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR);
+   FlowCheck("an impossible session minute falls back rather than being used",
+             XSparkCandleFlowWeekendClose(false, true, 22, 61, use_close, close_hour, close_minute, close_reason) &&
+             close_hour == XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR);
+
+   FlowCheck("a session ending inside the lead time closes at midnight, not the day before",
+             XSparkCandleFlowWeekendClose(false, true, 1, 0, use_close, close_hour, close_minute, close_reason) &&
+             use_close && close_hour == 0 && close_minute == 0);
+
+   FlowCheck("every derived close time is one ShouldWeekendClose can act on",
+             close_hour >= 0 && close_hour <= 23 && close_minute >= 0 && close_minute <= 59);
+
+   FlowCheck("the reason always says which market it is talking about",
+             StringLen(close_reason) > 0);
+
    Print("CANDLEFLOW RESULT passed=", g_flow_passed, " failed=", g_flow_failed);
 }
 

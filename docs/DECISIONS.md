@@ -422,3 +422,83 @@ The operator who reported the give-back trades roughly 0.03 to 0.10 lots and ask
 The trade-off argument is the ordinary one: the earlier share is the share a retrace cannot reach, so moving weight into it protects more of the reported failure and costs more of the right tail. The lot-size argument is arithmetic and would have been invisible without asking. At a 0.01 minimum lot a 30% share of 0.03 lots normalises down to zero and the first step is skipped entirely; 40% normalises to 0.01 and fires. The budget model means the skipped share is not lost — the second step takes it — but a step that never fires is still a step the operator configured and did not get.
 
 Shares are normalised down throughout, so a small position banks slightly less than configured and never more. The shortfall stays open under the trailing stop, which is the safe direction to round in.
+
+## ADR-033 - CandleFlow Exposes Nine Settings, Because The Other Sixty-Four Were Not Choices
+
+XSparkFlow shipped with 73 inputs for a rule that is "the candle closed up, so buy". The operator's complaint was that this is too complicated, and that a strategy this simple has no business adapting to markets. Both halves are right, but they are right for different reasons, and the second one is easy to act on wrongly.
+
+### The test an input has to pass
+
+Does the operator know something the code does not?
+
+They know their account, and how much of it they are willing to lose. They have an opinion about whether to take money off the table on the way or let a trade run. Those are choices, and they survive.
+
+Nobody knows what to allow for entry slippage as a percentage of the smallest stop the configuration can produce. Nobody chooses to tighten a trailing stop linearly from 3.0 average ranges to 1.5 between 1 and 4 times the amount risked. Those numbers could only ever be copied from their own defaults, and a number that can only be copied is not a choice - it is a way to get it wrong. Sixty-four of them failed that test.
+
+### "No need to adapt to markets" does not mean "stop measuring the market"
+
+This is the part that would have been easy to get wrong. Freezing a spread cap or a slippage allowance as an absolute number of points is precisely what rules 12, 13 and 15 forbid, and what ADR-026 exists to prevent: a gold-derived tolerance applied to an FX pair is wrong by two orders of magnitude.
+
+What the operator was objecting to was never the measuring. It was being asked about it. So the per-instrument derivation stays, and every knob on it is gone: the percentages that shape it are constants, the switch that disabled it is gone, and the manual-override path is gone with it. That path turned out to be worse than unused - XSparkFlow never established the entry-drift bound outside calibration, so an operator who switched auto-tune off got an EA that could not trade at all. Removing it removed a trap.
+
+Every distance the rule itself uses was already a multiple of the instrument's own average range, so freezing those multiples leaves the adaptation completely intact. The thing that must never be frozen is a distance; a multiple is safe.
+
+### Fourteen numbers became two questions
+
+The trailing stop was seven inputs and the take-profit ladder was seven more. Each set describes one behaviour, and each was, in its own documentation's words, chosen for plausibility rather than measured. They are now two dropdowns - how much room to give a trade, and whether to bank profit as it runs - and each choice is a table that the test suite proves is internally consistent.
+
+That is simpler, and it is also safer in a way that is worth stating plainly. Before, an operator could type a tightened multiple wider than the base one, or a ladder with a hole in it, and get an EA that validated the configuration, refused it, and blocked every entry. The validators still run - they now guard against a bad edit to a preset table reaching a live chart - but no combination reachable from the Inputs tab can fail them. The failure mode was removed rather than defended against.
+
+`docs/OPTIMIZATION.md` is the other half of this argument. It records a 1,024-pass sweep in which only two passes would have initialised at all, because the ranges violated cross-parameter constraints that looked sensible one at a time. Four such constraints are named there. Collapsing free numbers into named choices removes the whole class: a dropdown cannot be swept outside its own domain.
+
+### Removing a switch from a safety control strengthens it
+
+The spread filter, the broker's minimum-stop-distance check, the free-margin check, the stale-quote gate and the weekend close each had a boolean that turned them off. None of those booleans had a defensible "off" setting. They are gone, and the controls are now mandatory. Rule 5 says never silently weaken a risk control; this is the opposite, and it is worth being explicit that deleting a switch and deleting a control are not the same act.
+
+The total-drawdown killswitch was folded the same way in the first version of this reduction - the boolean gone, zero on the percentage meaning off. That one was wrong, and the addendum at the end of this ADR says why it was put back.
+
+### Freezing a number forces you to justify it, and one did not survive that
+
+The entry-slippage share was 25%. The derivation makes the permitted drift exactly that percentage of the smallest stop, and `XSparkEntryDriftBound` warns above 20% because a fill that drifts that far has spent a fifth of its own stop before the trade starts. So every calibrated start logged a warning - which is how a warning stops being read.
+
+While it was an input that was arguably the operator's problem. As a constant it is ours, and the answer is to tighten it to 20. Verified against the production derivation rather than by reading: at a reference range of 133 points, 25% gives a ratio of 0.25 and a warning on every start; 20% gives 0.20 and a clean one.
+
+### The preset files are gone
+
+All three CandleFlow `.set` files were deleted rather than trimmed. With nine settings, seven of which are their own defaults, a file that writes them down is the complexity being removed rather than a cure for it - and MetaTrader silently ignores keys an EA no longer declares, so a trimmed file would have looked like it was configuring something while doing nothing.
+
+The two comparisons those files existed for are now one dropdown change each: profit taking Balanced against Off, and the trail Balanced against Candle only.
+
+### What this costs
+
+An operator who wants a trail between Balanced and Tight can no longer have one. That is a real loss and it is the intended trade: the space between two tested configurations is not a place anyone had information to aim at, and every point in it was also a point where the pair of cross-parameter constraints could be violated. If a future measurement says a fourth style is worth having, it is added at the end of the enum - never in the middle, because MetaTrader stores an enum input as its integer and renumbering would silently reinterpret every saved file.
+
+Nothing here has been compiled or backtested. The numbers behind each style are the ones that shipped, unchanged except for the entry-slippage tightening above, and they remain plausible rather than measured.
+
+### Addendum: the weekend close is read from the instrument, not typed in
+
+The first version of this reduction froze the Friday close at 20:00 for every symbol, which replaced an input the operator could get right with a constant that is wrong on most instruments. It is hours early on a market that trades until 22:00, and it is meaningless on one that never closes — a position flattened every Friday evening for a gap that does not exist.
+
+That is rule 15 exactly: the gold answer applied to metals, indices and crypto alike. Freezing a number is only legitimate when there is one right answer; when the right answer is a property of the instrument, the instrument is what should be asked.
+
+So it is now derived. `SymbolInfoSessionTrade` gives the symbol's own Friday sessions, the bot flattens two hours before the last one ends, and a symbol reporting a Saturday or Sunday session has the weekend close switched off entirely. The terminal call lives in the EA and the decision lives in a pure function in `Strategy/CandleFlow.mqh`, which is what lets every branch — including the instruments this repository has never run on — be tested without a trade server.
+
+An unreadable session falls back to the old 20:00 and logs that it did. Closing early costs a few hours of a market that is about to shut; closing late costs the gap, and the stop cannot act across it.
+
+One detail worth recording because it is invisible from the call site: `PositionManager::ShouldWeekendClose` bounds-checks nothing, so an hour above 23 would silently never fire on a Friday. The derivation therefore validates its own output and falls back rather than passing a value that would disable the control without saying so.
+
+### Addendum: the killswitch keeps its own switch, because off is a state you return from
+
+Folding the killswitch's boolean into its percentage looked like the same move as deleting the spread filter's switch. It is not, and the difference is what the operator does next.
+
+The controls whose switches were deleted have no defensible "off". The killswitch does: a year-long backtest. It closes the account out partway through a losing stretch and leaves the rest of the period untraded, so an operator judging a full year on the Strategy Tester switches it off, sees the whole equity curve, and switches it back on for live trading. That is a round trip, and it is the normal way this bot gets evaluated.
+
+A percentage where zero means off cannot make that round trip without losing something. Switching off overwrites the level, so switching back on means retyping it - a level that has now never been validated against anything, chosen from memory, on the way to a live account. One setting that reads as one thing is really two states and a number the operator has to carry between them.
+
+So there are two settings again: `InpFlowUseTotalDDKillSwitch` says whether the control runs, `InpFlowMaxTotalDDPct` says at what level, and the level is required to be a usable level even while the switch is off. Turning the switch back on cannot reveal a configuration nobody checked. Off is expressed once, by the switch, and the group is named so the Inputs tab says which setting the switch makes inert.
+
+Two things follow that are worth stating because neither is obvious from the call site.
+
+Switching the killswitch off does not clear a latch. The enable flag guards the *setting* of the latch; the restore from persisted state is unconditional, and so is the entry block the latch produces. That is deliberate - a latch records that equity really did fall that far, which is a fact about the account rather than about the setting - but it used to be silent, and an operator whose emergency stop reads "off" staring at an EA that will not enter deserves a line saying so. `SafetyManager::Initialize` now logs that case as CRITICAL and names the setting that clears it. On the Strategy Tester the question does not arise: the terminal's global variables are emulated per run, so a test starts with no latch to restore.
+
+The daily loss limit is deliberately not given the same switch. It resets at each broker day rather than latching for the run, so it dents a year-long equity curve without truncating it, and unlike the killswitch it has no "off" an operator returns from. It stays mandatory.

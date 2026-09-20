@@ -247,6 +247,35 @@ void RunProfitLadderTests()
                !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 200.0, ladder, 0.0,
                                            level, pct, trigger));
 
+   // Every style an operator can pick must resolve to a valid ladder. With the
+   // individual numbers gone from the Inputs tab, these three tables ARE the
+   // reachable set, so each one has to be proven rather than assumed.
+   XSparkProfitLadder styled;
+   string style_reason = "";
+
+   LadderCheck("the off style is a valid configuration",
+               XSparkProfitLadderForStyle(XSPARK_PROFIT_STYLE_OFF, styled, style_reason));
+   LadderCheck("the off style takes no profit at all",
+               !XSparkProfitLadderIsEnabled(styled));
+
+   LadderCheck("the balanced style is a valid configuration",
+               XSparkProfitLadderForStyle(XSPARK_PROFIT_STYLE_BALANCED, styled, style_reason));
+   LadderCheck("the balanced style is the shipped ladder",
+               LadderNear(styled.level_r[0], XSPARK_LADDER_DEFAULT_LEVEL1_R) &&
+               LadderNear(styled.level_pct[0], XSPARK_LADDER_DEFAULT_LEVEL1_PCT));
+
+   LadderCheck("the early style is a valid configuration",
+               XSparkProfitLadderForStyle(XSPARK_PROFIT_STYLE_EARLY, styled, style_reason));
+   LadderCheck("the early style banks more, sooner",
+               styled.level_r[0] < XSPARK_LADDER_DEFAULT_LEVEL1_R &&
+               XSparkProfitLadderTotalPct(styled) > 70.0);
+   LadderCheck("even the early style leaves a part running",
+               XSparkProfitLadderTotalPct(styled) < XSPARK_PROFIT_LADDER_MAX_TOTAL_PCT &&
+               XSparkProfitLadderTargetRemaining(styled, 1.0, 1) > 0.0);
+
+   LadderCheck("a style this build does not know is refused rather than guessed",
+               !XSparkProfitLadderForStyle((EXSparkProfitStyle)99, styled, style_reason));
+
    Print("PROFIT LADDER RESULT passed=", g_ladder_passed, " failed=", g_ladder_failed);
 }
 

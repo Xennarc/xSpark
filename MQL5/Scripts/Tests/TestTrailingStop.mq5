@@ -221,6 +221,34 @@ void RunTrailingStopTests()
    TrailTuning(tuning, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
    TrailCheck("a negative floor is refused", !XSparkValidateTrailTuning(tuning, reason));
 
+   // Every style an operator can pick must resolve to a configuration the
+   // trailing stop can honour. This is rule 47 applied to the whole reachable
+   // set rather than only to the shipped default: there is no longer any way to
+   // select a trail that blocks trading, so there must be no way to ship one.
+   XSparkTrailTuning styled;
+   string style_reason = "";
+
+   TrailCheck("the candle-only style is a valid configuration",
+              XSparkTrailTuningForStyle(XSPARK_TRAIL_STYLE_CANDLE_ONLY, styled, style_reason));
+   TrailCheck("the candle-only style keeps the floor and nothing else",
+              styled.min_trail_atr_mult > 0.0 && styled.chandelier_atr_mult == 0.0 &&
+              styled.breakeven_at_r == 0.0 && styled.tighten_start_r == 0.0);
+
+   TrailCheck("the balanced style is a valid configuration",
+              XSparkTrailTuningForStyle(XSPARK_TRAIL_STYLE_BALANCED, styled, style_reason));
+   TrailCheck("the balanced style is the shipped stack",
+              TrailNear(styled.chandelier_atr_mult, XSPARK_TRAIL_DEFAULT_ATR) &&
+              TrailNear(styled.breakeven_at_r, XSPARK_TRAIL_DEFAULT_BREAKEVEN_R));
+
+   TrailCheck("the tight style is a valid configuration",
+              XSparkTrailTuningForStyle(XSPARK_TRAIL_STYLE_TIGHT, styled, style_reason));
+   TrailCheck("the tight style really is tighter than the balanced one",
+              styled.chandelier_atr_mult < XSPARK_TRAIL_DEFAULT_ATR &&
+              styled.breakeven_at_r < XSPARK_TRAIL_DEFAULT_BREAKEVEN_R);
+
+   TrailCheck("a style this build does not know is refused rather than guessed",
+              !XSparkTrailTuningForStyle((EXSparkTrailStyle)99, styled, style_reason));
+
    Print("TRAILING RESULT passed=", g_trail_passed, " failed=", g_trail_failed);
 }
 

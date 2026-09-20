@@ -178,6 +178,48 @@ bool XSparkProfitLadderIsEnabled(const XSparkProfitLadder &ladder)
    return XSparkProfitLadderActiveLevels(ladder) > 0;
 }
 
+// When to bank profit, as one choice instead of seven numbers.
+//
+// The operator's real question is "do I take money off the table as this runs,
+// or do I let it ride?" - which is a genuine preference with no right answer,
+// because it depends on their own give-back distribution. What is NOT a genuine
+// preference is "level two closes 30% of the opening size at 3.0 times the
+// amount risked": nobody can choose those digits from first principles.
+//
+// So the question is asked once, and each answer is a table that is known to
+// pass XSparkValidateProfitLadder. A hole in the levels, steps that run
+// backwards, or shares that would close the whole position are no longer things
+// an operator can type - they are unreachable.//
+// THE ORDINALS ARE A WIRE FORMAT. MetaTrader stores an enum input in a .set file
+// as its INTEGER, not its name, so renumbering these or inserting a level in the
+// middle silently reinterprets every saved file - a stored 1 that meant one
+// style becoming another, on a live chart, with nothing logged. Add new levels
+// at the END and never renumber an existing one.
+enum EXSparkProfitStyle
+{
+   XSPARK_PROFIT_STYLE_OFF      = 0, // Off - the trailing stop is the only exit
+   XSPARK_PROFIT_STYLE_BALANCED = 1, // Bank some at 1.5x and 3x, let the rest run
+   XSPARK_PROFIT_STYLE_EARLY    = 2  // Bank more, sooner - a smoother, smaller curve
+};
+
+// EARLY banks three quarters of the trade by 2x the amount risked. It suits an
+// operator whose trades more often fade than extend; it costs the right tail,
+// and the docs say so rather than leaving it to be discovered.
+#define XSPARK_LADDER_EARLY_LEVEL1_R 1.0
+#define XSPARK_LADDER_EARLY_LEVEL1_PCT 50.0
+#define XSPARK_LADDER_EARLY_LEVEL2_R 2.0
+#define XSPARK_LADDER_EARLY_LEVEL2_PCT 25.0
+
+void XSparkEarlyProfitLadder(XSparkProfitLadder &ladder)
+{
+   XSparkResetProfitLadder(ladder);
+
+   ladder.level_r[0] = XSPARK_LADDER_EARLY_LEVEL1_R;
+   ladder.level_pct[0] = XSPARK_LADDER_EARLY_LEVEL1_PCT;
+   ladder.level_r[1] = XSPARK_LADDER_EARLY_LEVEL2_R;
+   ladder.level_pct[1] = XSPARK_LADDER_EARLY_LEVEL2_PCT;
+}
+
 // Fails closed. Every refusal names the setting the operator has to change,
 // because the caller turns this into a message on the panel and in the journal
 // and there is nothing else to tell them what went wrong.
@@ -445,6 +487,34 @@ bool XSparkProfitLadderDueLevel(const EXSparkSignalDirection direction,
    }
 
    return false;
+}
+
+// The ladder one style means, refused if it is not a configuration the manager
+// can honour. The validator still runs for the same reason the trailing stop's
+// does: a future edit to a table must not be able to reach a live chart.
+bool XSparkProfitLadderForStyle(const EXSparkProfitStyle style,
+                                XSparkProfitLadder &ladder,
+                                string &reason)
+{
+   XSparkResetProfitLadder(ladder);
+   reason = "";
+
+   if(style == XSPARK_PROFIT_STYLE_OFF)
+   {
+      // Nothing to fill in. An empty ladder is a valid configuration and is the
+      // strategy's original behaviour.
+   }
+   else if(style == XSPARK_PROFIT_STYLE_BALANCED)
+      XSparkDefaultProfitLadder(ladder);
+   else if(style == XSPARK_PROFIT_STYLE_EARLY)
+      XSparkEarlyProfitLadder(ladder);
+   else
+   {
+      reason = "The take-profit style is not one this build knows.";
+      return false;
+   }
+
+   return XSparkValidateProfitLadder(ladder, reason);
 }
 
 #endif

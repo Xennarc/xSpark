@@ -52,6 +52,158 @@
 // ceiling rather than silently sizing at a tier nobody chose.
 #define XSPARK_CANDLEFLOW_SIGNAL_SCORE 5.5
 
+// The numbers that used to be inputs.
+//
+// Each of these failed the only test a setting has to pass: does the operator
+// know something the code does not? Nobody can choose "entry slippage as 25% of
+// the smallest stop this configuration can produce" from anything they know
+// about their own trading, and a number that can only be copied from a default
+// is not a choice - it is a way to get it wrong. They are fixed here instead,
+// where the test suite covers them and one edit changes every chart.
+//
+// They are declared by CandleFlow rather than borrowed, because a default that
+// reads through another strategy's constant changes silently when that strategy
+// is retuned (AGENTS.md rule 43).
+
+// How the per-instrument calibration is shaped. These are percentages fed to
+// the shared derivation, which measures the instrument's own median range and
+// turns them into absolute tolerances - so the same five numbers are correct on
+// gold, on an FX pair and on an index without anyone editing anything.
+// The stop floor: the smallest stop this configuration can produce, as a
+// multiple of the typical candle. It is a safety control rather than a
+// preference - a doji-thin candle otherwise yields a stop a few points wide and
+// therefore a position many times the intended size - and it is the distance
+// every derived tolerance below is measured against.
+#define XSPARK_CANDLEFLOW_MIN_STOP_ATR_MULT 0.25
+
+#define XSPARK_CANDLEFLOW_QUIET_MARKET_PCT 60.0
+#define XSPARK_CANDLEFLOW_WILD_MARKET_PCT 600.0
+// 20 rather than 25, and the difference matters. The derivation makes the
+// permitted entry drift exactly this percentage of the smallest stop, and
+// XSparkEntryDriftBound warns above 20% because a fill that drifts that far has
+// spent a fifth of its own stop before it starts. At 25 that warning fired on
+// every calibrated start, which is how a warning stops being read. Freezing the
+// number is what forced the question; the answer is to tighten it.
+#define XSPARK_CANDLEFLOW_ENTRY_SLIP_PCT 20.0
+#define XSPARK_CANDLEFLOW_EXIT_SLIP_PCT 85.0
+#define XSPARK_CANDLEFLOW_SPREAD_CAP_PCT 40.0
+
+// The widest buy/sell gap worth trading through, as a share of the typical
+// candle. A second, independent ceiling beside the derived absolute one.
+#define XSPARK_CANDLEFLOW_MAX_SPREAD_ATR_PCT 10.0
+
+// The absolute spread cap used only until the calibration replaces it, which it
+// does on the first bar with enough history. It is a gold-shaped number and it
+// is safe to be one precisely because no entry can consume it: SafetyManager
+// vetoes new trades until the drift bound is established, which only the
+// calibration can do. Named as a seed so it is never mistaken for a tuned
+// value, and never reused as one.
+#define XSPARK_CANDLEFLOW_SEED_SPREAD_CAP_POINTS 50.0
+
+// One trade at a time. CandleFlow signals on nearly every candle and never
+// reverses or hedges, so a second concurrent position is not a bigger bet on a
+// better signal - it is the same bet twice, on a rule that has no way to prefer
+// one candle over another.
+#define XSPARK_CANDLEFLOW_MAX_OPEN_TRADES 1
+
+// Ceilings, not preferences. The risk percentage an operator sets is checked
+// against the first; the second bounds everything this bot and any other bot
+// has open at once. Both are limits the strategy imposes on itself.
+#define XSPARK_CANDLEFLOW_MAX_RISK_PCT 3.5
+#define XSPARK_CANDLEFLOW_MAX_ACCOUNT_RISK_PCT 6.0
+
+// Broker-facing safeguards. Spare margin wanted beyond the trade's own, and the
+// age past which a quote is too stale to act on.
+#define XSPARK_CANDLEFLOW_MARGIN_BUFFER_PCT 20.0
+#define XSPARK_CANDLEFLOW_MAX_QUOTE_AGE_SECONDS 15
+
+// Friday close. A position held on a trailing stop with no target carries the
+// weekend gap in full and the stop cannot act across it, so flattening before
+// the weekend is behaviour rather than taste.
+//
+// WHEN to flatten is a property of the instrument, not of the operator, so it
+// is read from the instrument rather than fixed. A hard "Friday 20:00" is the
+// gold answer applied to everything, which is exactly what rule 15 forbids: it
+// is hours early on a market that trades until 22:00 and meaningless on one
+// that never closes.
+//
+// How long before that instrument's own last Friday session ends. Two hours is
+// enough for a partial close to fill in thinning liquidity without giving up a
+// whole session.
+#define XSPARK_CANDLEFLOW_WEEKEND_CLOSE_LEAD_MINUTES 120
+
+// Used only when the broker reports no usable Friday session. Closing early is
+// the safe direction to be wrong in, so an unreadable session is not a reason
+// to carry the gap.
+#define XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR 20
+#define XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE 0
+
+// Turns an instrument's own session data into the moment this bot flattens.
+//
+// Pure: the caller does the terminal lookup and hands over the numbers, which
+// is what lets every branch below be tested without a trade server.
+//
+// Three outcomes, and each one is stated rather than inferred:
+//   - the instrument trades at the weekend, so there is no gap to protect
+//     against and the weekend close is switched off for it;
+//   - its Friday session is readable, so flatten the lead time before the end;
+//   - it is not readable, so fall back and say so.
+bool XSparkCandleFlowWeekendClose(const bool trades_at_weekend,
+                                  const bool friday_session_known,
+                                  const int friday_end_hour,
+                                  const int friday_end_minute,
+                                  bool &use_weekend_close,
+                                  int &close_hour,
+                                  int &close_minute,
+                                  string &reason)
+{
+   use_weekend_close = true;
+   close_hour = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_HOUR;
+   close_minute = XSPARK_CANDLEFLOW_WEEKEND_CLOSE_MINUTE;
+   reason = "";
+
+   if(trades_at_weekend)
+   {
+      use_weekend_close = false;
+      close_hour = 0;
+      close_minute = 0;
+      reason = "This market trades at the weekend, so there is no weekend gap to close before.";
+      return true;
+   }
+
+   const bool usable = friday_session_known &&
+                       friday_end_hour >= 0 && friday_end_hour <= 23 &&
+                       friday_end_minute >= 0 && friday_end_minute <= 59;
+
+   if(!usable)
+   {
+      reason = StringFormat("The broker did not report a usable Friday session, so trades are closed at %02d:%02d on its clock.",
+                            close_hour,
+                            close_minute);
+      return true;
+   }
+
+   const int end_minutes = friday_end_hour * 60 + friday_end_minute;
+   int flatten_minutes = end_minutes - XSPARK_CANDLEFLOW_WEEKEND_CLOSE_LEAD_MINUTES;
+
+   // A session ending inside the lead time would push the flatten into the
+   // previous day, which ShouldWeekendClose cannot express. Opening the market
+   // and immediately closing is the honest reading of that, and it is still the
+   // safe direction.
+   if(flatten_minutes < 0)
+      flatten_minutes = 0;
+
+   close_hour = flatten_minutes / 60;
+   close_minute = flatten_minutes % 60;
+
+   reason = StringFormat("This market's Friday session ends at %02d:%02d, so trades are closed at %02d:%02d on the broker's clock.",
+                         friday_end_hour,
+                         friday_end_minute,
+                         close_hour,
+                         close_minute);
+   return true;
+}
+
 // A no-target plan is signalled by a non-positive reward ratio, which the
 // execution engine reads as "send no take-profit". It is what a signal carries
 // whenever the operator has not configured a hard target.
@@ -341,7 +493,7 @@ void XSparkDefaultCandleFlowConfig(XSparkCandleFlowConfig &config)
    config.buffer_atr_mult = 0.10;
    config.buffer_range_pct = 0.0;
    config.buffer_fixed_price = 0.0;
-   config.min_stop_atr_mult = 0.25;
+   config.min_stop_atr_mult = XSPARK_CANDLEFLOW_MIN_STOP_ATR_MULT;
    config.max_stop_atr_mult = 0.0;
    config.min_body_atr_mult = 0.0;
    config.final_target_r = 0.0;
