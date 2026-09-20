@@ -95,7 +95,13 @@ enum EXSparkScoreBotPatternId
    // per-position state, and a persisted id must rebuild the right name after a
    // restart rather than borrowing another pattern's.
    XSPARK_PATTERN_BULLISH_CANDLE = 15,
-   XSPARK_PATTERN_BEARISH_CANDLE = 16
+   XSPARK_PATTERN_BEARISH_CANDLE = 16,
+   // TrendScalp. A pullback to the fast average that closed back in the
+   // direction of the trend. Appended, never renumbered: the id is persisted
+   // per position and a saved record must rebuild the same name after a
+   // restart.
+   XSPARK_PATTERN_SCALP_PULLBACK_LONG = 17,
+   XSPARK_PATTERN_SCALP_PULLBACK_SHORT = 18
 };
 
 struct XSparkCandle
@@ -266,6 +272,8 @@ string XSparkPatternNameFromId(const EXSparkScoreBotPatternId pattern_id)
       case XSPARK_PATTERN_MOMENTUM_TURN: return "Momentum Turn";
       case XSPARK_PATTERN_BULLISH_CANDLE: return "Bullish Close";
       case XSPARK_PATTERN_BEARISH_CANDLE: return "Bearish Close";
+      case XSPARK_PATTERN_SCALP_PULLBACK_LONG: return "Pullback Long";
+      case XSPARK_PATTERN_SCALP_PULLBACK_SHORT: return "Pullback Short";
       default:
          return "NO PATTERN";
    }
