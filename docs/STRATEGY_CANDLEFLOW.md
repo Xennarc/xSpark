@@ -103,6 +103,7 @@ Two things worth knowing:
 
 - The level must be a usable percentage even while the switch is off. There is only one way to express "off", and it is the switch.
 - Switching it off does **not** clear an emergency stop that has already fired. The latch records that the account really did fall that far, and only `InpFlowClearKillswitchLatch` undoes it. If the switch reads off and the bot still will not enter, the Experts log says so in a CRITICAL line. A Strategy Tester run never inherits a latch, so this only comes up on a live chart.
+- `InpFlowClearKillswitchLatch` acts **only when something is actually latched**. Leaving it at true does not keep resetting the drawdown measurement every time the bot restarts — it just logs a warning that the input is still armed. Set it back to false anyway; a setting left on is a setting you have stopped reading.
 
 ### The two comparisons worth running
 

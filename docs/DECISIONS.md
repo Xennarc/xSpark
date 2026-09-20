@@ -116,7 +116,7 @@ Reason: two changes that only make sense together. The account owner asked for m
 
 The total-drawdown high-water mark and the killswitch latch were RAM-only, while the shorter-horizon daily halt was persisted. The asymmetry was backwards. `SafetyManager::Initialize` seeded the peak from live equity and cleared the latch, and MT5 reruns `OnInit` on any input change, recompile, reattach or terminal restart. The one control standing between a losing streak and the account was therefore the easiest piece of state in the system to erase, and it erased itself on precisely the action an operator takes when a latched EA has stopped trading: restarting it. The reference run in `IMPROVEMENT_PLAN.md` reached 7.98% against an 8.0% limit, so this was roughly two dollars of equity away from mattering. Both values now live in the same `StateStore` the daily state uses, under keys `tP` and `tL`, written when a new peak is set and when the latch fires.
 
-A persisted latch needs a deliberate way out, and it must not be the restart itself. `InpClearKillswitchLatch` is a dedicated input, default false, that re-anchors the peak and clears the latch with a CRITICAL log line recording that it happened. An input change alone does not clear it, so a routine parameter edit or a VPS reboot cannot silently reset the ruin stop.
+A persisted latch needs a deliberate way out, and it must not be the restart itself. `InpClearKillswitchLatch` is a dedicated input, default false, that clears the latch and re-anchors the peak with a CRITICAL log line recording that it happened. It acts only when there is a latch to clear — see the addendum below for why that qualifier had to be added. An input change alone does not clear it, so a routine parameter edit or a VPS reboot cannot silently reset the ruin stop.
 
 On sizing: with the edge measured in `IMPROVEMENT_PLAN.md` - 36% win rate, 1.974 payoff, +0.0706 R per trade - the growth-optimal Kelly fraction is 3.58% of balance per trade, and expected log-growth crosses zero at about 7.2%. That second number is the one that matters and it is not intuitive: above it, a genuinely positive edge still shrinks the account, because compounding is multiplicative and a large loss requires a larger gain to undo. Risk per trade is therefore capped at `XSPARK_MAX_ALLOWED_RISK_PCT` = 10%, which leaves room to size past the optimum deliberately while refusing a fat-fingered entry that would previously have been accepted in silence - the risk inputs were checked only for positivity.
 
@@ -127,6 +127,20 @@ The drawdown limits move with the risk, because they are not independent of it. 
 `XSparkConsecutiveLossesToDrawdown` computes the tolerance and the EA prints it at startup for whatever values are configured, with a WARNING when the killswitch would latch in fewer than six losses. The relationship is logarithmic rather than linear - eight losses at 1% cost 7.73%, not 8% - and getting it wrong by one tells an operator the account survives a loss fewer or more than it does.
 
 This change RAISES risk at the account owner's explicit request. The implication, stated plainly: at these settings a 25% account drawdown is an expected outcome of ordinary variance, not a malfunction, and the killswitch is calibrated to permit it rather than to prevent it. It is not martingale, grid, averaging-down or recovery sizing - risk remains a fixed percentage of balance and is not increased after a loss - so AGENTS.md rule 26 is not engaged. Nothing here establishes that the edge is real; the measured edge remains roughly 0.35 standard errors from zero on fifty trades, and Kelly sizing of an edge that does not exist loses money faster than conservative sizing of the same non-edge.
+
+### Addendum: the clear input is a one-shot, because a forgotten checkbox is a restart
+
+This ADR persisted the peak precisely so `OnInit` could not erase it, and then handed the clear input the power to erase it on every `OnInit` anyway.
+
+`if(clear_killswitch_latch)` re-anchored the peak to live equity and wrote `tP` whether or not anything was latched. The clear is a plain boolean input the operator sets by hand and the CRITICAL log asks them to set back — which is to say it is exactly the thing that gets left on. MT5 reruns `OnInit` on an input change, a recompile, a chart-period change, a reattach and a terminal restart, so a forgotten `true` re-anchored the ruin stop on every one of them.
+
+The consequence is the ADR's own failure mode with a different trigger. Peak 10,000, equity falls to 8,000, operator changes the chart period: the peak becomes 8,000 and the drawdown reads 0%. Touch the chart again at 7,000 and it re-anchors again. The killswitch can never fire, because the measurement keeps restarting from the bottom of whatever hole the account is in. The original text of this ADR describes that as "the easiest piece of state in the system to erase"; persisting it closed the restart door and left this one open.
+
+So the clear only acts when there is a latch to act on. With nothing latched the persisted peak stands untouched and a WARN says the input is still armed, which also turns a silent mistake into a visible one. Clearing a real latch is unchanged: peak re-anchored on purpose, latch dropped, CRITICAL recorded.
+
+The decision lives in `XSparkResolveKillswitchRestore`, a pure function, so all six branches are covered by the portable suite without a terminal — including the operator sequence itself: clear a real latch, then reattach four times while the account falls another 2,000, and assert the peak does not move. Reverting the rule to the old unconditional clear fails three of those assertions, which is how the regression is known to be caught rather than merely described.
+
+This is shared code, so it fixes ScoreBot and CandleFlow together.
 
 ## ADR-023 - Risk Is Capped At The Account, Not Only Per Trade
 
