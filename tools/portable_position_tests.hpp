@@ -416,6 +416,17 @@ void Run() {
  Check("repeated rejections latch the ladder off for the position",
        rejected.partial_calls.size()==size_t(2*XSPARK_PROFIT_LADDER_MAX_REJECTS) && VolumeIs(live[0].volume,1));
 
+ // The EARLY style on the smallest position it is meant to serve. Its second
+ // step asks for a quarter of the OPENING volume to be left, and the budget is
+ // measured against what is live - so it fires where a per-step percentage of
+ // 25% (0.0075 lots) would have rounded to nothing.
+ Seed();Manager early;
+ for(auto& b:live) {b.volume=0.03; saved[b.id].initial_lots=0.03;}
+ LadderOnce(early,102,102.1,logger,1.0,50,2.0,25);
+ Check("the early style's first step fires on 0.03 lots",early.partial_calls.size()==2 && VolumeIs(live[0].volume,0.02));
+ LadderOnce(early,104,104.1,logger,1.0,50,2.0,25);
+ Check("the early style's second step fires there too",early.partial_calls.size()==4 && VolumeIs(live[0].volume,0.01));
+
  // Shorts bank on the way down.
  SeedShort();Manager ladder_short;
  LadderOnce(ladder_short,98.1,98.2,logger,1.0,30,2.0,30);

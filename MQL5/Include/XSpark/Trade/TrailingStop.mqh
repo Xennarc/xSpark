@@ -84,6 +84,62 @@ void XSparkDefaultTrailTuning(XSparkTrailTuning &tuning)
    tuning.breakeven_offset_r = XSPARK_TRAIL_DEFAULT_BREAKEVEN_OFFSET_R;
 }
 
+// How much room the trade is given, as one choice instead of seven numbers.
+//
+// Seven numbers describe one behaviour, and an operator has no information with
+// which to choose "tighten linearly from 3.0 to 1.5 average ranges between 1 and
+// 4 times the amount risked". What they do have an opinion about is how much
+// room to give a trade. So the seven become three named settings, each of them a
+// configuration that is known to be internally consistent.
+//
+// This is not only simpler, it is safer. Every reachable configuration is now
+// one that XSparkValidateTrailTuning accepts, so the class of mistake where a
+// typed-in combination silently blocks every entry cannot happen from the Inputs
+// tab at all. The validator still runs - see XSparkTrailTuningForStyle.//
+// THE ORDINALS ARE A WIRE FORMAT. MetaTrader stores an enum input in a .set file
+// as its INTEGER, not its name, so renumbering these or inserting a level in the
+// middle silently reinterprets every saved file - a stored 1 that meant one
+// style becoming another, on a live chart, with nothing logged. Add new levels
+// at the END and never renumber an existing one.
+enum EXSparkTrailStyle
+{
+   XSPARK_TRAIL_STYLE_CANDLE_ONLY = 0, // Follow the last finished candle, nothing else
+   XSPARK_TRAIL_STYLE_BALANCED    = 1, // Follow the best price, tightening as it matures
+   XSPARK_TRAIL_STYLE_TIGHT       = 2  // Follow closer and protect the entry sooner
+};
+
+// CANDLE ONLY keeps the floor and turns every refinement off, which is the bare
+// rule CandleFlow shipped with. It exists so the question "is the stack earning
+// its complexity" is one dropdown change rather than a preset file.
+#define XSPARK_TRAIL_CANDLE_ONLY_FLOOR_ATR 0.25
+
+// TIGHT gives back less of a move and is stopped out of more of them. Same
+// shape as the balanced stack, scaled down and brought forward.
+#define XSPARK_TRAIL_TIGHT_FLOOR_ATR 0.35
+#define XSPARK_TRAIL_TIGHT_ATR 2.0
+#define XSPARK_TRAIL_TIGHT_TIGHT_ATR 1.0
+#define XSPARK_TRAIL_TIGHT_TIGHTEN_START_R 0.5
+#define XSPARK_TRAIL_TIGHT_TIGHTEN_FULL_R 2.5
+#define XSPARK_TRAIL_TIGHT_BREAKEVEN_R 0.8
+#define XSPARK_TRAIL_TIGHT_BREAKEVEN_OFFSET_R 0.1
+
+void XSparkCandleOnlyTrailTuning(XSparkTrailTuning &tuning)
+{
+   XSparkResetTrailTuning(tuning);
+   tuning.min_trail_atr_mult = XSPARK_TRAIL_CANDLE_ONLY_FLOOR_ATR;
+}
+
+void XSparkTightTrailTuning(XSparkTrailTuning &tuning)
+{
+   tuning.min_trail_atr_mult = XSPARK_TRAIL_TIGHT_FLOOR_ATR;
+   tuning.chandelier_atr_mult = XSPARK_TRAIL_TIGHT_ATR;
+   tuning.chandelier_tight_atr_mult = XSPARK_TRAIL_TIGHT_TIGHT_ATR;
+   tuning.tighten_start_r = XSPARK_TRAIL_TIGHT_TIGHTEN_START_R;
+   tuning.tighten_full_r = XSPARK_TRAIL_TIGHT_TIGHTEN_FULL_R;
+   tuning.breakeven_at_r = XSPARK_TRAIL_TIGHT_BREAKEVEN_R;
+   tuning.breakeven_offset_r = XSPARK_TRAIL_TIGHT_BREAKEVEN_OFFSET_R;
+}
+
 bool XSparkValidateTrailTuning(const XSparkTrailTuning &tuning, string &reason)
 {
    reason = "";
@@ -470,6 +526,36 @@ bool XSparkTrailCandidate(const EXSparkSignalDirection direction,
    stop = floored;
    reason = floor_reason;
    return true;
+}
+
+// The tuning one style means, refused if it is not a configuration the trailing
+// stop can honour.
+//
+// The validator is deliberately still called even though every table here is
+// hand-picked and tested. It is the difference between "these presets are valid"
+// and "these presets are valid today"; a future edit to a table that broke one
+// would otherwise reach a live chart, and the caller already knows how to block
+// new entries on a refusal.
+bool XSparkTrailTuningForStyle(const EXSparkTrailStyle style,
+                               XSparkTrailTuning &tuning,
+                               string &reason)
+{
+   XSparkResetTrailTuning(tuning);
+   reason = "";
+
+   if(style == XSPARK_TRAIL_STYLE_CANDLE_ONLY)
+      XSparkCandleOnlyTrailTuning(tuning);
+   else if(style == XSPARK_TRAIL_STYLE_BALANCED)
+      XSparkDefaultTrailTuning(tuning);
+   else if(style == XSPARK_TRAIL_STYLE_TIGHT)
+      XSparkTightTrailTuning(tuning);
+   else
+   {
+      reason = "The trailing-stop style is not one this build knows.";
+      return false;
+   }
+
+   return XSparkValidateTrailTuning(tuning, reason);
 }
 
 #endif

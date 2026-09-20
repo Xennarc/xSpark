@@ -58,8 +58,11 @@ XSpark is a live-money MetaTrader 5 Expert Advisor. Mistakes can cause real fina
 45. Inputs that only take effect when a switch is on belong in a group with that switch, and the group name must say so.
 46. Every input needs a display label a non-trader can act on, within MetaTrader's 63-character limit. Name the thing, not the jargon: "typical candle size", not "ATR"; "the amount risked", not "R"; "buy/sell gap", not "spread".
 47. Shipped defaults must be the configuration you would actually recommend, and must pass their own validation. A default that blocks trading or needs editing before first use is a broken default.
+48. An input exists only if the operator knows something the code does not. A number that can only be copied from its default is not a choice, it is a way to get it wrong; make it a constant, derive it from the instrument, or fold it into a named choice.
+49. Where several numbers describe one behaviour, expose the behaviour rather than the numbers. A named choice whose every value is a tested, internally consistent configuration cannot be misconfigured; a set of free numbers with cross-parameter constraints will be.
+50. An enum used as an input is a dropdown: every member needs a label under the same 63-character limit, and its ordinal is a wire format. Add members at the end and never renumber one, because MetaTrader stores the integer and a saved `.set` would silently mean something else.
 
-Rules 41 to 46 are enforced by `tools/check_ea_inputs.py`, which runs in CI.
+Rules 41 to 46, and 50, are enforced by `tools/check_ea_inputs.py`, which runs in CI.
 
 ## Change Workflow
 
@@ -88,6 +91,7 @@ So a strategy's settings are part of that strategy, not of the platform:
 - Conditional inputs are grouped with the switch that enables them, so an operator can see what turning the switch off makes inert.
 - Labels are written for someone who does not know the terminology. MetaTrader shows the trailing comment as the input's name, so that comment is the entire user interface: it has to say what the setting does in words the reader already has.
 - Defaults are the recommended configuration, not the inert one. Shipping a feature switched off so that nothing changes is a reasonable step while it is unproven, but it is a step, not a destination.
+- The Inputs tab is a cost, not a feature. Every setting is a decision pushed onto someone with less context than the code has, a combination that has to be validated, and a dimension an optimizer can sweep out of its own valid domain. `docs/OPTIMIZATION.md` records what that costs at scale: a 1,024-pass run where only two passes would have initialised at all. Ask of each one what the operator knows that the code does not, and remove it when the answer is nothing.
 
 `tools/check_ea_inputs.py` enforces the mechanical parts of this and runs in CI. It is source analysis, not a compiler.
 

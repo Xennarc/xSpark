@@ -42,35 +42,88 @@ rather than in points.
 
 ## Settings
 
+Nine, and most people change two of them.
+
+A setting earns a place in the Inputs tab only if the operator knows something
+the code does not. You know your account and your appetite for risk, so those
+are settings. Nobody knows what to allow for entry slippage as a percentage of
+the smallest producible stop — a number like that can only be copied from a
+default, and a number that can only be copied is not a choice, it is a way to
+get it wrong.
+
 | Input | Default | What it does |
 | --- | --- | --- |
-| `InpFlowBufferATRMult` | 0.10 | Buffer beyond the wick, as a multiple of the average range. The component that rescales automatically across timeframes. |
-| `InpFlowBufferRangePct` | 0.0 | Extra buffer as a percentage of the signal candle's own range. |
-| `InpFlowBufferPoints` | 0.0 | Extra fixed buffer in strategy points. |
-| `InpFlowMinStopATRMult` | 0.25 | Stop floor. A stop closer than this to the fill is widened to it. |
-| `InpFlowMaxStopATRMult` | 0.0 | Stop ceiling. A wider stop refuses the entry. 0 disables it. |
-| `InpFlowMinBodyATRMult` | 0.0 | Ignore candles whose body is smaller than this. 0 disables it, keeping the rule literally single-factor. |
-| `InpFlowTP1AtR` / `InpFlowTP1ClosePct` | **1.5 / 40** | Bank 40% of the opening size once the trade is 1.5× its own risk in front. |
-| `InpFlowTP2AtR` / `InpFlowTP2ClosePct` | **3.0 / 30** | Bank another 30% at 3×. |
-| `InpFlowTP3AtR` / `InpFlowTP3ClosePct` | 0.0 / 0.0 | A third step, off by default. |
-| `InpFlowFinalTargetR` | 0.0 | A hard broker take-profit for whatever is left. Off by default — see below. |
-| `InpFlowUseVolatilityGate` | false | Only enter while the average range is inside the auto-calibrated band. Off by default. |
-| `InpFlowRiskPct` | 1.0 | Risk per trade, as a percentage of balance. |
-| `InpFlowUseWeekendClose` | true | Flatten this bot's trades before the Friday close. On by default: a position held on a trailing stop with no target carries the weekend gap. |
+| `InpFlowEnableTrading` | false | Place real trades. Off watches and logs only. |
+| `InpFlowRiskPct` | 1.0 | Money risked on one trade, as a percentage of balance. |
+| `InpFlowProfitStyle` | Balanced | Whether and when profit is banked as the trade runs. |
+| `InpFlowTrailStyle` | Balanced | How much room an open trade is given. |
+| `InpFlowMaxDailyDDPct` | 15.0 | Stop opening trades if the account falls this much today. |
+| `InpFlowMaxTotalDDPct` | 25.0 | Close everything if the account falls this much. 0 switches it off. |
+| `InpFlowMagicNumber` | 770332 | This bot's ID tag. A different one per chart. |
+| `InpFlowVerboseLog` | false | Detailed logging, for troubleshooting. |
+| `InpFlowClearKillswitchLatch` | false | Clear a latched emergency stop once, then set back to false. |
 
-### A note on the wording in MetaTrader
+### The two styles
 
-The Inputs tab shows each setting's trailing comment as its name, so that
-comment is the whole user interface. CandleFlow's labels avoid the trade jargon
-the identifiers still carry: **"typical candle size"** is ATR, **"the amount
-risked"** is R — the distance from entry to the first stop — and **"buy/sell
-gap"** is the spread. `tools/check_ea_inputs.py` fails the build on an input
-with no label or one past MetaTrader's 63-character limit.
+Both are dropdowns, and every choice is a complete configuration that the test
+suite proves is internally consistent. There is no combination of numbers here
+that can quietly stop the bot from trading, because there are no numbers.
 
-The trailing-stop settings have their own section below.
+**`InpFlowProfitStyle`** — whether to take money off the table on the way.
 
-The three buffer components add together, so `0.10` ATR plus `20`% of the candle
-range plus a fixed pad is a valid configuration.
+| Choice | What it does |
+| --- | --- |
+| Off | The trailing stop is the only exit. The strategy's original behaviour. |
+| **Balanced** | Bank 40% of the trade at 1.5× the amount risked and 30% at 3×, leaving 30% running. |
+| Early | Bank 50% at 1× and 25% at 2×, leaving 25% running. A smoother, smaller curve. |
+
+**`InpFlowTrailStyle`** — how much room the trade is given before the stop acts.
+
+| Choice | What it does |
+| --- | --- |
+| Candle only | Follow the last finished candle and nothing else. The bare rule. |
+| **Balanced** | Follow 3× the typical candle behind the best price, tightening to 1.5× as the trade matures, and protect the entry once it is 1.2× the amount risked in front. |
+| Tight | The same shape, brought forward: 2× tightening to 1×, entry protected at 0.8×. |
+
+"The amount risked" is the distance from the entry to the first stop, so "2 × the
+amount risked" is twice that distance in your favour.
+
+### The two comparisons worth running
+
+Both are one dropdown change, which is why the preset files that used to exist
+for them are gone:
+
+- **Did banking profit help?** `InpFlowProfitStyle` Balanced against Off.
+- **Is the trailing stack earning its complexity?** `InpFlowTrailStyle` Balanced
+  against Candle only.
+
+Change one, run the same period, compare. Run it on **real ticks**: the
+take-profit levels trigger on a tick-resolution price while the trail's
+high-water mark only advances on finished candles, so low-resolution modelling
+understates the levels.
+
+### What is no longer a setting
+
+Sixty-four inputs were removed. They fall into three groups, and the reasoning
+differs for each.
+
+**Measured from the market, not chosen.** The widest spread worth trading
+through, how far a price may drift while an order travels, and what counts as a
+quiet or wild market are all derived at startup from the instrument's own recent
+range. That derivation is exactly what lets one configuration be correct on gold
+and on an FX pair without anyone editing anything — so it stayed, and its knobs
+went. There is no longer a way to turn it off, and no manual fallback to get
+wrong. See ADR-033.
+
+**Fixed, because there was never a second sensible value.** The wick buffer, the
+stop floor, one trade at a time, the Friday close, the panel's position and size.
+These live in `Strategy/CandleFlow.mqh` beside the rule they belong to.
+
+**Mandatory, because switching them off was never the right answer.** The spread
+filter, the broker's minimum-stop-distance check, the free-margin check, the
+stale-quote gate and the weekend close can no longer be disabled. Removing a
+switch from a safety control does not weaken it; it removes the only way to
+weaken it.
 
 ## The trailing stop
 
@@ -80,13 +133,19 @@ layers. On each closed candle every enabled layer proposes
 a stop, the **most protective** one wins, and the result is then bounded by the
 floor and by a one-way ratchet that refuses anything looser than the live stop.
 
-| Layer | Input | Default | What it proposes |
-| --- | --- | --- | --- |
-| Candle anchor | always on | — | the far wick of the last closed candle, plus the buffer |
-| Chandelier | `InpFlowTrailATRMult` | **3.0** | this many ATRs back from the best price the trade has seen |
-| Tiering | `InpFlowTrailTightenStartR` / `FullR` / `InpFlowTrailTightATRMult` | **1.0 / 4.0 / 1.5** | shrinks the chandelier multiple linearly as the trade matures |
-| Breakeven lock | `InpFlowBreakevenAtR` / `InpFlowBreakevenOffsetR` | **1.2 / 0.1** | entry ± offset, once the trade has been that far in front |
-| Floor | `InpFlowMinTrailATRMult` | **0.35** | not a proposer — it pushes the winner away from the market if it landed too close |
+| Layer | Balanced | What it proposes |
+| --- | --- | --- |
+| Candle anchor | always on | the far wick of the last closed candle, plus the buffer |
+| Chandelier | **3.0** | this many typical candles back from the best price the trade has seen |
+| Tiering | **1.0 / 4.0 / 1.5** | shrinks the chandelier multiple linearly as the trade matures |
+| Breakeven lock | **1.2 / 0.1** | entry ± offset, once the trade has been that far in front |
+| Floor | **0.35** | not a proposer — it pushes the winner away from the market if it landed too close |
+
+Those are the **Balanced** numbers. Candle only turns every layer off and keeps
+the floor; Tight uses 2.0 / 0.5 / 2.5 / 1.0 and locks the entry at 0.8. The
+tables live in `Trade/TrailingStop.mqh` as `XSPARK_TRAIL_*`, which is what
+`TestTrailingStop.mq5` validates — so a style that would block trading cannot
+reach a chart.
 
 The trail governs whatever the take-profit ladder has not banked. The two are
 independent: the ladder never moves a stop, and the trail never closes volume.
@@ -226,14 +285,14 @@ entries stop, open positions keep being managed, and the panel says so.
 
 ### The hard target ships off, and that is the recommendation
 
-`InpFlowFinalTargetR` places a real broker-side take-profit on the whole
-remainder. It is off by default, and not out of caution about an unproven
-feature: a fixed cap on the one part of the trade that is deliberately left
-running is the opposite of what the ladder above it is for. It exists for an
-operator who wants an exit that fills while the terminal is closed, and it is
-theirs to switch on.
+A hard broker-side take-profit on the whole remainder is supported by the code
+and is **off in every shipped style**. That is not caution about an unproven
+feature: a fixed cap on the one part of the trade deliberately left running is
+the opposite of what the ladder above it is for. It stays reachable because a
+future style may want it — `XSparkProfitLadder.final_target_r` — but no choice
+in the Inputs tab turns it on.
 
-Switching it on is the only setting in the group that reaches the **entry** path.
+Were a style to switch it on, it would be the only exit choice reaching the **entry** path.
 The execution engine derives the target from the ratio at send time and then
 judges the broker-valid result against a band of 0.95× to 1.25× the requested
 distance. The band is asymmetric because broker stop-level validation only ever
@@ -243,18 +302,19 @@ intended". A broker that has to push the target past the upper edge refuses the
 entry rather than silently retargeting it, and the refusal is made at planning
 time so the candle's signal is not consumed first.
 
-With `InpFlowFinalTargetR = 0` the order is sent with `TP = 0` exactly as before,
-and the defensive refusal that guarantees it is unchanged.
+With the target at zero — which is every shipped style — the order is sent with
+`TP = 0` exactly as before, and the defensive refusal that guarantees it is
+unchanged.
 
 ### Three consequences you cannot see from the Inputs tab
 
 1. **A banked step lowers the position's live volume**, which `AccountExposure`
-   sums, so it frees budget under `InpFlowMaxAccountRiskPct`. That is inert at
-   `InpFlowMaxOpenTrades = 1` and live the moment that limit is raised. It is
+   sums, so it frees budget under the account risk cap. That is inert while this
+   bot holds one trade at a time, which it now always does. It is
    not martingale — nothing sizes from a previous outcome — but it is a
    behaviour change in an account-level risk control, so it is written down.
-2. **A non-zero `InpFlowFinalTargetR` puts every entry under a reward-ratio
-   band.** A broker whose stop level pushes the target more than 25% past the
+2. **A hard target, were a style to set one, puts every entry under a
+   reward-ratio band.** A broker whose stop level pushes the target more than 25% past the
    requested distance has the entry refused outright, with the candle's signal
    already spent. The refusal is in the journal; the panel shows the reason.
 3. **The Strategy Tester's modelling mode changes the result.** The ladder
@@ -283,8 +343,8 @@ often than the second — not the feature being broken.
 
 ### Turning the whole thing off
 
-Set `InpFlowTP1AtR` and `InpFlowTP2AtR` to 0 and the strategy is the original
-no-target rule, price for price.
+Set `InpFlowProfitStyle` to Off and the strategy is the original no-target rule,
+price for price.
 
 Two presets write all seven settings out as explicit zeros, because a `.set`
 file applies only the identifiers it lists and a baseline that omitted them
@@ -304,8 +364,8 @@ would silently be measuring the ladder as well as whatever else it changed:
 A trailing stop that can land a few points from the bid is a delayed market
 order. A narrow candle, or a tightened chandelier late in a move, will do
 exactly that, and the spread alone then closes a position whose move was still
-intact. `InpFlowMinTrailATRMult` widens any such candidate back to a survivable
-distance from the market.
+intact. The trail floor widens any such candidate back to a survivable distance
+from the market, in every style including Candle only.
 
 Widening can only ever *reduce* the chance of being stopped, and the ratchet
 still refuses anything looser than the live stop, so the floor cannot give back
@@ -329,7 +389,7 @@ in units of its own initial risk. Measuring that from the peak rather than the
 live price makes it **monotonic**: a tier once reached is never given back, so a
 retracement can never loosen the trail.
 
-Between `InpFlowTrailTightenStartR` and `InpFlowTrailTightenFullR` the chandelier
+Between the two tiering marks the chandelier
 multiple moves *linearly* from the wide value to the tight one. There is no tier
 boundary at which a small price change jumps the stop.
 
@@ -346,7 +406,7 @@ open keep trailing on the last accepted plan.
 
 The buffer alone does not bound the stop distance. A very small candle produces
 a very small stop, and a very small stop produces a very large position for the
-same percentage risk. `InpFlowMinStopATRMult` widens such a stop to a floor measured
+same percentage risk. The stop floor widens such a stop to a bound measured
 from the fill price. Widening a stop always *reduces* the volume, so the floor
 can never increase realised risk — it only prevents the size blow-up.
 
@@ -377,9 +437,9 @@ The check is scoped to this bot's Magic Number, so ScoreBot_v3 holding an
 opposite position on the same symbol does not block CandleFlow. They are
 separate bots and each may take its own side.
 
-Note that with `InpFlowMaxOpenTrades = 1` the slot limit already blocks a second
-trade of any direction. This check is what holds the rule when that limit is
-raised to let same-direction trades stack.
+The slot limit already blocks a second trade of any direction, and it is now
+fixed at one. This check is what holds the rule regardless — it is enforced by
+`ExecutionEngine` for every strategy, not only this one.
 
 ## Running it next to ScoreBot_v3
 
@@ -390,10 +450,11 @@ it: position reconciliation, the per-position state store, the trailing stop, th
 weekend close and the killswitch flatten. Neither bot can see, modify or close
 the other's positions.
 
-The one thing they *do* share is the account. `InpFlowMaxAccountRiskPct` is checked
-against **all** open positions, including the other bot's, so each EA refuses an
-entry that would push total open risk past its own cap. Set both caps with the
-combined account in mind.
+The one thing they *do* share is the account. CandleFlow's account risk cap is
+checked against **all** open positions, including the other bot's, so it refuses
+an entry that would push total open risk past it. CandleFlow's cap is fixed at
+6%; ScoreBot's is still an input, so set that one with the combined account in
+mind.
 
 Use a different Magic Number again if you want two CandleFlow instances on
 different charts. Either EA refuses to start on a Magic Number the other one

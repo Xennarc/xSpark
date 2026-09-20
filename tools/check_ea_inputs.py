@@ -16,6 +16,10 @@ Checks:
   4. No EA takes an input default from a DIFFERENT strategy's constants.
   5. Every input carries a display label, and it fits MetaTrader's 63-character
      limit, so the Inputs tab never falls back to showing the raw identifier.
+  6. Every member of an enum an EA uses as an input type carries the same kind of
+     label, because MetaTrader renders those comments as the dropdown's choices.
+     An unlabelled member shows the raw identifier to the operator, which is the
+     exact failure rule 46 exists to prevent - one level down.
 """
 from pathlib import Path
 import re
@@ -25,7 +29,11 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPERTS = sorted((ROOT / "MQL5/Experts").rglob("*.mq5"))
 REGISTRY = ROOT / "MQL5/Include/XSpark/Core/StrategyIdentity.mqh"
 
-INPUT_RE = re.compile(r"^input\s+\S+\s+(Inp\w+)\s*=\s*([^;]*);(.*)$", re.M)
+INPUT_RE = re.compile(r"^input\s+(\S+)\s+(Inp\w+)\s*=\s*([^;]*);(.*)$", re.M)
+# An enum an EA names as an input type. Members are matched with their trailing
+# comment, which is what MetaTrader shows in the dropdown.
+ENUM_RE = re.compile(r"^enum\s+(\w+)\s*\{(.*?)\}\s*;", re.M | re.S)
+ENUM_MEMBER_RE = re.compile(r"^\s*(\w+)\s*(?:=\s*[^,/]+)?\s*,?\s*(//.*)?$", re.M)
 # MetaTrader renders an input's trailing comment as its name in the Inputs tab
 # and truncates past this, so a longer label loses the end of its own sentence.
 MAX_LABEL = 63
@@ -76,7 +84,7 @@ for expert in EXPERTS:
         )
     own_tag = own_tags.pop() if len(own_tags) == 1 else None
 
-    for name, default, trailing in declarations:
+    for _type, name, default, trailing in declarations:
         # 1. Identifier uniqueness across EAs.
         if name in declared_by:
             fail(
@@ -111,7 +119,7 @@ for expert in EXPERTS:
                     )
 
     # 3b. The Magic Number input must come from the registry, not a literal.
-    magic_inputs = [(n, d) for n, d, _ in declarations if n.endswith("MagicNumber")]
+    magic_inputs = [(n, d) for _t, n, d, _c in declarations if n.endswith("MagicNumber")]
     if len(magic_inputs) != 1:
         fail(f"{rel}: expected exactly one Magic Number input, found {len(magic_inputs)}.")
     elif own_tag and f"XSPARK_{own_tag}_MAGIC_DEFAULT" not in magic_inputs[0][1]:
@@ -120,6 +128,39 @@ for expert in EXPERTS:
             f"XSPARK_{own_tag}_MAGIC_DEFAULT from the registry."
         )
 
+# 6. Enum members used as input types are the dropdown the operator reads.
+enum_members = {}
+for header in sorted((ROOT / "MQL5/Include").rglob("*.mqh")):
+    for enum_name, body in ENUM_RE.findall(header.read_text()):
+        members = []
+        for member, comment in ENUM_MEMBER_RE.findall(body):
+            if member:
+                members.append((member, comment[2:].strip() if comment else ""))
+        enum_members[enum_name] = (header.relative_to(ROOT), members)
+
+BUILTIN_INPUT_TYPES = {"bool", "double", "int", "long", "uint", "ulong", "string",
+                       "datetime", "color", "float", "short", "char", "uchar"}
+
+for expert in EXPERTS:
+    rel = expert.relative_to(ROOT)
+    for type_name, name, _default, _trailing in INPUT_RE.findall(expert.read_text()):
+        if type_name in BUILTIN_INPUT_TYPES or type_name.startswith("ENUM_"):
+            continue
+        if type_name not in enum_members:
+            fail(f"{rel}: input '{name}' has type '{type_name}', which is not an enum this checker can find "
+                 "under MQL5/Include; an operator would see an unlabelled control.")
+            continue
+        source, members = enum_members[type_name]
+        if not members:
+            fail(f"{rel}: the enum '{type_name}' behind input '{name}' declares no members ({source}).")
+        for member, label in members:
+            if not label:
+                fail(f"{source}: '{type_name}.{member}' has no label, so the dropdown for '{name}' would show "
+                     "the raw identifier; add a trailing // comment.")
+            elif len(label) > MAX_LABEL:
+                fail(f"{source}: the label on '{type_name}.{member}' is {len(label)} characters; MetaTrader "
+                     f"shows only {MAX_LABEL} in the dropdown for '{name}'.")
+
 for message in failures:
     print(f"FAIL: {message}")
 
@@ -127,4 +168,5 @@ if failures:
     print(f"\nEA input isolation: {len(failures)} problem(s).")
     sys.exit(1)
 
-print(f"EA inputs: {len(EXPERTS)} Expert Advisor(s), {len(declared_by)} inputs, no shared identifiers, all labelled.")
+print(f"EA inputs: {len(EXPERTS)} Expert Advisor(s), {len(declared_by)} inputs, "
+      "no shared identifiers, all labelled, every dropdown choice labelled.")
