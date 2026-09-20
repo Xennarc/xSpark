@@ -78,6 +78,19 @@ input EXSparkScalpExitStyle InpScalpExitStyle = XSPARK_SCALP_EXIT_EVEN; // Where
 // more than the risk percentage allows, so every signal would be refused. This
 // cap lets the smallest trade through when the money it risks is at or below
 // the cap. A cap at or below the risk percentage means "never raise".
+//
+// WHAT TO SET IT TO, and the one number that decides it: what the broker's
+// smallest trade risks at the widest stop this chart period allows. The
+// minimum-lot line prints it in the journal on the first bar, and warns when
+// this cap is below it. Set the cap above that figure or the EA will refuse
+// every entry - silently, unless verbose logging is on.
+//
+// On XAUUSD the smallest trade is 1 oz, so its risk in dollars EQUALS the stop
+// in dollars: about $4.33 on M1, which is 4.33% of a $100 balance and 0.87% of
+// a $500 one. A $100 gold account therefore needs roughly 5.0 here, and is
+// accepting about 4.3% risk per trade to get it - see the ceiling's own note in
+// TrendScalp.mqh. The shipped 3.0 is right from about $150 upwards, and every
+// balance above that only makes it safer.
 input group "04. Small accounts"
 input double InpScalpMinLotRiskCapPct = 3.0;     // Smallest trade may risk up to this % (0 = never exceed risk %)
 
@@ -1096,10 +1109,18 @@ void XSparkScalpLogCostLine()
 // The minimum-lot line: what the broker's smallest trade risks at the
 // smallest stop this setup can produce, and whether the risk setting or the
 // minimum lot is sizing this account.
+//
+// The smallest stop is the most favourable case, so it alone cannot say
+// whether entries will actually open: a live stop is sized off the candle and
+// runs much wider, and it is that wider risk the small-account cap refuses. So
+// the widest stop this chart period allows is measured too, and it is the one
+// that drives the warning below.
 void XSparkScalpLogMinimumLotLine()
 {
    const double volume_min = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    const double min_stop_price = XSparkScorePointsToPrice(g_auto_tune.min_stop_points, g_score_point_size);
+   const double typical_candle = XSparkScorePointsToPrice(g_auto_tune.reference_atr_points, g_score_point_size);
+   const double widest_stop = g_scalp_config.max_stop_atr_mult * typical_candle;
    const double balance = AccountInfoDouble(ACCOUNT_BALANCE);
 
    double risk_cash = 0.0;
@@ -1139,11 +1160,48 @@ void XSparkScalpLogMinimumLotLine()
                               g_scalp_daily_dd_pct,
                               losses_allowed));
 
+   // What the same minimum lot risks at the widest stop this chart period
+   // allows. A cap below this refuses entries even though the line above reads
+   // comfortably, which is the case that otherwise fails silently: every signal
+   // is aborted at sizing and only a verbose journal shows why.
+   double widest_risk_cash = 0.0;
+   double widest_risk_pct = 0.0;
+   string widest_risk_reason = "";
+   const bool widest_known = XSparkTrendScalpMinimumLotRisk(volume_min,
+                                                            widest_stop,
+                                                            SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE),
+                                                            XSparkScalpTickValue(),
+                                                            balance,
+                                                            widest_risk_cash,
+                                                            widest_risk_pct,
+                                                            widest_risk_reason);
+
    if(exceeds_budget && !within_cap)
+   {
       g_logger.Warn("PositionSizer",
                     StringFormat("No trade can open here at this balance: the smallest trade risks %.2f%%, above the %.2f%% small-account cap. A bigger balance, a cent account, or a longer chart period fixes this.",
                                  risk_pct,
                                  g_scalp_min_lot_cap_pct));
+      return;
+   }
+
+   if(!widest_known)
+   {
+      g_logger.Warn("PositionSizer", "The smallest trade's risk at the widest stop could not be stated: " + widest_risk_reason);
+      return;
+   }
+
+   if(widest_risk_pct > g_scalp_min_lot_cap_pct)
+      g_logger.Warn("PositionSizer",
+                    StringFormat("Entries will be refused at this balance whenever the stop runs wide: the smallest trade %s lots risks %.2f = %.2f%% at the widest stop this chart period allows (%s), above the %.2f%% small-account cap, even though it risks only %.2f%% at the smallest stop. "
+                                 "Raise the balance, use a cent account, move to a longer chart period, or lift the small-account cap above %.2f%%.",
+                                 DoubleToString(volume_min, volume_digits),
+                                 widest_risk_cash,
+                                 widest_risk_pct,
+                                 DoubleToString(widest_stop, g_market_state.Digits()),
+                                 g_scalp_min_lot_cap_pct,
+                                 risk_pct,
+                                 widest_risk_pct));
 }
 
 // Samples the instrument's own range and derives the thresholds from it,

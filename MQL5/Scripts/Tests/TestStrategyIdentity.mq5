@@ -23,7 +23,29 @@ void RunStrategyIdentityTests()
    IdentityCheck("every shipped strategy has its own Magic Number",
                  XSPARK_SCOREBOT_MAGIC_DEFAULT != XSPARK_CANDLEFLOW_MAGIC_DEFAULT &&
                  XSPARK_SCOREBOT_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT &&
-                 XSPARK_CANDLEFLOW_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT);
+                 XSPARK_CANDLEFLOW_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT &&
+                 XSPARK_ICT_MAGIC_DEFAULT != XSPARK_SCOREBOT_MAGIC_DEFAULT &&
+                 XSPARK_ICT_MAGIC_DEFAULT != XSPARK_CANDLEFLOW_MAGIC_DEFAULT &&
+                 XSPARK_ICT_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT);
+
+   // The fourth strategy must refuse all three earlier numbers, and all three
+   // must refuse its. Every strategy added has to be checked against every
+   // strategy already shipped, not merely against the one before it.
+   IdentityCheck("the ICT strategy refuses all three earlier Magic Numbers",
+                 !XSparkMagicIsAvailable(XSPARK_SCOREBOT_MAGIC_DEFAULT, XSPARK_ICT_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_CANDLEFLOW_MAGIC_DEFAULT, XSPARK_ICT_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_TRENDSCALP_MAGIC_DEFAULT, XSPARK_ICT_MAGIC_DEFAULT, reason));
+
+   IdentityCheck("all three earlier strategies refuse the ICT Magic Number",
+                 !XSparkMagicIsAvailable(XSPARK_ICT_MAGIC_DEFAULT, XSPARK_SCOREBOT_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_ICT_MAGIC_DEFAULT, XSPARK_CANDLEFLOW_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_ICT_MAGIC_DEFAULT, XSPARK_TRENDSCALP_MAGIC_DEFAULT, reason));
+
+   IdentityCheck("the refusal names the ICT strategy when its number is taken",
+                 StringFind(reason, "ICT") >= 0);
+
+   IdentityCheck("the ICT strategy may use its own shipped default",
+                 XSparkMagicIsAvailable(XSPARK_ICT_MAGIC_DEFAULT, XSPARK_ICT_MAGIC_DEFAULT, reason));
 
    IdentityCheck("a strategy may use its own shipped default",
                  XSparkMagicIsAvailable(XSPARK_SCOREBOT_MAGIC_DEFAULT, XSPARK_SCOREBOT_MAGIC_DEFAULT, reason) &&
