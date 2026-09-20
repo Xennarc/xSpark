@@ -412,6 +412,19 @@ string XSparkIctKillZoneName(const EXSparkIctKillZones zones)
    return "London 07:00-10:00 and New York 12:00-15:00 UTC";
 }
 
+// Minutes since midnight UTC for a broker timestamp, given the broker's offset
+// from UTC in hours. Wraps, so an offset either side of midnight is still a
+// clock reading rather than a negative number.
+int XSparkIctMinutesUtc(const datetime broker_time, const int utc_offset_hours)
+{
+   const long seconds_per_day = 86400;
+   long utc = (long)broker_time - (long)utc_offset_hours * 3600;
+   long within_day = utc % seconds_per_day;
+   if(within_day < 0)
+      within_day += seconds_per_day;
+   return (int)(within_day / 60);
+}
+
 // ---------------------------------------------------------------------------
 // The assembled model.
 // ---------------------------------------------------------------------------
@@ -849,16 +862,305 @@ bool XSparkIctEvaluate(const double &opens[], const double &highs[], const doubl
    return true;
 }
 
-// The win rate a trade with NO edge shows at this target, before costs. Same
-// arithmetic TrendScalp uses, repeated here so the ICT EA does not depend on
-// another strategy's constant (AGENTS.md rule 43).
-double XSparkIctNoEdgeWinRate(const double target_r)
+// The two win rates every target implies. Same arithmetic the other strategies
+// use, declared here so this EA does not read through another strategy's
+// constant (AGENTS.md rule 43).
+//
+// Break-even is what the geometry alone demands. No-edge is what a trade with
+// no predictive content actually shows once the round-trip cost is paid, which
+// is always the lower of the two - and the gap between them is what the entry
+// has to be worth before any of this is a strategy rather than a lottery.
+double XSparkIctBreakEvenWinRate(const double target_r)
 {
    if(!MathIsValidNumber(target_r) || target_r <= 0.0)
       return 0.0;
    return 1.0 / (1.0 + target_r);
 }
 
+double XSparkIctNoEdgeWinRate(const double target_r, const double cost_share_pct)
+{
+   if(!MathIsValidNumber(target_r) || target_r <= 0.0 ||
+      !MathIsValidNumber(cost_share_pct) || cost_share_pct < 0.0 || cost_share_pct >= 100.0)
+      return 0.0;
+
+   return (1.0 - cost_share_pct / 100.0) / (1.0 + target_r);
+}
+
+// The 95% Wilson lower bound on a win rate.
+//
+// Used rather than the plain proportion because the question a tester pass
+// answers is not "was the win rate above break-even" but "is the sample large
+// enough to say so": 20 of 40 is not, 200 of 400 is. This is what stops a
+// lucky thirty trades from reading as an edge.
+#define XSPARK_ICT_WILSON_Z_SCORE 1.96
+
+bool XSparkIctWilsonLowerBound(const int wins, const int outcomes, double &lower)
+{
+   lower = 0.0;
+
+   if(outcomes <= 0 || wins < 0 || wins > outcomes)
+      return false;
+
+   const double n = (double)outcomes;
+   const double p = (double)wins / n;
+   const double z = XSPARK_ICT_WILSON_Z_SCORE;
+   const double z2 = z * z;
+
+   const double centre = p + z2 / (2.0 * n);
+   const double margin = z * MathSqrt(p * (1.0 - p) / n + z2 / (4.0 * n * n));
+   const double bound = (centre - margin) / (1.0 + z2 / n);
+
+   if(!MathIsValidNumber(bound))
+      return false;
+
+   lower = bound < 0.0 ? 0.0 : bound;
+   return true;
+}
+
+// Where the target sits, as a named choice rather than a free number: every
+// value is a tested, internally consistent configuration (AGENTS.md rule 49).
+enum EXSparkIctTargetStyle
+{
+   XSPARK_ICT_TARGET_TWO   = 0, // Target twice the stop (break-even 33%)
+   XSPARK_ICT_TARGET_THREE = 1  // Target three times the stop (break-even 25%)
+};
+
+bool XSparkIctTargetForStyle(const EXSparkIctTargetStyle style, double &target_r, string &reason)
+{
+   target_r = 0.0;
+   reason = "";
+
+   switch(style)
+   {
+      case XSPARK_ICT_TARGET_TWO:   target_r = 2.0; return true;
+      case XSPARK_ICT_TARGET_THREE: target_r = 3.0; return true;
+   }
+
+   reason = "The target style is not one this build knows; using twice the stop.";
+   target_r = 2.0;
+   return false;
+}
+
+
+
+// ---------------------------------------------------------------------------
+// How long a position may live.
+// ---------------------------------------------------------------------------
+//
+// This model's claim is about what happens in the hours after a stop pool is
+// run, so a position that is still open long after its kill zone closed is no
+// longer in the trade that was taken. Two bounds, whichever comes first: a
+// count of bars, and a wall-clock ceiling so a high chart period cannot turn
+// the bar count into days.
+
+#define XSPARK_ICT_MAX_HOLD_BARS 24
+#define XSPARK_ICT_MAX_HOLD_SECONDS 21600
+
+int XSparkIctMaxHoldSeconds(const int period_seconds)
+{
+   if(period_seconds <= 0)
+      return 0;
+
+   const long by_bars = (long)XSPARK_ICT_MAX_HOLD_BARS * (long)period_seconds;
+
+   if(by_bars > (long)XSPARK_ICT_MAX_HOLD_SECONDS)
+      return XSPARK_ICT_MAX_HOLD_SECONDS;
+
+   return (int)by_bars;
+}
+
+// The server time at which the kill zone now in progress ends, so an open
+// position is flattened rather than carried out of the window the model is
+// about. Returns false outside every window, where the hold time above is the
+// only bound and there is nothing to flatten at.
+bool XSparkIctKillZoneEnd(const datetime server_time,
+                          const int utc_offset_hours,
+                          const EXSparkIctKillZones zones,
+                          datetime &flatten_after,
+                          string &reason)
+{
+   flatten_after = 0;
+   reason = "";
+
+   const int minutes_utc = XSparkIctMinutesUtc(server_time, utc_offset_hours);
+
+   if(!XSparkIctInKillZone(minutes_utc, zones))
+   {
+      reason = "The clock is outside every kill zone, so there is no window end to flatten at.";
+      return false;
+   }
+
+   const bool london = minutes_utc >= XSPARK_ICT_LONDON_START_MIN && minutes_utc < XSPARK_ICT_LONDON_END_MIN;
+   const int end_minute = london ? XSPARK_ICT_LONDON_END_MIN : XSPARK_ICT_NEWYORK_END_MIN;
+
+   // Measured as a delta from now rather than rebuilt from a date, so it stays
+   // correct across the day boundary without a calendar.
+   const long seconds_per_day = 86400;
+   long utc = (long)server_time - (long)utc_offset_hours * 3600;
+   long within_day = utc % seconds_per_day;
+   if(within_day < 0)
+      within_day += seconds_per_day;
+
+   const long delta = (long)end_minute * 60 - within_day;
+   if(delta <= 0)
+   {
+      reason = "The kill zone ends in the past, so the window end is not usable.";
+      return false;
+   }
+
+   flatten_after = (datetime)((long)server_time + delta);
+   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Cost and the live stop.
+// ---------------------------------------------------------------------------
+//
+// Declared here rather than reused from another strategy: an input default or a
+// cost rule that reads through another strategy's constant changes silently
+// when that strategy is retuned (AGENTS.md rule 43). The arithmetic is the same
+// arithmetic because the instrument is the same instrument.
+
+// Spread plus commission, both ways, expressed as a price distance.
+bool XSparkIctRoundTripCost(const double spread,
+                            const double commission_per_lot,
+                            const double tick_size,
+                            const double tick_value,
+                            double &cost,
+                            double &commission_price,
+                            string &reason)
+{
+   cost = 0.0;
+   commission_price = 0.0;
+   reason = "";
+
+   if(!MathIsValidNumber(spread) || spread < 0.0)
+   {
+      reason = "The buy/sell gap is not a usable distance.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(commission_per_lot) || commission_per_lot < 0.0)
+   {
+      reason = "The commission per lot must be finite and non-negative.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(tick_size) || tick_size <= 0.0 ||
+      !MathIsValidNumber(tick_value) || tick_value <= 0.0)
+   {
+      reason = "The instrument's tick size and tick value are not usable, so the commission cannot be converted to price.";
+      return false;
+   }
+
+   commission_price = commission_per_lot * tick_size / tick_value;
+   cost = spread + commission_price;
+
+   if(!MathIsValidNumber(cost) || cost < 0.0)
+   {
+      cost = 0.0;
+      commission_price = 0.0;
+      reason = "Derived round-trip cost is not a usable distance.";
+      return false;
+   }
+
+   return true;
+}
+
+// The stop the EA actually sends, measured from the live quote rather than from
+// the price the model measured.
+//
+// The model already placed the stop beyond the swept extreme, which is the
+// invalidation. This applies the three things only the EA knows: how far the
+// market has moved since the signal bar closed, the floor the round-trip cost
+// implies, and the ceiling past which the trade is too wide to be this model's.
+//
+// A stop is only ever widened, never tightened: tightening it would move the
+// stop inside the level whose breach says the setup failed.
+bool XSparkIctStop(const EXSparkSignalDirection direction,
+                   const double entry_reference,
+                   const double model_stop,
+                   const double atr,
+                   const double round_trip_cost,
+                   const XSparkIctConfig &config,
+                   double &stop,
+                   double &distance,
+                   string &reason)
+{
+   stop = 0.0;
+   distance = 0.0;
+   reason = "";
+
+   if(direction != XSPARK_SIGNAL_BUY && direction != XSPARK_SIGNAL_SELL)
+   {
+      reason = "A stop needs a BUY or SELL direction.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(entry_reference) || entry_reference <= 0.0 ||
+      !MathIsValidNumber(model_stop) || model_stop <= 0.0)
+   {
+      reason = "The entry reference or the model's stop is not usable.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(atr) || atr <= 0.0)
+   {
+      reason = "The stop bounds need the typical candle size and it is unavailable.";
+      return false;
+   }
+
+   if(!MathIsValidNumber(round_trip_cost) || round_trip_cost < 0.0)
+   {
+      reason = "The round-trip cost is not a usable distance.";
+      return false;
+   }
+
+   string config_reason = "";
+   if(!XSparkIctConfigUsable(config, config_reason))
+   {
+      reason = config_reason;
+      return false;
+   }
+
+   const double model_distance = direction == XSPARK_SIGNAL_BUY ? entry_reference - model_stop
+                                                                : model_stop - entry_reference;
+
+   if(model_distance <= 0.0)
+   {
+      reason = "The market has passed the model's stop, so the setup is already invalid.";
+      return false;
+   }
+
+   const double atr_floor = config.min_stop_atr * atr;
+   const double cost_floor = round_trip_cost * 100.0 / config.max_cost_share_pct;
+   const double ceiling = config.max_stop_atr * atr;
+
+   double used = model_distance;
+   if(atr_floor > used)
+      used = atr_floor;
+
+   const bool cost_binding = cost_floor > used;
+   if(cost_binding)
+      used = cost_floor;
+
+   if(used > ceiling)
+   {
+      // Naming the cost first matters: a trade refused because the spread is
+      // wide is a different problem from one refused because the sweep was far
+      // away, and only the operator can fix the first.
+      reason = cost_binding
+               ? StringFormat("COST: the round-trip cost %.8f is %.1f%% of the widest stop this chart period allows (%.8f); at most %.1f%% is permitted. A longer chart period, a tighter-spread account, or a lower commission fixes this.",
+                              round_trip_cost, round_trip_cost / ceiling * 100.0, ceiling, config.max_cost_share_pct)
+               : StringFormat("The stop would sit %.2f typical candles from the entry, over the %.2f ceiling; the swept level is too far to trade from here.",
+                              used / atr, config.max_stop_atr);
+      return false;
+   }
+
+   distance = used;
+   stop = direction == XSPARK_SIGNAL_BUY ? entry_reference - used : entry_reference + used;
+   return true;
+}
 
 // ---------------------------------------------------------------------------
 // The strategy object.
@@ -874,19 +1176,6 @@ double XSparkIctNoEdgeWinRate(const double target_r)
 // This model does not enter at the market on the signal bar - it waits for
 // price to retrace into the imbalance - so the signal names the worst price it
 // will accept and execution refuses a fill beyond it.
-
-// Minutes since midnight UTC for a broker timestamp, given the broker's offset
-// from UTC in hours. Wraps, so an offset either side of midnight is still a
-// clock reading rather than a negative number.
-int XSparkIctMinutesUtc(const datetime broker_time, const int utc_offset_hours)
-{
-   const long seconds_per_day = 86400;
-   long utc = (long)broker_time - (long)utc_offset_hours * 3600;
-   long within_day = utc % seconds_per_day;
-   if(within_day < 0)
-      within_day += seconds_per_day;
-   return (int)(within_day / 60);
-}
 
 // The score every ICT signal carries. The model is a sequence that either
 // completed or did not, so there is nothing to grade: a fixed score keeps the

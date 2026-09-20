@@ -78,7 +78,8 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     # drawdown defaults must satisfy the ordering its own validator enforces -
     # a daily stop at or above the emergency stop can never fire.
     for ea in ['MQL5/Experts/XSpark/XSpark.mq5', 'MQL5/Experts/XSparkFlow/XSparkFlow.mq5',
-               'MQL5/Experts/XSparkScalp/XSparkScalp.mq5']:
+               'MQL5/Experts/XSparkScalp/XSparkScalp.mq5',
+               'MQL5/Experts/XSparkICT/XSparkICT.mq5']:
         text = (ROOT / ea).read_text()
         call = text.index('g_safety_manager.Initialize(')
         args = [line.split('//')[0].strip().rstrip(',')

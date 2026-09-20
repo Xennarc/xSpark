@@ -348,12 +348,33 @@ void RunIctConfigTests()
    IctCheck("a zero target is refused",
             !XSparkIctConfigUsable(config, reason));
 
-   IctCheck("the no-edge win rate at a 1:1 target is one half",
-            IctNear(XSparkIctNoEdgeWinRate(1.0), 0.5));
-   IctCheck("the no-edge win rate at a 2:1 target is one third",
-            IctNear(XSparkIctNoEdgeWinRate(2.0), 1.0 / 3.0));
-   IctCheck("an unusable target has no no-edge win rate",
-            IctNear(XSparkIctNoEdgeWinRate(0.0), 0.0));
+   IctCheck("the break-even win rate at a 1:1 target is one half",
+            IctNear(XSparkIctBreakEvenWinRate(1.0), 0.5));
+   IctCheck("the break-even win rate at a 2:1 target is one third",
+            IctNear(XSparkIctBreakEvenWinRate(2.0), 1.0 / 3.0));
+   IctCheck("an unusable target has no break-even win rate",
+            IctNear(XSparkIctBreakEvenWinRate(0.0), 0.0));
+
+   // Costs only ever lower it, and by exactly the cost share.
+   IctCheck("the no-edge win rate is the break-even rate less the cost share",
+            IctNear(XSparkIctNoEdgeWinRate(2.0, 6.0), 0.94 / 3.0));
+   IctCheck("a costless account's no-edge rate equals break-even",
+            IctNear(XSparkIctNoEdgeWinRate(2.0, 0.0), 1.0 / 3.0));
+   IctCheck("the no-edge rate is always at or below break-even",
+            XSparkIctNoEdgeWinRate(2.0, 6.0) < XSparkIctBreakEvenWinRate(2.0));
+   IctCheck("an unusable cost share has no no-edge win rate",
+            IctNear(XSparkIctNoEdgeWinRate(2.0, 100.0), 0.0) &&
+            IctNear(XSparkIctNoEdgeWinRate(2.0, -1.0), 0.0));
+
+   double target_r = 0.0;
+   string style_reason = "";
+   IctCheck("the two-times target style resolves to 2.0",
+            XSparkIctTargetForStyle(XSPARK_ICT_TARGET_TWO, target_r, style_reason) && IctNear(target_r, 2.0));
+   IctCheck("the three-times target style resolves to 3.0",
+            XSparkIctTargetForStyle(XSPARK_ICT_TARGET_THREE, target_r, style_reason) && IctNear(target_r, 3.0));
+   IctCheck("an unknown target style falls back to 2.0 and says so",
+            !XSparkIctTargetForStyle((EXSparkIctTargetStyle)99, target_r, style_reason) &&
+            IctNear(target_r, 2.0) && style_reason != "");
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +716,166 @@ void RunIctStrategyTests()
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Cost and the live stop.
+// ---------------------------------------------------------------------------
+
+void RunIctCostAndStopTests()
+{
+   double cost = 0.0, commission_price = 0.0;
+   string reason = "";
+
+   IctCheck("a spread-only account's round-trip cost is the spread",
+            XSparkIctRoundTripCost(0.30, 0.0, 0.01, 1.0, cost, commission_price, reason) &&
+            IctNear(cost, 0.30) && IctNear(commission_price, 0.0));
+   IctCheck("commission is converted to a price distance and added",
+            XSparkIctRoundTripCost(0.30, 7.0, 0.01, 1.0, cost, commission_price, reason) &&
+            IctNear(commission_price, 0.07) && IctNear(cost, 0.37));
+   IctCheck("a negative spread is refused",
+            !XSparkIctRoundTripCost(-0.1, 0.0, 0.01, 1.0, cost, commission_price, reason));
+   IctCheck("a negative commission is refused",
+            !XSparkIctRoundTripCost(0.30, -1.0, 0.01, 1.0, cost, commission_price, reason));
+   IctCheck("an unusable tick size is refused",
+            !XSparkIctRoundTripCost(0.30, 7.0, 0.0, 1.0, cost, commission_price, reason));
+
+   XSparkIctConfig config;
+   IctTestConfig(config);
+   config.min_stop_atr = 0.50;
+   config.max_stop_atr = 3.50;
+   config.max_cost_share_pct = 6.0;
+
+   double stop = 0.0, distance = 0.0;
+   const double atr = 2.0;
+
+   // The model's stop is 3.0 away and clears both floors, so it is used as is.
+   IctCheck("a model stop inside the bounds is used unchanged",
+            XSparkIctStop(XSPARK_SIGNAL_SELL, 100.0, 103.0, atr, 0.05, config, stop, distance, reason) &&
+            IctNear(distance, 3.0) && IctNear(stop, 103.0));
+   IctCheck("the buy side mirrors the sell side",
+            XSparkIctStop(XSPARK_SIGNAL_BUY, 100.0, 97.0, atr, 0.05, config, stop, distance, reason) &&
+            IctNear(distance, 3.0) && IctNear(stop, 97.0));
+
+   // Model stop 0.4 away, under the 0.50 x 2.0 = 1.0 floor: widened to 1.0.
+   IctCheck("a stop under the typical-candle floor is widened, never tightened",
+            XSparkIctStop(XSPARK_SIGNAL_SELL, 100.0, 100.4, atr, 0.0, config, stop, distance, reason) &&
+            IctNear(distance, 1.0) && IctNear(stop, 101.0));
+
+   // Cost floor: 0.30 round trip at a 6% share needs a stop of at least 5.0.
+   IctCheck("the cost floor widens a stop that would pay too much spread",
+            XSparkIctStop(XSPARK_SIGNAL_SELL, 100.0, 103.0, atr, 0.30, config, stop, distance, reason) &&
+            IctNear(distance, 5.0) && IctNear(stop, 105.0));
+
+   // Cost of 0.50 needs 8.333, over the 3.50 x 2.0 = 7.0 ceiling: refused, and
+   // the refusal must name the cost rather than the distance.
+   IctCheck("a cost floor over the ceiling is refused as a COST problem",
+            !XSparkIctStop(XSPARK_SIGNAL_SELL, 100.0, 103.0, atr, 0.50, config, stop, distance, reason) &&
+            StringFind(reason, "COST:") == 0);
+
+   // A swept level 10.0 away is over the ceiling with no cost pressure, and
+   // that refusal must NOT blame the cost.
+   IctCheck("a swept level past the ceiling is refused as a distance problem",
+            !XSparkIctStop(XSPARK_SIGNAL_SELL, 100.0, 110.0, atr, 0.0, config, stop, distance, reason) &&
+            StringFind(reason, "COST:") != 0 && reason != "");
+
+   // The market has already traded past where the stop would go.
+   IctCheck("a market past the model's stop is refused",
+            !XSparkIctStop(XSPARK_SIGNAL_SELL, 104.0, 103.0, atr, 0.0, config, stop, distance, reason));
+
+   IctCheck("an unusable typical candle is refused",
+            !XSparkIctStop(XSPARK_SIGNAL_SELL, 100.0, 103.0, 0.0, 0.0, config, stop, distance, reason));
+   IctCheck("no direction is refused",
+            !XSparkIctStop(XSPARK_SIGNAL_NONE, 100.0, 103.0, atr, 0.0, config, stop, distance, reason));
+   IctCheck("a refused stop reports nothing usable",
+            !XSparkIctStop(XSPARK_SIGNAL_SELL, 100.0, 0.0, atr, 0.0, config, stop, distance, reason) &&
+            stop == 0.0 && distance == 0.0);
+}
+
+void RunIctHoldAndFlattenTests()
+{
+   // 24 bars of M5 is 7200 seconds, inside the 21600 ceiling.
+   IctCheck("the hold time is the bar count on a low chart period",
+            XSparkIctMaxHoldSeconds(300) == 24 * 300);
+   // 24 bars of H1 would be 86400, so the wall-clock ceiling binds.
+   IctCheck("the wall-clock ceiling binds on a high chart period",
+            XSparkIctMaxHoldSeconds(3600) == XSPARK_ICT_MAX_HOLD_SECONDS);
+   IctCheck("an unusable chart period has no hold time",
+            XSparkIctMaxHoldSeconds(0) == 0 && XSparkIctMaxHoldSeconds(-1) == 0);
+
+   datetime flatten = 0;
+   string reason = "";
+
+   // 08:00 UTC on day 34: London ends at 10:00, two hours away.
+   const datetime in_london = (datetime)(34 * 86400 + 8 * 3600);
+   IctCheck("a position in the London window flattens at its end",
+            XSparkIctKillZoneEnd(in_london, 0, XSPARK_ICT_KZ_LONDON_NY, flatten, reason) &&
+            flatten == (datetime)(34 * 86400 + 10 * 3600));
+
+   // 13:00 UTC: New York ends at 15:00.
+   const datetime in_newyork = (datetime)(34 * 86400 + 13 * 3600);
+   IctCheck("a position in the New York window flattens at its end",
+            XSparkIctKillZoneEnd(in_newyork, 0, XSPARK_ICT_KZ_LONDON_NY, flatten, reason) &&
+            flatten == (datetime)(34 * 86400 + 15 * 3600));
+
+   // 11:00 UTC sits between the windows: nothing to flatten at.
+   const datetime between = (datetime)(34 * 86400 + 11 * 3600);
+   IctCheck("outside every window there is no flatten time",
+            !XSparkIctKillZoneEnd(between, 0, XSPARK_ICT_KZ_LONDON_NY, flatten, reason) &&
+            flatten == 0 && reason != "");
+
+   // A broker three hours ahead of UTC: its 11:00 is 08:00 UTC, still London.
+   const datetime broker_ahead = (datetime)(34 * 86400 + 11 * 3600);
+   IctCheck("the clock offset moves the window with the broker",
+            XSparkIctKillZoneEnd(broker_ahead, 3, XSPARK_ICT_KZ_LONDON_NY, flatten, reason) &&
+            flatten == (datetime)(34 * 86400 + 13 * 3600));
+
+   // Selecting one zone must not flatten inside the other.
+   IctCheck("a zone selection that excludes the window reports no end",
+            !XSparkIctKillZoneEnd(in_newyork, 0, XSPARK_ICT_KZ_LONDON, flatten, reason));
+}
+
+void RunIctWilsonTests()
+{
+   double lower = 0.0;
+
+   // A small sample cannot clear even a low bar: 20 of 40 is a coin flip.
+   IctCheck("a small even sample's lower bound sits well under one half",
+            XSparkIctWilsonLowerBound(20, 40, lower) && lower < 0.40 && lower > 0.30);
+
+   // The same proportion with ten times the sample is much tighter.
+   IctCheck("a large sample tightens the bound toward the proportion",
+            XSparkIctWilsonLowerBound(200, 400, lower) && lower > 0.45 && lower < 0.50);
+
+   // The bound is always below the proportion it came from.
+   double small = 0.0, large = 0.0;
+   XSparkIctWilsonLowerBound(20, 40, small);
+   XSparkIctWilsonLowerBound(200, 400, large);
+   IctCheck("more evidence at the same proportion raises the bound",
+            large > small);
+
+   IctCheck("a perfect record still reports a bound below one",
+            XSparkIctWilsonLowerBound(30, 30, lower) && lower < 1.0 && lower > 0.85);
+   IctCheck("no wins reports a bound of zero",
+            XSparkIctWilsonLowerBound(0, 30, lower) && IctNear(lower, 0.0));
+
+   IctCheck("an empty sample is refused",
+            !XSparkIctWilsonLowerBound(0, 0, lower) && lower == 0.0);
+   IctCheck("more wins than outcomes is refused",
+            !XSparkIctWilsonLowerBound(31, 30, lower));
+   IctCheck("a negative win count is refused",
+            !XSparkIctWilsonLowerBound(-1, 30, lower));
+
+   // The verdict this drives: at a 2R target break-even is 33.3%, so a 40%
+   // win rate over 30 trades must NOT read as an edge, and the same rate over
+   // 400 must.
+   const double break_even = XSparkIctBreakEvenWinRate(2.0);
+   XSparkIctWilsonLowerBound(12, 30, lower);
+   IctCheck("40% over thirty trades does not clear the 2R break-even",
+            lower <= break_even);
+   XSparkIctWilsonLowerBound(160, 400, lower);
+   IctCheck("40% over four hundred trades does clear it",
+            lower > break_even);
+}
+
 void RunIctTests()
 {
    RunIctSwingTests();
@@ -706,6 +887,9 @@ void RunIctTests()
    RunIctConfigTests();
    RunIctEvaluateTests();
    RunIctBullishMirrorTests();
+   RunIctCostAndStopTests();
+   RunIctHoldAndFlattenTests();
+   RunIctWilsonTests();
 #ifdef XSPARK_PORTABLE_TEST
    RunIctStrategyTests();
 #endif
