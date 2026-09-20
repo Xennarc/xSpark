@@ -223,36 +223,48 @@ void RunIctFvgTests()
 }
 
 // ---------------------------------------------------------------------------
-// Displacement.
+// Displacement, and the absence of any threshold on it.
 // ---------------------------------------------------------------------------
 
 void RunIctDisplacementTests()
 {
-   // Body of 1.0 against a typical candle of 1.0 clears a 0.65 floor.
-   IctCheck("a down body over the floor is a bearish displacement",
-            XSparkIctIsDisplacement(15.0, 14.0, 1.0, 0.65, XSPARK_SIGNAL_SELL));
-   IctCheck("an up body over the floor is a bullish displacement",
-            XSparkIctIsDisplacement(14.0, 15.0, 1.0, 0.65, XSPARK_SIGNAL_BUY));
+   // All that is read from the bar is which way its body points. There is no
+   // magnitude test, because in this method the evidence a leg displaced is the
+   // imbalance it left, not its size against an indicator.
+   IctCheck("a down body points at a raided high",
+            XSparkIctBodyDirection(15.0, 14.0) == XSPARK_SIGNAL_SELL);
+   IctCheck("an up body points at a raided low",
+            XSparkIctBodyDirection(14.0, 15.0) == XSPARK_SIGNAL_BUY);
 
-   // Direction must match the body's sign.
-   IctCheck("a down body is not a bullish displacement",
-            !XSparkIctIsDisplacement(15.0, 14.0, 1.0, 0.65, XSPARK_SIGNAL_BUY));
-   IctCheck("an up body is not a bearish displacement",
-            !XSparkIctIsDisplacement(14.0, 15.0, 1.0, 0.65, XSPARK_SIGNAL_SELL));
+   // THE CORRECTION THIS PINS. A tiny body is still a direction: an earlier
+   // draft refused it for being under 0.65 x ATR, which is a test this method
+   // does not contain. If that body leaves an imbalance and breaks structure,
+   // it displaced.
+   IctCheck("a small body is still a direction, with no size test applied",
+            XSparkIctBodyDirection(15.0, 14.99) == XSPARK_SIGNAL_SELL &&
+            XSparkIctBodyDirection(14.99, 15.0) == XSPARK_SIGNAL_BUY);
 
-   // Body of 0.5 against a typical candle of 1.0 misses the 0.65 floor: this is
-   // the drift case that leaves no imbalance worth returning to.
-   IctCheck("a body under the floor is not a displacement",
-            !XSparkIctIsDisplacement(15.0, 14.5, 1.0, 0.65, XSPARK_SIGNAL_SELL));
+   IctCheck("a bar that closed where it opened points nowhere",
+            XSparkIctBodyDirection(15.0, 15.0) == XSPARK_SIGNAL_NONE);
+   IctCheck("an unusable bar points nowhere",
+            XSparkIctBodyDirection(0.0 / 1.0, 15.0) == XSPARK_SIGNAL_BUY);
+}
 
-   IctCheck("a doji is not a displacement in either direction",
-            !XSparkIctIsDisplacement(15.0, 15.0, 1.0, 0.65, XSPARK_SIGNAL_SELL) &&
-            !XSparkIctIsDisplacement(15.0, 15.0, 1.0, 0.65, XSPARK_SIGNAL_BUY));
+// ---------------------------------------------------------------------------
+// Consequent encroachment.
+// ---------------------------------------------------------------------------
 
-   IctCheck("an unusable typical candle refuses the displacement",
-            !XSparkIctIsDisplacement(15.0, 14.0, 0.0, 0.65, XSPARK_SIGNAL_SELL));
-   IctCheck("no direction is not a displacement",
-            !XSparkIctIsDisplacement(15.0, 14.0, 1.0, 0.65, XSPARK_SIGNAL_NONE));
+void RunIctEncroachmentTests()
+{
+   double ce = 0.0;
+
+   // The method's entry reference is the gap's 50% midpoint, not either edge.
+   IctCheck("the encroachment is the midpoint of the gap",
+            XSparkIctConsequentEncroachment(103.0, 106.0, ce) && IctNear(ce, 104.5));
+   IctCheck("a one-sided gap has no midpoint",
+            !XSparkIctConsequentEncroachment(106.0, 103.0, ce) && ce == 0.0);
+   IctCheck("a zero-width gap has no midpoint",
+            !XSparkIctConsequentEncroachment(103.0, 103.0, ce));
 }
 
 // ---------------------------------------------------------------------------
@@ -339,13 +351,29 @@ void RunIctConfigTests()
             !XSparkIctConfigUsable(config, reason));
 
    XSparkDefaultIctConfig(config);
-   config.max_cost_share_pct = 100.0;
-   IctCheck("a cost share of one hundred percent is refused",
+   config.max_target_r = config.min_target_r;
+   IctCheck("an inverted reward band on the draw is refused",
             !XSparkIctConfigUsable(config, reason));
 
    XSparkDefaultIctConfig(config);
-   config.target_r = 0.0;
-   IctCheck("a zero target is refused",
+   config.stop_buffer_points = -1.0;
+   IctCheck("a negative stop buffer is refused",
+            !XSparkIctConfigUsable(config, reason));
+
+   XSparkDefaultIctConfig(config);
+   config.min_gap_price = -0.1;
+   IctCheck("a negative minimum imbalance is refused",
+            !XSparkIctConfigUsable(config, reason));
+
+   // The shipped swing definition is the method's own three-candle formation.
+   IctCheck("the shipped swing is a three-candle formation",
+            XSPARK_ICT_SWING_STRENGTH == 1);
+   IctCheck("the shipped configuration keeps the premium filter on",
+            XSPARK_ICT_USE_PREMIUM_DISCOUNT);
+
+   XSparkDefaultIctConfig(config);
+   config.max_cost_share_pct = 100.0;
+   IctCheck("a cost share of one hundred percent is refused",
             !XSparkIctConfigUsable(config, reason));
 
    IctCheck("the break-even win rate at a 1:1 target is one half",
@@ -366,48 +394,54 @@ void RunIctConfigTests()
             IctNear(XSparkIctNoEdgeWinRate(2.0, 100.0), 0.0) &&
             IctNear(XSparkIctNoEdgeWinRate(2.0, -1.0), 0.0));
 
-   double target_r = 0.0;
-   string style_reason = "";
-   IctCheck("the two-times target style resolves to 2.0",
-            XSparkIctTargetForStyle(XSPARK_ICT_TARGET_TWO, target_r, style_reason) && IctNear(target_r, 2.0));
-   IctCheck("the three-times target style resolves to 3.0",
-            XSparkIctTargetForStyle(XSPARK_ICT_TARGET_THREE, target_r, style_reason) && IctNear(target_r, 3.0));
-   IctCheck("an unknown target style falls back to 2.0 and says so",
-            !XSparkIctTargetForStyle((EXSparkIctTargetStyle)99, target_r, style_reason) &&
-            IctNear(target_r, 2.0) && style_reason != "");
+   // No target-style test: the target is not a style. It is wherever the draw
+   // on liquidity sits, and the reward ratio is an output of that. An earlier
+   // draft let an operator pick 2R or 3R, which this method does not do.
 }
 
 // ---------------------------------------------------------------------------
 // The assembled sequence.
 // ---------------------------------------------------------------------------
 //
-// One fixture in which every ICT condition holds, then mutated one condition at
-// a time. A passing signal proves the whole chain; each failure names exactly
-// the link that was cut.
+// One fixture in which every condition of the 2022 model holds, then mutated
+// one condition at a time. A passing signal proves the whole chain; each
+// failure names exactly the link that was cut.
 //
-// Series order, index 0 newest. The four bar roles the model depends on:
+// Series order, index 0 newest. Reading it as a chart means reading RIGHT to
+// left. The roles:
 //
-//   idx 10  swing high at 110.0          the stop pool
-//   idx  7  wick to 112.0, close 108.0   THE SWEEP - ran 110.0 and failed
-//   idx  5  swing low at 105.0           the structure the break must take
-//   idx  1  106.5 -> 102.0               THE DISPLACEMENT - closes below 105.0
-//   idx  0  high 103.0                   confirms the imbalance [103.0, 106.2]
+//   idx 13  swing low at 98.5           the draw on liquidity, the trade's target
+//   idx 10  swing high at 110.0         the stop pool
+//   idx  8  wick 112.0, close 108.6     THE RAID - ran 110.0 and failed
+//   idx  6  106.4 -> 103.4              displacement early in the leg
+//   idx  6  gap [106.6, 108.0]          the imbalance it left, in PREMIUM
+//   idx  5  swing low at 102.0          the structure the break must take
+//   idx  1  101.0 -> 100.0              THE BREAK - closes below 102.0
+//   idx  0                              confirms
 //
-// The imbalance spans bars 2, 1, 0: low[2] = 106.2 sits above high[0] = 103.0,
-// so the displacement skipped that range entirely. Every bar is a legal candle
-// (high >= max(open, close), low <= min(open, close)); an impossible bar would
-// make the fixture prove nothing.
+// The entry is the gap's consequent encroachment, 107.3, which sits at 69% of
+// the dealing range (98.5 leg low to 112.0 raided high) and so is in premium.
+//
+// THE POINT OF THE SHAPE. The imbalance that gets entered is at bar 6, not at
+// bars 0-2. An earlier draft of this model looked only at the newest three
+// bars, which sit at the BOTTOM of a down-leg and are therefore always in
+// discount - so its premium filter refused every sell it could generate, and
+// the draft wrongly concluded the filter did not apply to this method. This
+// fixture only passes because the search covers the whole leg.
+//
+// Every bar is a legal candle (high >= max(open, close), low <= min(open,
+// close)); an impossible bar would make the fixture prove nothing.
 
 void IctBearishFixture(double &opens[], double &highs[], double &lows[], double &closes[])
 {
-   ArrayResize(opens, 14); ArrayResize(highs, 14); ArrayResize(lows, 14); ArrayResize(closes, 14);
+   ArrayResize(opens, 16); ArrayResize(highs, 16); ArrayResize(lows, 16); ArrayResize(closes, 16);
 
-   double o[14] = {102.0, 106.5, 107.5, 107.0, 106.0, 106.5, 108.0, 107.0, 107.5, 109.0, 105.5, 104.5, 103.5, 103.0};
-   double h[14] = {103.0, 106.8, 108.0, 108.0, 107.5, 107.0, 108.2, 112.0, 108.5, 109.5, 110.0, 106.0, 105.0, 104.0};
-   double l[14] = {100.5, 101.5, 106.2, 106.5, 106.0, 105.0, 106.0, 106.5, 106.5, 107.0, 105.0, 104.0, 103.0, 102.5};
-   double c[14] = {101.0, 102.0, 106.8, 107.5, 107.0, 106.0, 106.5, 108.0, 107.0, 107.5, 109.0, 105.5, 104.5, 103.5};
+   double o[16] = { 98.0, 101.0, 103.4, 103.8, 104.0, 103.4, 106.4, 108.6, 108.2, 109.6, 106.8, 104.8, 102.8, 100.0,  99.2, 100.0};
+   double h[16] = { 98.4, 101.2, 103.6, 104.0, 104.6, 104.4, 106.6, 108.8, 112.0, 109.8, 110.0, 107.0, 105.0, 100.4, 100.2, 100.6};
+   double l[16] = { 96.8,  97.5, 103.0, 102.8, 102.5, 102.0, 103.0, 106.0, 108.0, 107.8, 106.6, 104.6, 102.6,  98.5,  99.0,  99.4};
+   double c[16] = { 97.2, 100.0, 103.2, 103.4, 102.8, 104.0, 103.4, 106.4, 108.6, 108.2, 109.6, 106.8, 104.8, 100.2,  99.4, 100.4};
 
-   for(int i = 0; i < 14; i++)
+   for(int i = 0; i < 16; i++)
    {
       opens[i] = o[i]; highs[i] = h[i]; lows[i] = l[i]; closes[i] = c[i];
    }
@@ -416,13 +450,34 @@ void IctBearishFixture(double &opens[], double &highs[], double &lows[], double 
 void IctTestConfig(XSparkIctConfig &config)
 {
    XSparkDefaultIctConfig(config);
-   config.swing_strength = 2;
-   config.swing_lookback = 8;
-   config.sweep_max_age_bars = 10;
-   config.min_displacement_atr = 0.65;
-   config.min_fvg_atr = 0.10;
-   config.use_premium_discount = false;
-   config.target_r = 2.0;
+   config.swing_strength = 1;
+   config.swing_lookback = 30;
+   config.sweep_max_age_bars = 12;
+   config.min_gap_price = 0.05;
+   config.stop_buffer_points = 20.0;
+   config.use_premium_discount = true;
+   config.min_target_r = 1.5;
+   config.max_target_r = 20.0;
+}
+
+// Every bar of the fixture must be a candle the market could actually print.
+void RunIctFixtureSanityTests()
+{
+   double opens[];
+   double highs[];
+   double lows[];
+   double closes[];
+   IctBearishFixture(opens, highs, lows, closes);
+
+   bool legal = true;
+   for(int i = 0; i < ArraySize(opens); i++)
+   {
+      const double body_high = MathMax(opens[i], closes[i]);
+      const double body_low = MathMin(opens[i], closes[i]);
+      if(highs[i] < body_high || lows[i] > body_low)
+         legal = false;
+   }
+   IctCheck("every fixture bar is a candle the market could print", legal);
 }
 
 void RunIctEvaluateTests()
@@ -436,146 +491,143 @@ void RunIctEvaluateTests()
    double closes[];
    IctBearishFixture(opens, highs, lows, closes);
 
-   const double atr = 3.0;   // the displacement's 4.5 body is 1.5 x ATR
-   const int london = 480;   // 08:00 UTC
+   const int london = 480;      // 08:00 UTC
+   const double point = 0.01;
 
    XSparkIctSetup setup;
    XSparkIctVerdicts verdicts;
 
-   const bool fired = XSparkIctEvaluate(opens, highs, lows, closes, 0, london, atr, config, setup, verdicts);
+   const bool fired = XSparkIctEvaluate(opens, highs, lows, closes, 0, london, point, config, setup, verdicts);
 
-   IctCheck("the complete bearish sequence produces a sell",
+   IctCheck("the complete 2022-model sequence produces a sell",
             fired && setup.direction == XSPARK_SIGNAL_SELL);
-   IctCheck("the sequence reports all four verdicts as met",
+   IctCheck("every verdict in the chain is met",
             verdicts.zone == "IN ZONE" && verdicts.sweep == "SWEPT HIGH" &&
-            verdicts.structure == "SHIFTED" && verdicts.imbalance == "FVG");
-   IctCheck("the sweep is found at the bar that ran the stops",
-            setup.sweep_index == 7);
-   IctCheck("the displacement is the bar before the one evaluated",
+            verdicts.structure == "SHIFTED" && verdicts.imbalance == "FVG" &&
+            verdicts.location == "PREMIUM" && verdicts.liquidity == "DRAW FOUND");
+   IctCheck("the raid is found at the bar that ran the stops",
+            setup.sweep_index == 8 && IctNear(setup.swept_level, 112.0));
+   IctCheck("the break of structure is the bar before the one evaluated",
             setup.shift_index == 1);
-   IctCheck("the swept level is the sweep bar's extreme, not the swing it ran",
-            IctNear(setup.swept_level, 112.0));
-   IctCheck("the imbalance is measured across the displacement",
-            IctNear(setup.gap_low, 103.0) && IctNear(setup.gap_high, 106.2));
-   IctCheck("the entry is the gap edge the market reaches first",
-            IctNear(setup.entry_limit, 103.0));
-   IctCheck("the stop sits beyond the swept extreme by the buffer",
-            IctNear(setup.stop, 112.0 + config.stop_buffer_atr * atr));
-   IctCheck("the target is the configured multiple of the stop distance",
-            IctNear(setup.target, 103.0 - config.target_r * (112.6 - 103.0)));
+
+   // THE CORRECTION. The gap entered is at bar 6, in the middle of the leg -
+   // not at bar 0, where the newest three bars sit.
+   IctCheck("the imbalance entered comes from inside the leg, not its end",
+            setup.gap_index == 6 &&
+            IctNear(setup.gap_low, 106.6) && IctNear(setup.gap_high, 108.0));
+   IctCheck("the entry is the imbalance's consequent encroachment, not an edge",
+            IctNear(setup.entry_limit, 107.3));
+   IctCheck("the entry sits in premium of the dealing range",
+            setup.range_position > 0.5 && setup.range_position < 1.0);
+
+   IctCheck("the stop sits beyond the raided extreme by the point buffer",
+            IctNear(setup.stop, 112.0 + 20.0 * point));
+   IctCheck("the target is the draw on liquidity, an older swing low",
+            IctNear(setup.target, 98.5));
+   IctCheck("the reward ratio is derived from that draw, not chosen",
+            IctNear(setup.target_r, (107.3 - 98.5) / (112.2 - 107.3)));
    IctCheck("the sell's stop is above its entry and its target below",
             setup.stop > setup.entry_limit && setup.target < setup.entry_limit);
 
    // --- now cut one link at a time ---
 
    IctCheck("the same sequence outside the kill zone is refused",
-            !XSparkIctEvaluate(opens, highs, lows, closes, 0, 0, atr, config, setup, verdicts) &&
+            !XSparkIctEvaluate(opens, highs, lows, closes, 0, 0, point, config, setup, verdicts) &&
             verdicts.zone == "OUTSIDE ZONE");
 
-   // Displacement body shrunk to 1.0 = 0.33 x ATR, under the 0.65 floor.
-   double flat_open[];
-   double flat_high[];
-   double flat_low[];
-   double flat_close[];
-   IctBearishFixture(flat_open, flat_high, flat_low, flat_close);
-   flat_close[1] = 105.5;
-   IctCheck("a shift bar without displacement is refused",
-            !XSparkIctEvaluate(flat_open, flat_high, flat_low, flat_close, 0, london, atr, config, setup, verdicts) &&
-            verdicts.sweep == "NO SWEEP");
-
-   // The sweep bar never reaches the 110.0 stop pool.
-   double nosweep_open[];
-   double nosweep_high[];
-   double nosweep_low[];
-   double nosweep_close[];
-   IctBearishFixture(nosweep_open, nosweep_high, nosweep_low, nosweep_close);
-   nosweep_high[7] = 109.0;
+   // The raid bar never reaches the 110.0 pool.
+   double a_o[];
+   double a_h[];
+   double a_l[];
+   double a_c[];
+   IctBearishFixture(a_o, a_h, a_l, a_c);
+   a_h[8] = 109.0;
    IctCheck("a sequence whose stop pool was never run is refused",
-            !XSparkIctEvaluate(nosweep_open, nosweep_high, nosweep_low, nosweep_close, 0, london, atr, config, setup, verdicts) &&
+            !XSparkIctEvaluate(a_o, a_h, a_l, a_c, 0, london, point, config, setup, verdicts) &&
             verdicts.sweep == "NO SWEEP");
 
-   // The sweep bar closes ABOVE the pool: a breakout, which is the other trade.
-   double breakout_open[];
-   double breakout_high[];
-   double breakout_low[];
-   double breakout_close[];
-   IctBearishFixture(breakout_open, breakout_high, breakout_low, breakout_close);
-   breakout_close[7] = 111.0;
-   IctCheck("a breakout through the stop pool is not a sweep",
-            !XSparkIctEvaluate(breakout_open, breakout_high, breakout_low, breakout_close, 0, london, atr, config, setup, verdicts) &&
+   // The raid bar closes ABOVE the pool: a breakout, which is the other trade.
+   double b_o[];
+   double b_h[];
+   double b_l[];
+   double b_c[];
+   IctBearishFixture(b_o, b_h, b_l, b_c);
+   b_c[8] = 111.0;
+   IctCheck("a breakout through the stop pool is not a raid",
+            !XSparkIctEvaluate(b_o, b_h, b_l, b_c, 0, london, point, config, setup, verdicts) &&
             verdicts.sweep == "NO SWEEP");
 
-   // The confirming bar's high overlaps bar 2, so nothing was skipped.
-   double nogap_open[];
-   double nogap_high[];
-   double nogap_low[];
-   double nogap_close[];
-   IctBearishFixture(nogap_open, nogap_high, nogap_low, nogap_close);
-   nogap_high[0] = 106.5;
-   IctCheck("a displacement that left no imbalance is refused",
-            !XSparkIctEvaluate(nogap_open, nogap_high, nogap_low, nogap_close, 0, london, atr, config, setup, verdicts) &&
-            verdicts.imbalance == "NO FVG");
+   // A bar that closed where it opened points nowhere.
+   double d_o[];
+   double d_h[];
+   double d_l[];
+   double d_c[];
+   IctBearishFixture(d_o, d_h, d_l, d_c);
+   d_c[1] = d_o[1];
+   IctCheck("a bar that closed where it opened cannot be a displacement",
+            !XSparkIctEvaluate(d_o, d_h, d_l, d_c, 0, london, point, config, setup, verdicts) &&
+            verdicts.sweep == "NO SWEEP");
 
-   // The displacement closes 102.0, which does not break the 105.0 swing low,
-   // so the body is impulsive but structure never shifted.
-   double noshift_open[];
-   double noshift_high[];
-   double noshift_low[];
-   double noshift_close[];
-   IctBearishFixture(noshift_open, noshift_high, noshift_low, noshift_close);
-   noshift_low[5] = 100.0;   // move the swing low below the displacement's close
-   noshift_close[5] = 101.0;
-   noshift_open[5] = 101.5;
-   IctCheck("a displacement that did not break structure is refused",
-            !XSparkIctEvaluate(noshift_open, noshift_high, noshift_low, noshift_close, 0, london, atr, config, setup, verdicts) &&
+   // A bearish body that does NOT close through the opposing swing low at
+   // 102.0: impulsive-looking, but structure never shifted.
+   double e_o[];
+   double e_h[];
+   double e_l[];
+   double e_c[];
+   IctBearishFixture(e_o, e_h, e_l, e_c);
+   e_o[1] = 104.0; e_h[1] = 104.2; e_c[1] = 103.0;
+   IctCheck("a down bar that did not break structure is refused",
+            !XSparkIctEvaluate(e_o, e_h, e_l, e_c, 0, london, point, config, setup, verdicts) &&
             verdicts.structure == "NOT SHIFTED");
 
-   // PINS THE PREMIUM/DISCOUNT FINDING. The entry at 103.0 sits BELOW the range
-   // the sweep and the break defined (105.0 to 112.0), because a displacement
-   // strong enough to break structure always leaves its imbalance beyond the
-   // level it broke. Switching this filter on therefore refuses the very setup
-   // the model just produced - which is why it ships off.
-   XSparkIctConfig pd;
-   IctTestConfig(pd);
-   pd.use_premium_discount = true;
-   IctCheck("the premium filter refuses the model's own entry, so it ships off",
-            !XSparkIctEvaluate(opens, highs, lows, closes, 0, london, atr, pd, setup, verdicts) &&
-            verdicts.location == "WRONG HALF");
-   IctCheck("the shipped configuration leaves the premium filter off",
-            !XSPARK_ICT_USE_PREMIUM_DISCOUNT);
+   // Flatten every high in the leg so no imbalance survives anywhere in it.
+   double f_o[];
+   double f_h[];
+   double f_l[];
+   double f_c[];
+   IctBearishFixture(f_o, f_h, f_l, f_c);
+   f_h[0] = 103.2; f_h[1] = 103.2; f_h[2] = 104.0; f_h[3] = 104.8;
+   f_h[4] = 106.2; f_h[5] = 106.6; f_h[6] = 108.2; f_h[7] = 110.0;
+   IctCheck("a leg that left no imbalance anywhere is refused",
+            !XSparkIctEvaluate(f_o, f_h, f_l, f_c, 0, london, point, config, setup, verdicts) &&
+            verdicts.imbalance == "NO FVG");
+
+   // Raising the old swing low creates a NEARER pool at 102.6, which is under
+   // the reward floor. The refusal names the draw, not the setup.
+   double g_o[];
+   double g_h[];
+   double g_l[];
+   double g_c[];
+   IctBearishFixture(g_o, g_h, g_l, g_c);
+   g_l[13] = 108.0; g_o[13] = 108.4; g_c[13] = 108.6; g_h[13] = 108.8;
+   IctCheck("a draw on liquidity too close to pay for the stop is refused",
+            !XSparkIctEvaluate(g_o, g_h, g_l, g_c, 0, london, point, config, setup, verdicts) &&
+            verdicts.liquidity == "DRAW TOO CLOSE");
 
    // Guards.
-   IctCheck("an unusable typical candle is refused",
+   IctCheck("an unusable point size is refused",
             !XSparkIctEvaluate(opens, highs, lows, closes, 0, london, 0.0, config, setup, verdicts));
    IctCheck("an index without history behind it is refused",
-            !XSparkIctEvaluate(opens, highs, lows, closes, 12, london, atr, config, setup, verdicts));
+            !XSparkIctEvaluate(opens, highs, lows, closes, 14, london, point, config, setup, verdicts));
    IctCheck("a negative index is refused",
-            !XSparkIctEvaluate(opens, highs, lows, closes, -1, london, atr, config, setup, verdicts));
+            !XSparkIctEvaluate(opens, highs, lows, closes, -1, london, point, config, setup, verdicts));
 
    XSparkIctConfig broken;
    IctTestConfig(broken);
    broken.swing_strength = 0;
    IctCheck("a broken configuration is refused before any bar is read",
-            !XSparkIctEvaluate(opens, highs, lows, closes, 0, london, atr, broken, setup, verdicts) &&
+            !XSparkIctEvaluate(opens, highs, lows, closes, 0, london, point, broken, setup, verdicts) &&
             setup.reason != "");
 
    IctCheck("a refusal leaves no half-built setup behind",
-            !XSparkIctEvaluate(opens, highs, lows, closes, 0, 0, atr, config, setup, verdicts) &&
-            setup.direction == XSPARK_SIGNAL_NONE && setup.entry_limit == 0.0 && setup.stop == 0.0);
-
-   // The stop runs 9.6 from the entry, which is 3.2 typical candles; a ceiling
-   // of 0.5 refuses it.
-   XSparkIctConfig tight;
-   IctTestConfig(tight);
-   tight.max_stop_atr = 0.5;
-   IctCheck("a stop wider than the ceiling is refused",
-            !XSparkIctEvaluate(opens, highs, lows, closes, 0, london, atr, tight, setup, verdicts) &&
-            setup.direction == XSPARK_SIGNAL_NONE);
+            !XSparkIctEvaluate(opens, highs, lows, closes, 0, 0, point, config, setup, verdicts) &&
+            setup.direction == XSPARK_SIGNAL_NONE && setup.entry_limit == 0.0 &&
+            setup.stop == 0.0 && setup.target == 0.0 && setup.target_r == 0.0);
 }
 
 // The bullish mirror, so the two directions cannot drift apart. Built by
-// reflecting the bearish fixture about 210.0: every high becomes a low, and the
-// sequence runs a low, shifts up, and leaves a bullish imbalance.
+// reflecting the bearish fixture about 210.0: every high becomes a low, the
+// raid runs a low instead of a high, and the draw on liquidity is a swing high.
 void RunIctBullishMirrorTests()
 {
    XSparkIctConfig config;
@@ -591,9 +643,9 @@ void RunIctBullishMirrorTests()
    double highs[];
    double lows[];
    double closes[];
-   ArrayResize(opens, 14); ArrayResize(highs, 14); ArrayResize(lows, 14); ArrayResize(closes, 14);
+   ArrayResize(opens, 16); ArrayResize(highs, 16); ArrayResize(lows, 16); ArrayResize(closes, 16);
 
-   for(int i = 0; i < 14; i++)
+   for(int i = 0; i < 16; i++)
    {
       opens[i]  = 210.0 - bo[i];
       highs[i]  = 210.0 - bl[i];   // reflecting swaps the roles of high and low
@@ -603,122 +655,25 @@ void RunIctBullishMirrorTests()
 
    XSparkIctSetup setup;
    XSparkIctVerdicts verdicts;
-   const bool fired = XSparkIctEvaluate(opens, highs, lows, closes, 0, 480, 3.0, config, setup, verdicts);
+   const bool fired = XSparkIctEvaluate(opens, highs, lows, closes, 0, 480, 0.01, config, setup, verdicts);
 
    IctCheck("the mirrored sequence produces a buy",
             fired && setup.direction == XSPARK_SIGNAL_BUY);
    IctCheck("the mirrored verdicts match the bearish ones",
             verdicts.sweep == "SWEPT LOW" && verdicts.structure == "SHIFTED" &&
-            verdicts.imbalance == "FVG");
-   IctCheck("the mirrored sweep is the same bar",
-            setup.sweep_index == 7 && setup.shift_index == 1);
-   IctCheck("the mirrored swept level reflects the bearish one",
-            IctNear(setup.swept_level, 210.0 - 112.0));
+            verdicts.imbalance == "FVG" && verdicts.location == "DISCOUNT" &&
+            verdicts.liquidity == "DRAW FOUND");
+   IctCheck("the mirrored raid and imbalance are the same bars",
+            setup.sweep_index == 8 && setup.shift_index == 1 && setup.gap_index == 6);
    IctCheck("the mirrored entry reflects the bearish one",
-            IctNear(setup.entry_limit, 210.0 - 103.0));
+            IctNear(setup.entry_limit, 210.0 - 107.3));
+   IctCheck("the mirrored draw on liquidity reflects the bearish one",
+            IctNear(setup.target, 210.0 - 98.5));
    IctCheck("the buy's stop is below its entry and its target above",
             setup.stop < setup.entry_limit && setup.target > setup.entry_limit);
-   IctCheck("the mirrored stop distance equals the bearish one",
-            IctNear(setup.entry_limit - setup.stop, 112.6 - 103.0));
+   IctCheck("the mirrored reward ratio equals the bearish one",
+            IctNear(setup.target_r, (107.3 - 98.5) / (112.2 - 107.3)));
 }
-
-// The strategy object end to end: the same fixture, loaded into the shared
-// indicator cache, through Evaluate and into an XSparkSignal. This is the only
-// test that proves the class reads the cache in the order the model expects -
-// a reversed copy would still pass every pure-function test above.
-#ifdef XSPARK_PORTABLE_TEST
-void IctCacheBar(XSparkCandle &bar, const double open, const double high,
-                 const double low, const double close)
-{
-   // 34 whole days plus 28800 seconds, so the clock reads 08:00 UTC - inside
-   // the London kill zone. A timestamp chosen for tidiness rather than for the
-   // window is the quiet way to make every one of these tests vacuous.
-   bar.time = (datetime)(34 * 86400 + 28800);
-   bar.open = open; bar.high = high; bar.low = low; bar.close = close;
-   bar.tick_volume = 100;
-}
-
-void RunIctStrategyTests()
-{
-   double opens[];
-   double highs[];
-   double lows[];
-   double closes[];
-   IctBearishFixture(opens, highs, lows, closes);
-
-   CXSparkIndicatorCache cache;
-   cache.base.resize(XSPARK_SCOREBOT_CLOSED_BASE_BARS);
-   for(int i = 0; i < XSPARK_SCOREBOT_CLOSED_BASE_BARS; i++)
-   {
-      // Past the fixture, repeat its oldest bar: the sequence never reads that
-      // far, and a flat tail cannot accidentally create a swing.
-      const int f = i < 14 ? i : 13;
-      IctCacheBar(cache.base[i], opens[f], highs[f], lows[f], closes[f]);
-   }
-
-   CXSparkIctLiquidity strategy;
-   XSparkIctConfig config;
-   IctTestConfig(config);
-   strategy.Configure(config);
-
-   XSparkSignal signal;
-   XSparkScoreBotReport report;
-
-   IctCheck("an uninitialized ICT strategy never signals",
-            !strategy.Evaluate(cache, signal, report) &&
-            report.status == "SCANNING" && report.joint_verdict == "BLOCKED");
-
-   IctCheck("the strategy refuses a symbol it was not given",
-            !strategy.Initialize(""));
-
-   IctCheck("the strategy initializes on the test configuration",
-            strategy.Initialize("TEST"));
-
-   // The stub cache reports ATR14 = 1.0, against which the fixture's 4.5 body
-   // is 4.5 typical candles and its stop distance 9.6 - over the 3.5 ceiling.
-   // So the shipped ceiling must be widened for this fixture to reach a signal,
-   // which is itself worth pinning: the geometry check is live in the class.
-   strategy.SetClockOffset(0);
-   IctCheck("the sequence is refused when the stop exceeds the ceiling",
-            !strategy.Evaluate(cache, signal, report) && report.status == "SCANNING");
-
-   XSparkIctConfig wide;
-   IctTestConfig(wide);
-   wide.max_stop_atr = 12.0;
-   strategy.Configure(wide);
-
-   IctCheck("the strategy produces the sell the model found",
-            strategy.Evaluate(cache, signal, report) &&
-            signal.direction == XSPARK_SIGNAL_SELL &&
-            report.status == "SIGNAL" && report.joint_verdict == "PASS");
-   IctCheck("the signal carries the imbalance edge as its entry limit",
-            IctNear(signal.entry_limit, 103.0));
-   IctCheck("the signal carries the stop beyond the swept extreme",
-            IctNear(signal.desired_stop, 112.0 + wide.stop_buffer_atr * 1.0));
-   IctCheck("the signal leaves the target to execution and carries the ratio",
-            signal.desired_target == 0.0 && IctNear(signal.dynamic_rr, wide.target_r));
-   IctCheck("the report names the ICT pattern and the swept level",
-            report.pattern_mode == "ICT LIQUIDITY" &&
-            report.pattern_name == "SWEEP + MSS + FVG SHORT" &&
-            IctNear(report.detected_level, 112.0));
-   IctCheck("the signal carries the symbol and the fixed score",
-            signal.symbol == "TEST" && signal.score == XSPARK_ICT_SIGNAL_SCORE);
-
-   // Outside the kill zone the same cache must refuse, which also proves the
-   // clock offset reaches the model.
-   strategy.SetClockOffset(8);   // shifts 08:00 UTC out of the London window
-   IctCheck("a clock offset that moves the bar out of the zone refuses",
-            !strategy.Evaluate(cache, signal, report) && report.htf_verdict == "OUTSIDE ZONE");
-
-   strategy.Deinitialize();
-   IctCheck("a deinitialized strategy never signals",
-            !strategy.Evaluate(cache, signal, report));
-}
-#endif
-
-// ---------------------------------------------------------------------------
-// Cost and the live stop.
-// ---------------------------------------------------------------------------
 
 void RunIctCostAndStopTests()
 {
@@ -876,15 +831,122 @@ void RunIctWilsonTests()
             lower > break_even);
 }
 
+// The strategy object end to end: the same fixture, loaded into the shared
+// indicator cache, through Evaluate and into an XSparkSignal. This is the only
+// test that proves the class reads the cache in the order the model expects -
+// a reversed copy would still pass every pure-function test above.
+#ifdef XSPARK_PORTABLE_TEST
+void IctCacheBar(XSparkCandle &bar, const double open, const double high,
+                 const double low, const double close)
+{
+   // 34 whole days plus 28800 seconds, so the clock reads 08:00 UTC - inside
+   // the London kill zone. A timestamp chosen for tidiness rather than for the
+   // window is the quiet way to make every one of these tests vacuous.
+   bar.time = (datetime)(34 * 86400 + 28800);
+   bar.open = open; bar.high = high; bar.low = low; bar.close = close;
+   bar.tick_volume = 100;
+}
+
+void RunIctStrategyTests()
+{
+   double opens[];
+   double highs[];
+   double lows[];
+   double closes[];
+   IctBearishFixture(opens, highs, lows, closes);
+
+   CXSparkIndicatorCache cache;
+   cache.base.resize(XSPARK_SCOREBOT_CLOSED_BASE_BARS);
+   for(int i = 0; i < XSPARK_SCOREBOT_CLOSED_BASE_BARS; i++)
+   {
+      // Past the fixture, repeat its oldest bar. The sequence never reads that
+      // far, and an exactly flat tail cannot create a swing, because a swing
+      // needs a STRICT inequality on its newer side.
+      const int f = i < 16 ? i : 15;
+      IctCacheBar(cache.base[i], opens[f], highs[f], lows[f], closes[f]);
+   }
+
+   CXSparkIctLiquidity strategy;
+   XSparkIctConfig config;
+   IctTestConfig(config);
+   strategy.Configure(config);
+
+   XSparkSignal signal;
+   XSparkScoreBotReport report;
+
+   IctCheck("an uninitialized ICT strategy never signals",
+            !strategy.Evaluate(cache, signal, report) &&
+            report.status == "SCANNING" && report.joint_verdict == "BLOCKED");
+
+   IctCheck("the strategy refuses a symbol it was not given",
+            !strategy.Initialize(""));
+
+   IctCheck("the strategy initializes on the test configuration",
+            strategy.Initialize("TEST"));
+
+   // A configuration whose deepest read runs past the cache is refused at
+   // initialization rather than silently reading a truncated rule.
+   CXSparkIctLiquidity deep;
+   XSparkIctConfig too_deep;
+   IctTestConfig(too_deep);
+   too_deep.swing_lookback = XSPARK_SCOREBOT_CLOSED_BASE_BARS;
+   deep.Configure(too_deep);
+   IctCheck("a configuration that would read past the cache is refused",
+            !deep.Initialize("TEST"));
+
+   strategy.SetClockOffset(0);
+   strategy.SetMinimumGap(0.05);
+
+   IctCheck("the strategy produces the sell the model found",
+            strategy.Evaluate(cache, signal, report) &&
+            signal.direction == XSPARK_SIGNAL_SELL &&
+            report.status == "SIGNAL" && report.joint_verdict == "PASS");
+   IctCheck("the signal carries the consequent encroachment as its entry limit",
+            IctNear(signal.entry_limit, 107.3));
+   IctCheck("the signal carries the stop beyond the raided extreme",
+            IctNear(signal.desired_stop, 112.2));
+   IctCheck("the signal's reward ratio is the one the draw implies",
+            IctNear(signal.dynamic_rr, (107.3 - 98.5) / (112.2 - 107.3)));
+   IctCheck("the signal leaves the target price to execution",
+            signal.desired_target == 0.0);
+   IctCheck("the report names the ICT pattern and the raided level",
+            report.pattern_mode == "ICT LIQUIDITY" &&
+            report.pattern_name == "SWEEP + MSS + FVG SHORT" &&
+            IctNear(report.detected_level, 112.0));
+   IctCheck("the signal carries the symbol and the fixed score",
+            signal.symbol == "TEST" && signal.score == XSPARK_ICT_SIGNAL_SCORE);
+
+   // A minimum gap wider than the imbalance refuses it, which is how the EA
+   // hands the spread down into the entry rule.
+   strategy.SetMinimumGap(5.0);
+   IctCheck("an imbalance narrower than the round-trip cost is refused",
+            !strategy.Evaluate(cache, signal, report));
+   strategy.SetMinimumGap(0.05);
+
+   // Outside the kill zone the same cache must refuse, which also proves the
+   // clock offset reaches the model.
+   strategy.SetClockOffset(8);   // shifts 08:00 UTC out of the London window
+   IctCheck("a clock offset that moves the bar out of the zone refuses",
+            !strategy.Evaluate(cache, signal, report) && report.htf_verdict == "OUTSIDE ZONE");
+
+   strategy.SetClockOffset(0);
+   strategy.Deinitialize();
+   IctCheck("a deinitialized strategy never signals",
+            !strategy.Evaluate(cache, signal, report));
+}
+#endif
+
 void RunIctTests()
 {
    RunIctSwingTests();
    RunIctSweepTests();
    RunIctFvgTests();
    RunIctDisplacementTests();
+   RunIctEncroachmentTests();
    RunIctRangeTests();
    RunIctKillZoneTests();
    RunIctConfigTests();
+   RunIctFixtureSanityTests();
    RunIctEvaluateTests();
    RunIctBullishMirrorTests();
    RunIctCostAndStopTests();

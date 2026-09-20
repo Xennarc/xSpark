@@ -60,11 +60,13 @@ input int    InpIctBrokerUtcOffset = 0;          // Broker clock offset from UTC
 input group "02. Your broker's costs"
 input double InpIctCommissionPerLot = 0.0;       // Commission per 1.0 lot, both ways, in account money (0 = none)
 
-// HOW AN OPEN TRADE IS HANDLED. One question, asked once. Every trade sees the
-// same exits: a broker-side stop and target sent with the order, a hold time,
-// and the kill-zone flatten. No trailing, no partials.
-input group "03. How an open trade is handled"
-input EXSparkIctTargetStyle InpIctTargetStyle = XSPARK_ICT_TARGET_TWO; // Where the target sits
+// NO TARGET SETTING, deliberately. This method takes the trade to the opposing
+// pool of stop orders - the draw on liquidity - so the target is a level the
+// market supplies and the reward ratio is whatever that level implies against
+// the stop. An input here would let an operator override the one thing the
+// method says not to guess at (AGENTS.md rule 48). Every trade sees the same
+// exits: a broker-side stop and target sent with the order, a hold time, and
+// the kill-zone flatten. No trailing, no partials.
 
 // SMALL ACCOUNTS. On a small balance the broker's smallest trade usually risks
 // more than the risk percentage allows, so every signal would be refused. This
@@ -125,7 +127,7 @@ input bool   InpIctClearKillswitchLatch = false; // Clear the emergency stop onc
 // can reach, so a run that takes no trades says WHICH ICT condition the market
 // never produced rather than going silent - the failure mode that wasted a
 // nineteen-day tester run on the previous strategy in this repository.
-#define XSPARK_ICT_FUNNEL_STAGES 12
+#define XSPARK_ICT_FUNNEL_STAGES 14
 
 CXSparkLogger          g_logger;
 CXSparkMarketState     g_market_state;
@@ -158,7 +160,6 @@ double g_ict_total_dd_pct = XSPARK_ICT_DEFAULT_TOTAL_DD_PCT;
 bool   g_ict_use_killswitch = true;
 double g_ict_commission_per_lot = XSPARK_ICT_DEFAULT_COMMISSION_PER_LOT;
 int    g_ict_utc_offset = XSPARK_ICT_DEFAULT_UTC_OFFSET;
-double g_ict_target_r = 2.0;
 
 int      g_tester_sequence = 0;
 datetime g_current_base_bar_time = 0;
@@ -187,13 +188,15 @@ void XSparkIctResetFunnel()
    g_funnel_names[2] = "NOT SHIFTED";
    g_funnel_names[3] = "NO FVG";
    g_funnel_names[4] = "WRONG HALF";
-   g_funnel_names[5] = "GEOMETRY";
-   g_funnel_names[6] = "COST BLOCKED";
-   g_funnel_names[7] = "SPREAD BLOCKED";
-   g_funnel_names[8] = "SIZE BLOCKED";
-   g_funnel_names[9] = "SIGNAL";
-   g_funnel_names[10] = "ENTERED";
-   g_funnel_names[11] = "OTHER";
+   g_funnel_names[5] = "NO DRAW";
+   g_funnel_names[6] = "DRAW TOO CLOSE";
+   g_funnel_names[7] = "DRAW TOO FAR";
+   g_funnel_names[8] = "COST BLOCKED";
+   g_funnel_names[9] = "SPREAD BLOCKED";
+   g_funnel_names[10] = "SIZE BLOCKED";
+   g_funnel_names[11] = "SIGNAL";
+   g_funnel_names[12] = "ENTERED";
+   g_funnel_names[13] = "OTHER";
 
    for(int i = 0; i < XSPARK_ICT_FUNNEL_STAGES; i++)
       g_funnel_counts[i] = 0;
@@ -396,8 +399,8 @@ void XSparkIctLogCostLine()
    const bool feasible = cost <= g_ict_config.max_cost_share_pct / 100.0 * widest_stop;
 
    const string line = StringFormat("Round-trip cost now: spread %s + commission %s = %s, which is %.1f%% of the widest stop this chart period allows (%.2f x the typical candle = %s; at most %.1f%%). "
-                                    "A trade with no edge at that cost wins about %.1f%% at the chosen target (break-even %.1f%%). "
-                                    "This chart period is %s at the current cost.",
+                                    "At the SHORTEST draw this bot will take (%.2f x the stop) a trade with no edge wins about %.1f%% after that cost, and breaks even at %.1f%%; "
+                                    "every trade whose draw is further needs less. This chart period is %s at the current cost.",
                                     DoubleToString(spread, g_market_state.Digits()),
                                     DoubleToString(commission_price, g_market_state.Digits()),
                                     DoubleToString(cost, g_market_state.Digits()),
@@ -405,8 +408,9 @@ void XSparkIctLogCostLine()
                                     g_ict_config.max_stop_atr,
                                     DoubleToString(widest_stop, g_market_state.Digits()),
                                     g_ict_config.max_cost_share_pct,
-                                    XSparkIctNoEdgeWinRate(g_ict_target_r, g_ict_config.max_cost_share_pct) * 100.0,
-                                    XSparkIctBreakEvenWinRate(g_ict_target_r) * 100.0,
+                                    g_ict_config.min_target_r,
+                                    XSparkIctNoEdgeWinRate(g_ict_config.min_target_r, g_ict_config.max_cost_share_pct) * 100.0,
+                                    XSparkIctBreakEvenWinRate(g_ict_config.min_target_r) * 100.0,
                                     feasible ? "FEASIBLE" : "INFEASIBLE");
 
    if(feasible)
@@ -607,6 +611,30 @@ void XSparkIctEvaluateNewBarCore()
    g_last_evaluated_signal_bar_time = signal_bar.time;
    g_funnel_stage = "OTHER";
 
+   // The narrowest imbalance worth entering, measured from what a round trip
+   // actually costs right now. This is the ONLY number the EA hands down into
+   // the entry rule, and it is a cost, not an indicator: a gap narrower than
+   // the spread is not an entry at any price.
+   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double round_trip_cost = 0.0;
+   double commission_price = 0.0;
+   string cost_reason = "";
+   if(!XSparkIctRoundTripCost(g_market_state.SpreadPrice(),
+                              g_ict_commission_per_lot,
+                              tick_size,
+                              XSparkIctTickValue(),
+                              round_trip_cost,
+                              commission_price,
+                              cost_reason))
+   {
+      g_status = "COST BLOCKED";
+      g_funnel_stage = "COST BLOCKED";
+      g_last_block_reason = cost_reason;
+      return;
+   }
+
+   g_strategy.SetMinimumGap(round_trip_cost);
+
    XSparkSignal signal;
    XSparkScoreBotReport report;
    const bool eligible_signal = g_strategy.Evaluate(g_indicator_cache, signal, report);
@@ -619,19 +647,22 @@ void XSparkIctEvaluateNewBarCore()
       g_last_block_reason = report.block_reason;
 
       // The model's own verdicts name the stage, so a quiet day says which of
-      // the four ICT conditions the market never produced.
-      if(report.htf_verdict == "OUTSIDE ZONE")
-         g_funnel_stage = "OUTSIDE ZONE";
-      else if(report.pullback_verdict == "NO SWEEP")
-         g_funnel_stage = "NO SWEEP";
+      // the conditions the market never produced. Read newest-first: the last
+      // condition to fail is the one that actually stopped the sequence.
+      if(report.rsi_verdict == "NO DRAW" || report.rsi_verdict == "DRAW TOO CLOSE" ||
+         report.rsi_verdict == "DRAW TOO FAR")
+         g_funnel_stage = report.rsi_verdict;
+      else if(report.joint_verdict == "WRONG HALF")
+         g_funnel_stage = "WRONG HALF";
       else if(report.entry_location == "NO FVG")
          g_funnel_stage = "NO FVG";
-      else if(StringFind(report.block_reason, "opposing swing") >= 0)
+      else if(StringFind(report.block_reason, "opposing swing") >= 0 ||
+              StringFind(report.block_reason, "close through") >= 0)
          g_funnel_stage = "NOT SHIFTED";
-      else if(StringFind(report.block_reason, "wrong half") >= 0)
-         g_funnel_stage = "WRONG HALF";
-      else if(StringFind(report.block_reason, "typical candles from the entry") >= 0)
-         g_funnel_stage = "GEOMETRY";
+      else if(report.pullback_verdict == "NO SWEEP")
+         g_funnel_stage = "NO SWEEP";
+      else if(report.htf_verdict == "OUTSIDE ZONE")
+         g_funnel_stage = "OUTSIDE ZONE";
 
       XSparkIctVerboseBlock("ICT", g_last_block_reason);
       return;
@@ -648,28 +679,6 @@ void XSparkIctEvaluateNewBarCore()
       g_status = "CONFIG BLOCKED";
       g_last_block_reason = g_config_reason;
       XSparkIctLogSignalRejection("configuration", g_last_block_reason, report);
-      return;
-   }
-
-   // The cost comes before the safety gate because the gate is given it: the
-   // spread check is a cost check, and handing it a stale or unmeasured cost
-   // would let a wide-spread bar through.
-   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   double round_trip_cost = 0.0;
-   double commission_price = 0.0;
-   string cost_reason = "";
-   if(!XSparkIctRoundTripCost(g_market_state.SpreadPrice(),
-                              g_ict_commission_per_lot,
-                              tick_size,
-                              XSparkIctTickValue(),
-                              round_trip_cost,
-                              commission_price,
-                              cost_reason))
-   {
-      g_status = "COST BLOCKED";
-      g_funnel_stage = "COST BLOCKED";
-      g_last_block_reason = cost_reason;
-      XSparkIctLogSignalRejection("cost", g_last_block_reason, report);
       return;
    }
 
@@ -821,15 +830,7 @@ int OnInit()
    g_config_valid = true;
    g_config_reason = "";
 
-   string style_reason = "";
-   if(!XSparkIctTargetForStyle(InpIctTargetStyle, g_ict_target_r, style_reason))
-   {
-      g_config_valid = false;
-      g_config_reason += style_reason + " ";
-   }
-
    XSparkDefaultIctConfig(g_ict_config);
-   g_ict_config.target_r = g_ict_target_r;
    g_ict_config.kill_zones = InpIctKillZones;
 
    string config_reason = "";
@@ -894,8 +895,12 @@ int OnInit()
       return INIT_FAILED;
    }
 
-   const double ict_min_rr = g_ict_target_r * XSPARK_ICT_TARGET_BAND_LOW_MULT;
-   const double ict_max_rr = g_ict_target_r * XSPARK_ICT_TARGET_BAND_HIGH_MULT;
+   // The band the execution engine will accept a derived target inside. It is
+   // the model's own reward bounds rather than a multiple of a chosen target,
+   // because there is no chosen target: each signal carries the ratio its own
+   // draw on liquidity implied.
+   const double ict_min_rr = g_ict_config.min_target_r * XSPARK_ICT_TARGET_BAND_LOW_MULT;
+   const double ict_max_rr = g_ict_config.max_target_r * XSPARK_ICT_TARGET_BAND_HIGH_MULT;
 
    if(!g_execution_engine.Initialize(InpIctMagicNumber,
                                      XSPARK_ICT_COMMENT_DEFAULT,
@@ -940,17 +945,14 @@ int OnInit()
                               XSPARK_ICT_MAX_ACCOUNT_RISK_PCT, g_ict_min_lot_cap_pct));
 
    g_logger.Info("ICT",
-                 StringFormat("Rule on %s: inside a kill zone, a swing high (%d bars either side, sought up to %d bars back) is swept by a bar that pierces it and closes back below; "
-                              "within %d bars an impulsive body of at least %.2f x the typical candle closes through the opposing swing; "
-                              "the entry is a LIMIT at the imbalance that body left (at least %.2f x the typical candle wide), the stop sits %.2f x beyond the swept extreme, and the target is %.2f x the stop.",
+                 StringFormat("Rule on %s, with NO indicator anywhere in it: inside a kill zone, a swing high (a %d-bar formation, sought up to %d bars back) is raided by a bar that pierces it and closes back below; "
+                              "within %d bars a bar closes through the opposing swing, breaking structure; the leg that did it is searched END TO END for an imbalance, and the one whose midpoint sits deepest in premium is taken; "
+                              "the entry is a LIMIT at that midpoint (consequent encroachment), the stop sits %.0f points beyond the raided extreme, and the target is the draw on liquidity.",
                               EnumToString(g_base_timeframe),
-                              g_ict_config.swing_strength,
+                              g_ict_config.swing_strength * 2 + 1,
                               g_ict_config.swing_lookback,
                               g_ict_config.sweep_max_age_bars,
-                              g_ict_config.min_displacement_atr,
-                              g_ict_config.min_fvg_atr,
-                              g_ict_config.stop_buffer_atr,
-                              g_ict_config.target_r));
+                              g_ict_config.stop_buffer_points));
 
    g_logger.Info("ICT",
                  StringFormat("Kill zones [%s]: %s; broker clock offset %d hours%s. ICT names these windows in New York time, which moves an hour against UTC twice a year; shift the offset if you want them to track it exactly.",
@@ -960,13 +962,15 @@ int OnInit()
                               MQLInfoInteger(MQL_TESTER) ? " (taken on trust in the tester)" : ""));
 
    g_logger.Info("ICT",
-                 StringFormat("Exit [%s]: target %.2f x the stop, accepted broker-valid band %.2f-%.2f; a trade with NO edge wins about %.1f%% at the %.1f%% cost share and breaks even at %.1f%%. "
+                 StringFormat("Exit: the target is the DRAW ON LIQUIDITY - the opposing pool of stops - so the reward ratio is an output, not a setting. Draws nearer than %.2f x the stop are refused and further than %.2f x are treated as a different trade; "
+                              "the engine accepts a derived target inside %.2f-%.2f. At the %.2f x floor a trade with NO edge wins about %.1f%% at the %.1f%% cost share and breaks even at %.1f%%. "
                               "Stop and target are sent with the order; there is no trailing. Hold time %d seconds, and an open position is flattened at the end of its kill zone.",
-                              EnumToString(InpIctTargetStyle),
-                              g_ict_target_r, ict_min_rr, ict_max_rr,
-                              XSparkIctNoEdgeWinRate(g_ict_target_r, g_ict_config.max_cost_share_pct) * 100.0,
+                              g_ict_config.min_target_r, g_ict_config.max_target_r,
+                              ict_min_rr, ict_max_rr,
+                              g_ict_config.min_target_r,
+                              XSparkIctNoEdgeWinRate(g_ict_config.min_target_r, g_ict_config.max_cost_share_pct) * 100.0,
                               g_ict_config.max_cost_share_pct,
-                              XSparkIctBreakEvenWinRate(g_ict_target_r) * 100.0,
+                              XSparkIctBreakEvenWinRate(g_ict_config.min_target_r) * 100.0,
                               XSparkIctMaxHoldSeconds(PeriodSeconds(g_base_timeframe))));
 
    g_logger.Info("ICT",
@@ -1001,20 +1005,28 @@ double OnTester()
    double wilson_low = 0.0;
    XSparkIctWilsonLowerBound(wins, outcomes, wilson_low);
 
-   // The break-even the geometry demands, so the verdict is read against THIS
-   // target rather than against 50% - a 2R model that wins 40% is winning.
-   const double break_even = XSparkIctBreakEvenWinRate(g_ict_target_r);
+   // EXPECTANCY IS THE VERDICT HERE, not the win rate, and that follows from
+   // the method rather than from taste. The target is the draw on liquidity,
+   // so every trade carries its own reward ratio and there is no single
+   // break-even win rate to test a proportion against: 40% wins is losing at
+   // 1.5R and winning at 4R. Mean R against zero is the only question the
+   // sample can actually answer.
+   //
+   // The win rate and its Wilson bound are still printed, as description. They
+   // are deliberately NOT turned into a verdict, because a win-rate verdict
+   // here would be arithmetic applied to a number it does not fit.
    const bool enough_trades = outcomes >= XSPARK_ICT_MIN_TRADES_FOR_VERDICT;
-   const string win_verdict = (!enough_trades || wilson_low <= break_even)
-                              ? StringFormat("NOT DISTINGUISHABLE FROM THE %.1f%% BREAK-EVEN", break_even * 100.0)
-                              : StringFormat("WIN RATE ABOVE THE %.1f%% BREAK-EVEN AT 95%%", break_even * 100.0);
-   const string expectancy_verdict = (!enough_trades || mean_r - XSPARK_ICT_WILSON_Z_SCORE * se_r <= 0.0)
-                                     ? "EXPECTANCY NOT DISTINGUISHABLE FROM ZERO"
-                                     : "EXPECTANCY ABOVE ZERO AT 95%";
+   const string win_verdict = StringFormat("win rate %.1f%% (95%% lower bound %.1f%%) is DESCRIPTIVE ONLY: each trade carries its own reward ratio",
+                                           win_rate * 100.0, wilson_low * 100.0);
+   const string expectancy_verdict = !enough_trades
+                                     ? StringFormat("EXPECTANCY NOT TESTABLE: %d outcomes, %d required", outcomes, XSPARK_ICT_MIN_TRADES_FOR_VERDICT)
+                                     : (mean_r - XSPARK_ICT_WILSON_Z_SCORE * se_r <= 0.0
+                                        ? "EXPECTANCY NOT DISTINGUISHABLE FROM ZERO"
+                                        : "EXPECTANCY ABOVE ZERO AT 95%");
 
    g_logger.Info("Tester",
-                 StringFormat("Pass result: recorded_trades=%d outcomes=%d wins=%d losses=%d win_rate=%.4f wilson95_low=%.4f break_even=%.4f mean_R=%.4f se_R=%.4f stdev_R=%.4f min_R=%.4f max_R=%.4f fitness=%.6f live_at_end=%d verdict=%s; %s",
-                              trades, outcomes, wins, losses, win_rate, wilson_low, break_even,
+                 StringFormat("Pass result: recorded_trades=%d outcomes=%d wins=%d losses=%d win_rate=%.4f wilson95_low=%.4f mean_R=%.4f se_R=%.4f stdev_R=%.4f min_R=%.4f max_R=%.4f fitness=%.6f live_at_end=%d verdict=%s; %s",
+                              trades, outcomes, wins, losses, win_rate, wilson_low,
                               mean_r, se_r, stdev_r,
                               g_position_manager.RecordedMinR(),
                               g_position_manager.RecordedMaxR(),

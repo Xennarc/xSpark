@@ -59,6 +59,17 @@ class CXSparkMarketState {public: double Ask() {return 100.3;} double Bid() {ret
 // Mirrors IndicatorCache.mqh. The real header is not in the portable FILES
 // list because it calls CopyRates and indicator handles, so the one constant
 // strategies read from it is restated here.
+// Minimal symbol-info double for strategies that read the instrument directly.
+// Only the properties a strategy may legitimately need are answered.
+#ifndef XSPARK_PORTABLE_SYMBOL_INFO
+#define XSPARK_PORTABLE_SYMBOL_INFO
+enum ENUM_SYMBOL_INFO_DOUBLE_PORTABLE { SYMBOL_POINT = 1 };
+inline double SymbolInfoDouble(const string&, int property) {
+ if(property == SYMBOL_POINT) return 0.01;
+ return 0.0;
+}
+#endif
+
 #ifndef XSPARK_SCOREBOT_CLOSED_BASE_BARS
 #define XSPARK_SCOREBOT_CLOSED_BASE_BARS 50
 #endif

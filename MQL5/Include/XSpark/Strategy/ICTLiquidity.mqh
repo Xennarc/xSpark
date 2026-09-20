@@ -33,76 +33,92 @@
 // above an obvious high, and taking them really does supply the other side -
 // not merely a shape. A mechanism can still fail to pay for the spread.
 //
-// WHAT MECHANIZING FORCED US TO DECIDE. ICT leaves these open; a program cannot.
-// Each is a named constant so a disagreement is a one-line change, not a
-// rewrite, and so the funnel can show what each one costs:
+// WHERE THIS DEPARTS FROM THE SOURCE, stated because the first version of this
+// file hid four departures behind the phrase "ICT leaves these open". It does
+// not leave these open; the first version simply chose differently.
 //
-//   - A swing needs a fixed number of bars either side (SWING_STRENGTH). ICT
-//     reads swings by eye and at several degrees at once.
-//   - A sweep must close back through the level on the SAME bar that pierced
-//     it. ICT often allows the reversal to take several bars.
-//   - Displacement is a body measured against the typical candle. ICT calls a
-//     leg "impulsive" by appearance.
-//   - The entry is the gap edge nearest the market, not its midpoint or far
-//     edge. All three are taught; the near edge fills most often.
-//   - Kill zones are UTC here. ICT defines them in New York local time, which
-//     moves an hour twice a year against UTC - see the kill-zone section.
+// Corrected since:
+//   - NO INDICATOR ANYWHERE IN THE ENTRY RULE. The method rejects them, and an
+//     earlier draft gated displacement on an ATR multiple, which is foreign to
+//     it. The evidence of displacement IS the imbalance the leg leaves: if no
+//     gap was left, the leg did not displace. Nothing else is measured.
+//   - A swing is a THREE-CANDLE formation - one lower high either side of a
+//     high. An earlier draft required two bars either side, which is an
+//     indicator-package convention, not this method's definition.
+//   - The entry is CONSEQUENT ENCROACHMENT, the gap's 50% midpoint, which is
+//     the method's own term and its own entry reference.
+//   - The target is a DRAW ON LIQUIDITY - the opposing pool of stops the market
+//     is being pulled toward - not a fixed multiple of the stop. The reward
+//     ratio is therefore an OUTPUT of where liquidity sits, never an input.
+//     An earlier draft used a fixed 2R, which changes the whole payoff.
 //
+// Still departing, deliberately and visibly:
+//   - The sweep must close back through the level on the SAME bar that pierced
+//     it. The method allows the raid to resolve over several bars; requiring
+//     one bar is the only reading that cannot be fitted after the fact, since
+//     "resolves within a few bars" is defined by what price did next.
+//   - Kill zones are held in UTC. The method names them in New York local time,
+//     which moves an hour against UTC twice a year - see the kill-zone section.
+//   - A minimum gap width is required, sized by the round-trip cost rather than
+//     by any indicator. A gap narrower than the spread is not an entry.
+//
+// The ATR that remains in this file is used ONLY by the EA's risk layer to
+// bound a stop it would otherwise send at any width. It takes no part in
+// deciding whether a setup exists.
+
 // ---------------------------------------------------------------------------
 // Tunables, all fixed rather than exposed. An operator does not know better
 // than the code what counts as a swing (AGENTS.md rule 48).
 // ---------------------------------------------------------------------------
 
-// Bars required either side of a swing point. Two is the smallest that rejects
-// a single noisy bar while still finding the short-term highs an intraday stop
-// pool actually sits above.
-#define XSPARK_ICT_SWING_STRENGTH 2
+// Bars either side of a swing point. ONE, because a short-term swing high in
+// this method is a candle with a lower high on each side - three candles, no
+// more. Raising it finds fewer, larger swings and is a different method.
+#define XSPARK_ICT_SWING_STRENGTH 1
 
-// How far back the model looks for the swing being swept, and for the sweep
-// itself once structure has shifted. Beyond this a "sweep" and the break that
-// follows are no longer one event.
+// How far back the model looks for the swing being swept, and how old the
+// sweep may be when structure finally shifts. Beyond this the raid and the
+// break are no longer one event.
 //
 // The lookback is bounded by the shared indicator cache, which holds
-// XSPARK_SCOREBOT_CLOSED_BASE_BARS closed bars. The deepest read the sequence
-// makes is sweep age + lookback + strength, so these must leave room inside
-// that window or the oldest swing silently cannot be found - which would look
-// like "no sweep" rather than like a missing bar.
+// XSPARK_SCOREBOT_CLOSED_BASE_BARS closed bars. The deepest read is sweep age
+// + lookback + strength, so these must leave room inside that window or the
+// oldest swing silently cannot be found - which reads as "no sweep" rather
+// than as a missing bar.
 #define XSPARK_ICT_SWING_LOOKBACK 30
 #define XSPARK_ICT_SWEEP_MAX_AGE_BARS 12
 
-// The displacement leg's body, as a multiple of the typical candle. Below this
-// the break of structure is drift, and drift does not leave the imbalance the
-// entry depends on.
-#define XSPARK_ICT_MIN_DISPLACEMENT_ATR 0.65
+// Stop placement beyond the swept extreme, in instrument points. The raided
+// high is the invalidation: price back through it says the pool was not taken,
+// so the reason for the trade is gone. The buffer only clears the spread and
+// the broker's stop level, and is deliberately not an ATR multiple.
+#define XSPARK_ICT_STOP_BUFFER_POINTS 20.0
 
-// The imbalance must be worth returning to. A gap thinner than this is inside
-// the spread on most instruments and is not an entry, it is a rounding error.
-#define XSPARK_ICT_MIN_FVG_ATR 0.10
+// The reward the draw on liquidity must offer before the trade is worth
+// taking. Not a target - the target is wherever liquidity sits - but a floor
+// below which that target is too close to pay for the stop.
+#define XSPARK_ICT_MIN_TARGET_R 1.5
+#define XSPARK_ICT_MAX_TARGET_R 20.0
 
-// Stop placement beyond the swept extreme, as a multiple of the typical candle.
-// The swept high is the model's invalidation: price going back through it says
-// the pool was not taken, so the reason for the trade is gone.
-#define XSPARK_ICT_STOP_BUFFER_ATR 0.20
-
-// Stop bounds and the cost share, mirroring TrendScalp: the same instrument
-// arithmetic applies to any strategy whose stop is measured in typical candles.
+// The EA's risk bounds on the stop it will send, and the share of that stop
+// the round-trip cost may be. These belong to the risk layer, not to the
+// entry rule: they never decide whether a setup exists, only whether one the
+// model found can be traded at an acceptable cost.
 #define XSPARK_ICT_MIN_STOP_ATR 0.50
 #define XSPARK_ICT_MAX_STOP_ATR 3.50
 #define XSPARK_ICT_MAX_COST_SHARE_PCT 6.0
 
-// Premium/discount: longs only in the lower half of the swept range, shorts
-// only in the upper half.
+// Premium and discount: sell only from the upper half of the dealing range,
+// buy only from the lower half.
 //
-// OFF, and this is a finding rather than a preference. A displacement strong
-// enough to break structure leaves its imbalance BELOW the level it broke, by
-// construction - so an entry at that imbalance is always in the discount half
-// of the range the sweep defined, and a premium filter applied there refuses
-// every sell the model can generate. ICT applies premium/discount to a higher
-// timeframe dealing range, which is a different measurement than this file
-// makes. The test suite pins this behaviour so it cannot be switched on by
-// accident; the function stays available for a variant whose entry is a higher
-// timeframe imbalance rather than the displacement's own.
-#define XSPARK_ICT_USE_PREMIUM_DISCOUNT false
+// ON, which reverses an earlier draft. That draft measured the range wrongly
+// and then concluded from its own error that the concept did not apply. The
+// dealing range runs from the swept extreme to the far end of the leg the
+// displacement made, and the entry is sought among ALL the imbalances that
+// leg left - not only the newest three bars, which sit at the end of the leg
+// and so are always in discount. Read that way the filter is exactly what the
+// method says it is, and the funnel reports what it costs.
+#define XSPARK_ICT_USE_PREMIUM_DISCOUNT true
 
 // ---------------------------------------------------------------------------
 // Swing points.
@@ -308,27 +324,25 @@ bool XSparkIctBearishFvg(const double &highs[], const double &lows[], const int 
 // Displacement.
 // ---------------------------------------------------------------------------
 //
-// Measured on the BODY, not the range. A long wick is indecision that happened
-// to travel; a body is where the market actually settled, and it is the body
-// that leaves the imbalance behind.
+// NOT MEASURED AGAINST ANYTHING. A leg displaced if it left an imbalance; if
+// every price in its range traded, it did not. That is the whole test, and it
+// is why no indicator appears in it.
+//
+// All that is read from the bar itself is which way its body points, so the
+// model knows whether to look for a raided high or a raided low. A bar that
+// closed where it opened points nowhere and is not a displacement.
 
-bool XSparkIctIsDisplacement(const double open, const double close, const double atr,
-                             const double min_atr_mult, const EXSparkSignalDirection direction)
+EXSparkSignalDirection XSparkIctBodyDirection(const double open, const double close)
 {
-   if(!MathIsValidNumber(open) || !MathIsValidNumber(close) ||
-      !MathIsValidNumber(atr) || atr <= 0.0 ||
-      !MathIsValidNumber(min_atr_mult) || min_atr_mult <= 0.0)
-      return false;
+   if(!MathIsValidNumber(open) || !MathIsValidNumber(close))
+      return XSPARK_SIGNAL_NONE;
 
-   const double body = close - open;
+   if(close < open)
+      return XSPARK_SIGNAL_SELL;
+   if(close > open)
+      return XSPARK_SIGNAL_BUY;
 
-   if(direction == XSPARK_SIGNAL_BUY)
-      return body > 0.0 && body >= min_atr_mult * atr;
-
-   if(direction == XSPARK_SIGNAL_SELL)
-      return -body >= min_atr_mult * atr;
-
-   return false;
+   return XSPARK_SIGNAL_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +365,164 @@ bool XSparkIctRangePosition(const double price, const double range_low, const do
 
    position = (price - range_low) / (range_high - range_low);
    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Consequent encroachment.
+// ---------------------------------------------------------------------------
+//
+// The imbalance's 50% midpoint, and this method's own entry reference. Not the
+// near edge, which fills more often but is a worse price, and not the far edge,
+// which is a better price that frequently never trades.
+
+bool XSparkIctConsequentEncroachment(const double gap_low, const double gap_high, double &ce)
+{
+   ce = 0.0;
+
+   if(!MathIsValidNumber(gap_low) || !MathIsValidNumber(gap_high) || gap_high <= gap_low)
+      return false;
+
+   ce = gap_low + (gap_high - gap_low) / 2.0;
+   return true;
+}
+
+// ---------------------------------------------------------------------------
+// The imbalance to enter at.
+// ---------------------------------------------------------------------------
+//
+// Scans the WHOLE leg the displacement made, oldest bar to newest, rather than
+// only the three most recent bars. This is the correction that matters most: a
+// leg strong enough to break structure usually leaves several imbalances, and
+// the newest of them sits at the end of the leg - which is the bottom of a
+// down-leg, and therefore always in discount. Looking only there makes a
+// premium filter refuse every sell the model can produce, which is what an
+// earlier draft of this file concluded and wrongly blamed on the method.
+//
+// Among the candidates the one whose consequent encroachment sits DEEPEST into
+// premium wins for a sell, and deepest into discount for a buy: that is the
+// best price the leg is offering, and the one the method reaches for.
+//
+// `newest` and `oldest` bound the search, `min_gap` refuses a gap too narrow to
+// pay the spread, and the dealing range decides which half counts.
+bool XSparkIctSelectEntryGap(const double &highs[], const double &lows[],
+                             const int newest, const int oldest,
+                             const EXSparkSignalDirection direction,
+                             const double min_gap,
+                             const double range_low, const double range_high,
+                             const bool use_premium_discount,
+                             double &gap_low, double &gap_high, int &gap_index,
+                             bool &saw_any_gap)
+{
+   gap_low = 0.0;
+   gap_high = 0.0;
+   gap_index = -1;
+   saw_any_gap = false;
+
+   const int size = ArraySize(highs);
+   if(newest < 0 || oldest < newest || ArraySize(lows) != size)
+      return false;
+   if(direction != XSPARK_SIGNAL_BUY && direction != XSPARK_SIGNAL_SELL)
+      return false;
+
+   double best_position = 0.0;
+   bool found = false;
+
+   for(int i = newest; i <= oldest; i++)
+   {
+      if(i + 2 >= size)
+         break;
+
+      double low = 0.0;
+      double high = 0.0;
+      const bool has_gap = direction == XSPARK_SIGNAL_SELL
+                           ? XSparkIctBearishFvg(highs, lows, i, min_gap, low, high)
+                           : XSparkIctBullishFvg(highs, lows, i, min_gap, low, high);
+      if(!has_gap)
+         continue;
+
+      saw_any_gap = true;
+
+      double ce = 0.0;
+      if(!XSparkIctConsequentEncroachment(low, high, ce))
+         continue;
+
+      double position = 0.0;
+      if(!XSparkIctRangePosition(ce, range_low, range_high, position))
+         continue;
+
+      if(use_premium_discount)
+      {
+         const bool correct_half = direction == XSPARK_SIGNAL_SELL ? position >= 0.5 : position <= 0.5;
+         if(!correct_half)
+            continue;
+      }
+
+      // Deepest into the correct half wins: highest for a sell, lowest for a buy.
+      const double score = direction == XSPARK_SIGNAL_SELL ? position : 1.0 - position;
+      if(!found || score > best_position)
+      {
+         found = true;
+         best_position = score;
+         gap_low = low;
+         gap_high = high;
+         gap_index = i;
+      }
+   }
+
+   return found;
+}
+
+// ---------------------------------------------------------------------------
+// The draw on liquidity.
+// ---------------------------------------------------------------------------
+//
+// Where the trade is going: the opposing pool of stops the market is being
+// pulled toward. For a sell that is the nearest swing LOW below the entry -
+// resting sell stops that the move can reach and take.
+//
+// This is a price, not a ratio. The reward ratio a trade carries is whatever
+// this level implies once the stop is known, which is why nothing in this file
+// lets an operator choose a target: the market decides where the liquidity is.
+bool XSparkIctDrawOnLiquidity(const double &highs[], const double &lows[],
+                              const int from_index, const double entry,
+                              const EXSparkSignalDirection direction,
+                              const int lookback, const int strength,
+                              double &target)
+{
+   target = 0.0;
+
+   const int size = ArraySize(highs);
+   if(from_index < 0 || lookback <= 0 || strength <= 0 || ArraySize(lows) != size)
+      return false;
+   if(!MathIsValidNumber(entry) || entry <= 0.0)
+      return false;
+
+   const int last = MathMin(from_index + lookback, size - strength - 1);
+
+   for(int i = from_index + 1; i <= last; i++)
+   {
+      if(direction == XSPARK_SIGNAL_SELL)
+      {
+         if(!XSparkIctIsSwingLow(lows, i, strength))
+            continue;
+         // Only a pool the trade can actually travel to counts.
+         if(lows[i] >= entry)
+            continue;
+         target = lows[i];
+         return true;
+      }
+      else if(direction == XSPARK_SIGNAL_BUY)
+      {
+         if(!XSparkIctIsSwingHigh(highs, i, strength))
+            continue;
+         if(highs[i] <= entry)
+            continue;
+         target = highs[i];
+         return true;
+      }
+   }
+
+   return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,14 +606,20 @@ struct XSparkIctConfig
    int    swing_strength;
    int    swing_lookback;
    int    sweep_max_age_bars;
-   double min_displacement_atr;
-   double min_fvg_atr;
-   double stop_buffer_atr;
+   // The narrowest imbalance worth entering, as a price distance. Supplied by
+   // the EA from the round-trip cost, because only the EA knows the spread.
+   // Never an indicator multiple.
+   double min_gap_price;
+   double stop_buffer_points;
    double min_stop_atr;
    double max_stop_atr;
    double max_cost_share_pct;
    bool   use_premium_discount;
-   double target_r;
+   // Bounds on the reward the draw on liquidity must offer. NOT a target:
+   // the target is wherever the liquidity is. These only refuse a pool too
+   // close to pay for the stop, or so far the trade is a different one.
+   double min_target_r;
+   double max_target_r;
    EXSparkIctKillZones kill_zones;
 };
 
@@ -450,14 +628,14 @@ void XSparkDefaultIctConfig(XSparkIctConfig &config)
    config.swing_strength = XSPARK_ICT_SWING_STRENGTH;
    config.swing_lookback = XSPARK_ICT_SWING_LOOKBACK;
    config.sweep_max_age_bars = XSPARK_ICT_SWEEP_MAX_AGE_BARS;
-   config.min_displacement_atr = XSPARK_ICT_MIN_DISPLACEMENT_ATR;
-   config.min_fvg_atr = XSPARK_ICT_MIN_FVG_ATR;
-   config.stop_buffer_atr = XSPARK_ICT_STOP_BUFFER_ATR;
+   config.min_gap_price = 0.0;
+   config.stop_buffer_points = XSPARK_ICT_STOP_BUFFER_POINTS;
    config.min_stop_atr = XSPARK_ICT_MIN_STOP_ATR;
    config.max_stop_atr = XSPARK_ICT_MAX_STOP_ATR;
    config.max_cost_share_pct = XSPARK_ICT_MAX_COST_SHARE_PCT;
    config.use_premium_discount = XSPARK_ICT_USE_PREMIUM_DISCOUNT;
-   config.target_r = 2.0;
+   config.min_target_r = XSPARK_ICT_MIN_TARGET_R;
+   config.max_target_r = XSPARK_ICT_MAX_TARGET_R;
    config.kill_zones = XSPARK_ICT_KZ_LONDON_NY;
 }
 
@@ -483,21 +661,15 @@ bool XSparkIctConfigUsable(const XSparkIctConfig &config, string &reason)
       return false;
    }
 
-   if(!MathIsValidNumber(config.min_displacement_atr) || config.min_displacement_atr <= 0.0)
+   if(!MathIsValidNumber(config.min_gap_price) || config.min_gap_price < 0.0)
    {
-      reason = "The displacement threshold is not a usable multiple.";
+      reason = "The narrowest tradeable imbalance is not a usable distance.";
       return false;
    }
 
-   if(!MathIsValidNumber(config.min_fvg_atr) || config.min_fvg_atr < 0.0)
+   if(!MathIsValidNumber(config.stop_buffer_points) || config.stop_buffer_points < 0.0)
    {
-      reason = "The imbalance floor is not a usable multiple.";
-      return false;
-   }
-
-   if(!MathIsValidNumber(config.stop_buffer_atr) || config.stop_buffer_atr < 0.0)
-   {
-      reason = "The stop buffer is not a usable multiple.";
+      reason = "The stop buffer is not a usable number of points.";
       return false;
    }
 
@@ -515,9 +687,10 @@ bool XSparkIctConfigUsable(const XSparkIctConfig &config, string &reason)
       return false;
    }
 
-   if(!MathIsValidNumber(config.target_r) || config.target_r <= 0.0)
+   if(!MathIsValidNumber(config.min_target_r) || config.min_target_r <= 0.0 ||
+      !MathIsValidNumber(config.max_target_r) || config.max_target_r <= config.min_target_r)
    {
-      reason = "The target must be a positive multiple of the stop.";
+      reason = "The reward bounds on the draw on liquidity are not a usable range.";
       return false;
    }
 
@@ -532,8 +705,9 @@ struct XSparkIctVerdicts
    string zone;       // "IN ZONE", "OUTSIDE ZONE"
    string sweep;      // "SWEPT HIGH", "SWEPT LOW", "NO SWEEP"
    string structure;  // "SHIFTED", "NOT SHIFTED"
-   string imbalance;  // "FVG", "NO FVG", "FVG TOO THIN"
+   string imbalance;  // "FVG", "NO FVG"
    string location;   // "DISCOUNT", "PREMIUM", "WRONG HALF", "OFF"
+   string liquidity;  // "DRAW FOUND", "NO DRAW", "DRAW TOO CLOSE", "DRAW TOO FAR"
 };
 
 void XSparkResetIctVerdicts(XSparkIctVerdicts &verdicts)
@@ -543,20 +717,24 @@ void XSparkResetIctVerdicts(XSparkIctVerdicts &verdicts)
    verdicts.structure = "";
    verdicts.imbalance = "";
    verdicts.location = "";
+   verdicts.liquidity = "";
 }
 
 // The result of one bar's evaluation, before risk and cost have a say.
 struct XSparkIctSetup
 {
    EXSparkSignalDirection direction;
-   double swept_level;     // the extreme the sweep ran; the model's invalidation
-   double entry_limit;     // the near edge of the imbalance
+   double swept_level;     // the extreme the raid ran; the model's invalidation
+   double entry_limit;     // the imbalance's consequent encroachment
    double gap_low;
    double gap_high;
    double stop;
-   double target;
+   double target;          // the draw on liquidity, as a price
+   double target_r;        // what that draw implies against the stop; an output
+   double range_position;  // where the entry sits in the dealing range, 0 to 1
    int    sweep_index;
    int    shift_index;
+   int    gap_index;       // which bar of the leg carried the chosen imbalance
    string reason;
 };
 
@@ -569,8 +747,11 @@ void XSparkResetIctSetup(XSparkIctSetup &setup)
    setup.gap_high = 0.0;
    setup.stop = 0.0;
    setup.target = 0.0;
+   setup.target_r = 0.0;
+   setup.range_position = 0.0;
    setup.sweep_index = -1;
    setup.shift_index = -1;
+   setup.gap_index = -1;
    setup.reason = "";
 }
 
@@ -644,22 +825,30 @@ int XSparkIctFindBullishSweep(const double &lows[], const double &closes[],
 // THE BAR ROLES, because getting these one apart is the easiest way to build a
 // model that looks right and tests nothing:
 //
-//   eval_index      the bar that just closed. Newest bar of the imbalance, and
-//                   the bar that CONFIRMS it - a three-bar gap does not exist
-//                   until its third bar has closed.
-//   eval_index + 1  the DISPLACEMENT. The impulsive body that broke structure
-//                   and left the gap. It is the MIDDLE bar of the imbalance.
-//   eval_index + 2  the oldest bar of the imbalance.
-//   older still     the sweep, then the swing it ran.
+//   eval_index      the bar that just closed. Newest bar of the newest possible
+//                   imbalance, and the bar that CONFIRMS it - a three-bar gap
+//                   does not exist until its third bar has closed.
+//   eval_index + 1  the DISPLACEMENT. The bar that broke structure. It is the
+//                   MIDDLE bar of any imbalance it left.
+//   older still     the rest of the leg, the sweep, then the swing it raided.
 //
-// So the displacement is never the bar being evaluated. Checking displacement
-// and imbalance on the same index would ask the gap to exist one bar before it
-// can, and the sequence would never complete.
+// THE SEQUENCE:
+//   1. inside a kill zone
+//   2. a swing high was raided and the raid failed on the same bar
+//   3. a bar closed back through the opposing swing - structure shifted
+//   4. that leg left an imbalance, sought across the WHOLE leg rather than
+//      only its last three bars
+//   5. the entry is that imbalance's consequent encroachment, in premium
+//   6. the stop is beyond the raided extreme
+//   7. the target is the draw on liquidity - the opposing pool of stops
 //
-// Returns true only when all four conditions held and the geometry is usable.
-// `verdicts` is filled either way, so a refusal is as informative as a signal.
+// NO INDICATOR TAKES PART IN ANY OF THE SEVEN, and this function does not
+// receive one. It takes the bars, the clock and the instrument's point size,
+// and nothing else. An earlier draft accepted an ATR and used it to judge
+// displacement; that the parameter can now be deleted outright is the clearest
+// evidence the dependency is gone.
 bool XSparkIctEvaluate(const double &opens[], const double &highs[], const double &lows[], const double &closes[],
-                       const int eval_index, const int minutes_utc, const double atr,
+                       const int eval_index, const int minutes_utc, const double point_size,
                        const XSparkIctConfig &config, XSparkIctSetup &setup, XSparkIctVerdicts &verdicts)
 {
    XSparkResetIctSetup(setup);
@@ -685,17 +874,16 @@ bool XSparkIctEvaluate(const double &opens[], const double &highs[], const doubl
       return false;
    }
 
-   if(!MathIsValidNumber(atr) || atr <= 0.0)
+   if(!MathIsValidNumber(point_size) || point_size <= 0.0)
    {
-      setup.reason = "The typical candle size is unavailable.";
+      setup.reason = "The instrument's point size is unavailable.";
       return false;
    }
 
    const int displacement_index = eval_index + 1;
 
-   // 1. Kill zone. Checked first because it is the cheapest and because a
-   //    sequence outside the window is not a setup the model missed, it is one
-   //    the model declines.
+   // 1. Kill zone, checked first because it is the cheapest and because a
+   //    sequence outside the window is not one the model missed.
    if(!XSparkIctInKillZone(minutes_utc, config.kill_zones))
    {
       verdicts.zone = "OUTSIDE ZONE";
@@ -706,26 +894,21 @@ bool XSparkIctEvaluate(const double &opens[], const double &highs[], const doubl
    }
    verdicts.zone = "IN ZONE";
 
-   // 2. The displacement, and 3. the sweep it must have reversed. The two are
-   //    found together because a sweep is only meaningful as the thing the
-   //    displacement broke away from.
-   const bool bearish_body = XSparkIctIsDisplacement(opens[displacement_index], closes[displacement_index],
-                                                     atr, config.min_displacement_atr, XSPARK_SIGNAL_SELL);
-   const bool bullish_body = XSparkIctIsDisplacement(opens[displacement_index], closes[displacement_index],
-                                                     atr, config.min_displacement_atr, XSPARK_SIGNAL_BUY);
+   // 2. The raid. Which side to look for comes from the displacement bar's
+   //    body - the only thing read from it, and not a magnitude.
+   const EXSparkSignalDirection body = XSparkIctBodyDirection(opens[displacement_index], closes[displacement_index]);
 
    double swept_level = 0.0;
    EXSparkSignalDirection direction = XSPARK_SIGNAL_NONE;
    int sweep_index = -1;
 
-   if(bearish_body)
+   if(body == XSPARK_SIGNAL_SELL)
    {
       sweep_index = XSparkIctFindBearishSweep(highs, closes, displacement_index, config, swept_level);
       if(sweep_index >= 0)
          direction = XSPARK_SIGNAL_SELL;
    }
-
-   if(direction == XSPARK_SIGNAL_NONE && bullish_body)
+   else if(body == XSPARK_SIGNAL_BUY)
    {
       sweep_index = XSparkIctFindBullishSweep(lows, closes, displacement_index, config, swept_level);
       if(sweep_index >= 0)
@@ -735,17 +918,17 @@ bool XSparkIctEvaluate(const double &opens[], const double &highs[], const doubl
    if(direction == XSPARK_SIGNAL_NONE)
    {
       verdicts.sweep = "NO SWEEP";
-      setup.reason = bearish_body || bullish_body
-                     ? "A displacement closed but no stop pool was run in the bars before it."
-                     : "No displacement: the bar's body is under the impulse floor, so nothing broke structure.";
+      setup.reason = body == XSPARK_SIGNAL_NONE
+                     ? "The bar closed where it opened, so it points nowhere and cannot be a displacement."
+                     : "No stop pool was raided in the bars before this one.";
       return false;
    }
 
    verdicts.sweep = direction == XSPARK_SIGNAL_SELL ? "SWEPT HIGH" : "SWEPT LOW";
 
-   // 4. The break of structure itself: the displacement must close through the
-   //    opposing swing that formed between the sweep and it. Without this the
-   //    bar is a large candle inside the range, not a shift.
+   // 3. The break of structure: the displacement must close THROUGH the
+   //    opposing swing formed between the raid and now. Without this the bar
+   //    is just a candle inside the range.
    const int opposing = direction == XSPARK_SIGNAL_SELL
                         ? XSparkIctFindSwingLow(lows, displacement_index, config.swing_lookback, config.swing_strength)
                         : XSparkIctFindSwingHigh(highs, displacement_index, config.swing_lookback, config.swing_strength);
@@ -768,59 +951,68 @@ bool XSparkIctEvaluate(const double &opens[], const double &highs[], const doubl
    }
    verdicts.structure = "SHIFTED";
 
-   // 5. The imbalance the displacement left, newest bar at eval_index.
+   // The dealing range the premium/discount reading is taken against: from the
+   // raided extreme to the far end of the leg the displacement made.
+   double leg_extreme = direction == XSPARK_SIGNAL_SELL ? lows[eval_index] : highs[eval_index];
+   for(int i = eval_index; i <= sweep_index && i < size; i++)
+   {
+      if(direction == XSPARK_SIGNAL_SELL)
+      {
+         if(lows[i] < leg_extreme) leg_extreme = lows[i];
+      }
+      else
+      {
+         if(highs[i] > leg_extreme) leg_extreme = highs[i];
+      }
+   }
+
+   const double range_high = direction == XSPARK_SIGNAL_SELL ? swept_level : leg_extreme;
+   const double range_low = direction == XSPARK_SIGNAL_SELL ? leg_extreme : swept_level;
+
+   // 4 and 5. The imbalance, sought across the whole leg, and its consequent
+   //          encroachment taken as the entry.
    double gap_low = 0.0;
    double gap_high = 0.0;
-   const double min_gap = config.min_fvg_atr * atr;
-   const bool has_gap = direction == XSPARK_SIGNAL_SELL
-                        ? XSparkIctBearishFvg(highs, lows, eval_index, min_gap, gap_low, gap_high)
-                        : XSparkIctBullishFvg(highs, lows, eval_index, min_gap, gap_low, gap_high);
+   int gap_index = -1;
+   bool saw_any_gap = false;
 
-   if(!has_gap)
+   if(!XSparkIctSelectEntryGap(highs, lows, eval_index, sweep_index, direction,
+                               config.min_gap_price, range_low, range_high,
+                               config.use_premium_discount,
+                               gap_low, gap_high, gap_index, saw_any_gap))
    {
-      verdicts.imbalance = "NO FVG";
-      setup.reason = "The displacement left no imbalance wide enough to return to.";
+      if(!saw_any_gap)
+      {
+         verdicts.imbalance = "NO FVG";
+         setup.reason = "The leg left no imbalance wide enough to return to.";
+      }
+      else
+      {
+         verdicts.imbalance = "FVG";
+         verdicts.location = "WRONG HALF";
+         setup.reason = "Every imbalance in the leg sits in the wrong half of the dealing range.";
+      }
       return false;
    }
    verdicts.imbalance = "FVG";
 
-   // Geometry. The entry is the gap edge the market reaches FIRST on its way
-   // back: for a sell price retraces upward, so that is the gap's low edge.
-   const double entry = direction == XSPARK_SIGNAL_SELL ? gap_low : gap_high;
+   double entry = 0.0;
+   if(!XSparkIctConsequentEncroachment(gap_low, gap_high, entry))
+   {
+      setup.reason = "The imbalance has no usable midpoint.";
+      return false;
+   }
 
-   // Premium/discount, measured across the range the sweep and the break
-   // defined. Off by default - see the constant for why this refuses every
-   // setup when the entry is the displacement's own imbalance.
+   double position = 0.0;
+   XSparkIctRangePosition(entry, range_low, range_high, position);
    if(config.use_premium_discount)
-   {
-      const double range_high = direction == XSPARK_SIGNAL_SELL ? swept_level : highs[opposing];
-      const double range_low = direction == XSPARK_SIGNAL_SELL ? lows[opposing] : swept_level;
-
-      double position = 0.0;
-      if(!XSparkIctRangePosition(entry, range_low, range_high, position))
-      {
-         verdicts.location = "WRONG HALF";
-         setup.reason = "The swept range is not usable, so premium and discount cannot be read.";
-         return false;
-      }
-
-      const bool correct_half = direction == XSPARK_SIGNAL_SELL ? position >= 0.5 : position <= 0.5;
-      if(!correct_half)
-      {
-         verdicts.location = "WRONG HALF";
-         setup.reason = StringFormat("The entry sits at %.0f%% of the swept range, the wrong half for a %s.",
-                                     position * 100.0,
-                                     direction == XSPARK_SIGNAL_SELL ? "sell" : "buy");
-         return false;
-      }
       verdicts.location = direction == XSPARK_SIGNAL_SELL ? "PREMIUM" : "DISCOUNT";
-   }
    else
-   {
       verdicts.location = "OFF";
-   }
 
-   const double buffer = config.stop_buffer_atr * atr;
+   // 6. The stop, beyond the raided extreme by a buffer that only clears the
+   //    spread and the broker's stop level.
+   const double buffer = config.stop_buffer_points * point_size;
    const double stop = direction == XSPARK_SIGNAL_SELL ? swept_level + buffer : swept_level - buffer;
    const double stop_distance = direction == XSPARK_SIGNAL_SELL ? stop - entry : entry - stop;
 
@@ -830,19 +1022,36 @@ bool XSparkIctEvaluate(const double &opens[], const double &highs[], const doubl
       return false;
    }
 
-   if(stop_distance < config.min_stop_atr * atr)
+   // 7. The draw on liquidity. The trade goes to the opposing pool of stops,
+   //    and the reward ratio is whatever that implies - never chosen.
+   double target = 0.0;
+   if(!XSparkIctDrawOnLiquidity(highs, lows, sweep_index, entry, direction,
+                                config.swing_lookback, config.swing_strength, target))
    {
-      setup.reason = StringFormat("The stop is %.2f typical candles from the entry, under the %.2f floor.",
-                                  stop_distance / atr, config.min_stop_atr);
+      verdicts.liquidity = "NO DRAW";
+      setup.reason = "No opposing pool of stops is within reach, so the trade has nowhere to go.";
       return false;
    }
 
-   if(stop_distance > config.max_stop_atr * atr)
+   const double reward = direction == XSPARK_SIGNAL_SELL ? entry - target : target - entry;
+   const double implied_r = reward / stop_distance;
+
+   if(implied_r < config.min_target_r)
    {
-      setup.reason = StringFormat("The stop is %.2f typical candles from the entry, over the %.2f ceiling.",
-                                  stop_distance / atr, config.max_stop_atr);
+      verdicts.liquidity = "DRAW TOO CLOSE";
+      setup.reason = StringFormat("The draw on liquidity at %.5f is only %.2f times the stop away; at least %.2f is required.",
+                                  target, implied_r, config.min_target_r);
       return false;
    }
+
+   if(implied_r > config.max_target_r)
+   {
+      verdicts.liquidity = "DRAW TOO FAR";
+      setup.reason = StringFormat("The draw on liquidity at %.5f is %.2f times the stop away, beyond the %.2f bound; that is a different trade.",
+                                  target, implied_r, config.max_target_r);
+      return false;
+   }
+   verdicts.liquidity = "DRAW FOUND";
 
    setup.direction = direction;
    setup.swept_level = swept_level;
@@ -851,14 +1060,16 @@ bool XSparkIctEvaluate(const double &opens[], const double &highs[], const doubl
    setup.entry_limit = entry;
    setup.sweep_index = sweep_index;
    setup.shift_index = displacement_index;
+   setup.gap_index = gap_index;
    setup.stop = stop;
-   setup.target = direction == XSPARK_SIGNAL_SELL ? entry - config.target_r * stop_distance
-                                                  : entry + config.target_r * stop_distance;
+   setup.target = target;
+   setup.target_r = implied_r;
+   setup.range_position = position;
 
-   setup.reason = StringFormat("%s: %s at %.5f, structure shifted, entry at the imbalance %.5f-%.5f.",
+   setup.reason = StringFormat("%s: %s raided at %.5f, structure shifted, entry at the imbalance midpoint %.5f (%.0f%% of the dealing range), stop %.5f, draw on liquidity %.5f at %.2fR.",
                                direction == XSPARK_SIGNAL_SELL ? "SELL" : "BUY",
-                               direction == XSPARK_SIGNAL_SELL ? "high swept" : "low swept",
-                               swept_level, gap_low, gap_high);
+                               direction == XSPARK_SIGNAL_SELL ? "high" : "low",
+                               swept_level, entry, position * 100.0, stop, target, implied_r);
    return true;
 }
 
@@ -916,32 +1127,6 @@ bool XSparkIctWilsonLowerBound(const int wins, const int outcomes, double &lower
    lower = bound < 0.0 ? 0.0 : bound;
    return true;
 }
-
-// Where the target sits, as a named choice rather than a free number: every
-// value is a tested, internally consistent configuration (AGENTS.md rule 49).
-enum EXSparkIctTargetStyle
-{
-   XSPARK_ICT_TARGET_TWO   = 0, // Target twice the stop (break-even 33%)
-   XSPARK_ICT_TARGET_THREE = 1  // Target three times the stop (break-even 25%)
-};
-
-bool XSparkIctTargetForStyle(const EXSparkIctTargetStyle style, double &target_r, string &reason)
-{
-   target_r = 0.0;
-   reason = "";
-
-   switch(style)
-   {
-      case XSPARK_ICT_TARGET_TWO:   target_r = 2.0; return true;
-      case XSPARK_ICT_TARGET_THREE: target_r = 3.0; return true;
-   }
-
-   reason = "The target style is not one this build knows; using twice the stop.";
-   target_r = 2.0;
-   return false;
-}
-
-
 
 // ---------------------------------------------------------------------------
 // How long a position may live.
@@ -1214,11 +1399,15 @@ public:
       m_utc_offset_hours = utc_offset_hours;
    }
 
-   double TargetRewardRatio()
+   // No TargetRewardRatio(): the reward ratio is not a property of this
+   // strategy, it is whatever the draw on liquidity implies on the setup that
+   // was found. Each signal carries its own.
+
+   // The narrowest imbalance worth entering, handed down by the EA from the
+   // round-trip cost. A gap narrower than the spread is not an entry.
+   void SetMinimumGap(const double min_gap_price)
    {
-      if(!MathIsValidNumber(m_config.target_r) || m_config.target_r <= 0.0)
-         return 0.0;
-      return m_config.target_r;
+      m_config.min_gap_price = min_gap_price;
    }
 
    bool Initialize(const string symbol)
@@ -1293,6 +1482,7 @@ public:
 
       const double atr14 = cache.ATR14Base();
       const double atr50 = cache.ATR50Base();
+      const double point_size = SymbolInfoDouble(m_symbol, SYMBOL_POINT);
 
       // Copy the cached closed bars into series arrays: index 0 is the bar just
       // closed, which is what the model calls eval_index.
@@ -1343,13 +1533,15 @@ public:
       XSparkIctSetup setup;
       XSparkIctVerdicts verdicts;
 
-      if(!XSparkIctEvaluate(opens, highs, lows, closes, 0, minutes_utc, atr14, m_config, setup, verdicts))
+      if(!XSparkIctEvaluate(opens, highs, lows, closes, 0, minutes_utc, point_size, m_config, setup, verdicts))
       {
          // The verdicts are the funnel: the EA counts them so a run that takes
          // no trades says which ICT condition the market never produced.
          report.htf_verdict = verdicts.zone;
          report.pullback_verdict = verdicts.sweep;
          report.entry_location = verdicts.imbalance != "" ? verdicts.imbalance : "FAIR VALUE GAP";
+         report.rsi_verdict = verdicts.liquidity != "" ? verdicts.liquidity : "OFF";
+         report.joint_verdict = verdicts.location != "" ? verdicts.location : "BLOCKED";
          report.block_reason = setup.reason;
          m_last_reason = setup.reason;
          return false;
@@ -1357,7 +1549,10 @@ public:
 
       report.htf_verdict = verdicts.zone;
       report.pullback_verdict = verdicts.sweep;
+      report.rsi_verdict = verdicts.liquidity;
+      report.entry_location = verdicts.location;
       report.detected_level = setup.swept_level;
+      report.dynamic_rr = setup.target_r;
       report.scored = true;
       report.threshold_passed = true;
       report.components.pattern = XSPARK_ICT_SIGNAL_SCORE;
@@ -1376,7 +1571,8 @@ public:
       // Execution derives the take-profit from the ratio and the stop distance
       // it actually gets, so the modelled target is not carried as a price.
       signal.desired_target = 0.0;
-      signal.dynamic_rr = TargetRewardRatio();
+      // The reward ratio the draw on liquidity implies, carried per signal.
+      signal.dynamic_rr = setup.target_r;
       // The imbalance edge. Unlike a market entry this is the worst price the
       // model will accept: execution refuses a fill beyond it rather than
       // chasing the displacement it just measured.
