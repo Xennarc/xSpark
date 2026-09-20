@@ -25,7 +25,7 @@ of the division.
 | Piece | Source behaviour kept |
 | --- | --- |
 | Leg / pivot detector | `high[size] > ta.highest(size)` — a **one-sided** confirmation window, with nothing to the left of the pivot consulted. Not a symmetric pivot. |
-| Two structures | Internal (5 bars) and swing (50 bars), each with its own pivots, its own `crossed` flags and its own BOS/CHoCH bias. |
+| Two structures | Internal (5 candles) and swing (50 candles) — the published pair, and the Normal swing size — each with its own pivots, its own `crossed` flags and its own BOS/CHoCH bias. |
 | The `distinct level` rule | An internal break at exactly the swing pivot's level is not counted as internal structure. |
 | Crossover semantics | Pine's `ta.crossover` reads *both* arguments one bar back, so a break is measured against the level that existed when the earlier close printed. |
 | Order block | The extreme bar of the leg that broke structure — highest parsed high for a bearish break, lowest parsed low for a bullish one — with ties going to the **oldest** bar. |
@@ -40,7 +40,7 @@ of the division.
 | Decision | What was chosen, and why |
 | --- | --- |
 | Entry | A **limit** at the order block's midpoint. Not the near edge (fills more often at a worse price) and not the far edge (a better price that frequently never trades). |
-| When the entry is live | While the block is unmitigated, no more than 60 bars old, and the structure that created it still points its way. |
+| When the entry is live | While the block is unmitigated, inside the shelf life the swing size sets (60 candles on Normal), and the structure that created it still points its way. |
 | Location filter | Buys only from the **discount** half of the dealing range, sells only from the **premium** half — read off the indicator's own trailing extremes. |
 | Stop | Beyond the block's far edge by 20 points. This is not an arbitrary level: it is exactly where the indicator deletes the block, so the stop and the model's own invalidation are the same line. |
 | Target | The **draw on liquidity** — the trailing extreme the indicator labels Strong or Weak. A price, not a ratio. |
@@ -112,9 +112,46 @@ A stopped-out setup cannot re-fire, and that falls out of the geometry rather
 than from a flag: the stop sits beyond the block's far edge, so price reaching
 it has also mitigated the block, and the next replay does not contain it.
 
+## Every indicator setting, and what became of it
+
+The published indicator has about forty settings. This is all of them, and where
+each one went. Read it as the answer to "did you actually port the thing" —
+nothing below is omitted because it was missed.
+
+### Became a lever
+
+| Indicator setting | Lever here |
+| --- | --- |
+| Internal Order Blocks / Swing Order Blocks (which to show) | `InpSmcStructure` — which structure's breaks to trade |
+| Bullish / Bearish Structure = All, BOS, CHoCH | `InpSmcBreakType` — reversals, continuations, or both |
+| Show Swings Points length (50) | `InpSmcSwingSize` — how big a swing counts as structure |
+| Premium/Discount Zones on/off, Fair Value Gaps on/off | `InpSmcSelectivity` — how much must line up before entering |
+
+### Became a constant, at the indicator's own published value
+
+| Indicator setting | Value here | Why it is not a lever |
+| --- | --- | --- |
+| Order Block Filter (Atr / Cumulative Mean Range) | cumulative mean range | The indicator's own note recommends the mean range "when a low amount of data is available", and a 160-candle window cannot hold a 200-period ATR. One correct answer, not a choice. |
+| Order Block Mitigation (Close / High/Low) | High/Low | In the indicator this decides when a box stops being drawn. Here that same level is the **stop**, and a zone price has already traded through is not an entry at any price — so High/Low, its own default, is the only reading consistent with the stop. |
+| EQH/EQL Bars Confirmation (3), Threshold (0.1) | 3 and 0.1 | Numbers that can only be copied from their defaults. Here they affect one line of the journal, not an entry. |
+| Fair Value Gaps → Auto Threshold | on | The source's default, and the only setting that makes the gap test scale-free. |
+| Internal structure length (hard-coded 5 in the source) | moves with `InpSmcSwingSize` | Kept at 5 on the Normal size, scaled with the swing on the other two so the internal structure stays roughly a tenth of the swing. |
+
+### Not implemented, and why
+
+| Indicator setting | Why |
+| --- | --- |
+| Mode (Historical/Present), Style (Colored/Monochrome), Color Candles | Drawing. This EA draws nothing. |
+| Show Internal Structure, Show Swing Structure, Show Strong/Weak High/Low, Show Swings Points (the checkboxes) | Visibility toggles. The model always computes all of it; there is nothing to hide. |
+| All label sizes, all colours, Extend FVG | Presentation. |
+| Confluence Filter | Off in the source, and its published expression (`high - max(close, open) > min(close, open - low)`) compares a price to a distance. Mechanizing it faithfully would mechanize a defect. |
+| Fair Value Gaps → Timeframe | A second chart period's gaps, drawn on this one. The model reads one chart period. |
+| Highs & Lows MTF (Daily, Weekly, Monthly + styles and colours) | Drawn levels from other chart periods. A genuine addition would be to use them as a draw-on-liquidity target; that is new behaviour, not a setting. |
+| Premium / Equilibrium / Discount zone colours, and the 5% band geometry | Presentation. The *concept* is a lever (`InpSmcSelectivity`); the bands are a drawing. |
+
 ## Settings
 
-Twelve, and most people change two of them.
+Fourteen, and most people change two of them.
 
 A setting earns a place in the Inputs tab only if the operator knows something
 the code does not. You know your account, your broker's commission and your
@@ -128,8 +165,10 @@ the header, at the source's own published values.
 | --- | --- | --- |
 | `InpSmcEnableTrading` | false | Place real trades. Off watches and logs only. |
 | `InpSmcRiskPct` | 1.0 | Money risked on one trade, as a percentage of balance. |
-| `InpSmcStructure` | 5-bar break, 50-bar trend must agree | Which structure break to trade. |
-| `InpSmcConfluence` | Order block only | Whether the leg must also have left a price gap. |
+| `InpSmcStructure` | Internal break, swing must agree | Which structure's breaks to trade. |
+| `InpSmcBreakType` | Both | Reversals, continuations, or both. |
+| `InpSmcSwingSize` | Normal | How big a swing counts as structure. |
+| `InpSmcSelectivity` | Balanced | How much must line up before entering. |
 | `InpSmcCommissionPerLot` | 0.0 | Commission per 1.0 lot both ways, in account money. |
 | `InpSmcMinLotRiskCapPct` | 3.0 | How much the broker's smallest trade may risk on a small account. |
 | `InpSmcMaxDailyDDPct` | 6.0 | Stop opening trades if the account falls this much today. |
@@ -139,25 +178,67 @@ the header, at the source's own published values.
 | `InpSmcVerboseLog` | false | Detailed logs, for troubleshooting. |
 | `InpSmcClearKillswitchLatch` | false | Clear the emergency stop once, then set back to false. |
 
-### The two strategy dropdowns
+### The four strategy dropdowns
 
-Both are **named choices**, not numbers: every value is a configuration that is
-internally consistent on its own, so there is no combination to get wrong.
+All four are **named choices**, not numbers: every value is a configuration that
+is internally consistent on its own, so there is no combination to get wrong. A
+dropdown that moves three numbers together exists precisely so that a fast swing
+with a slow memory — which is not a faster version of this rule, it is a
+different rule — cannot be assembled from the Inputs tab.
 
-`InpSmcStructure` decides which break is traded:
+**`InpSmcStructure` — which structure's breaks to trade**
 
-- **5-bar break, 50-bar trend must agree** (default) — the indicator's internal
-  structure, filtered by its swing bias. Under this setting a buy is only ever
-  taken toward a *Weak High*, which is the extreme the swing bias says is likely
-  to be taken.
-- **5-bar break alone** — more trades, no trend filter.
-- **50-bar break alone** — far fewer trades, taken from swing structure only.
+- *Internal break, the swing trend must agree* (default). Under this setting a
+  buy is only ever taken toward a **Weak High**, which is the extreme the
+  indicator's own swing bias says is likely to be taken. That is not a
+  coincidence; it is why this is the default.
+- *Internal break alone* — more trades, no trend filter.
+- *Swing break alone* — far fewer trades.
 
-`InpSmcConfluence` decides what the entry zone must show:
+**`InpSmcBreakType` — reversals, continuations, or both**
 
-- **Order block only** (default) — which matches the source's own defaults, where
-  order blocks are on and fair value gaps are off.
-- **Also require the move to leave a price gap** — stricter, and fewer trades.
+The indicator's All / BOS / CHoCH filter. There it decides which labels are
+drawn; here it decides which breaks are traded, which is the same distinction
+doing real work.
+
+- *Both* (default).
+- *Reversals only* — a change of character is the **first** break against the
+  prior bias: the turn, taken early and wrong more often.
+- *Continuations only* — a break of structure extends a bias that already
+  exists: later, and in the direction the market has already chosen.
+
+**`InpSmcSwingSize` — how big a swing counts as structure**
+
+One choice, three numbers: the swing length, the internal length, and how long
+an order block stays enterable.
+
+| Value | Swing | Internal | Block shelf life | Replay candles left |
+| --- | --- | --- | --- | --- |
+| Fast | 20 | 3 | 30 | 139 |
+| Normal (default) | 50 | 5 | 60 | 109 |
+| Slow | 65 | 8 | 70 | 94 |
+
+That last column is the one to look at, and it is why there is no slower choice.
+The window is fixed at 160 closed candles, and a swing pivot is only confirmed
+once `swing_length` newer candles have printed past it — so a bigger swing buys
+**fewer** candles to find one in. The dealing range needs a swing high *and* a
+swing low, so on Slow the model can spend long stretches reporting
+`RANGE UNKNOWN`. The EA prints that arithmetic on its first bar and warns when
+the window is tight for the chosen size, rather than letting the funnel reveal
+it a week later. Slow is offered because it is the indicator's own axis, not
+because it is recommended.
+
+**`InpSmcSelectivity` — how much must line up**
+
+The indicator's Premium/Discount Zones and Fair Value Gaps switches, folded into
+one dial because they are the same question asked twice.
+
+- *Balanced* (default) — enter only from the discount half for a buy and the
+  premium half for a sell.
+- *Strict* — that, **and** the leg must have left an unfilled price gap.
+- *Permissive* — enter the block wherever it sits in the range. This is the
+  setting that turns the `WRONG HALF` funnel counter off, and it is also the one
+  that lets a buy be taken at the top of a range.
 
 ### Commission is not optional on a commission account
 
@@ -182,17 +263,24 @@ stop, so a run that takes no trades says *which* condition the market never
 produced instead of going silent.
 
 ```text
-NO STRUCTURE  BLOCK EXPIRED  STRUCTURE FLIPPED  AGAINST SWING  BLOCK TOO THIN
-NO IMBALANCE  RANGE UNKNOWN  WRONG HALF  NO DRAW  DRAW TOO CLOSE  DRAW TOO FAR
-COST BLOCKED  SPREAD BLOCKED  SIZE BLOCKED  SIGNAL  ENTERED  OTHER
+NO STRUCTURE  BLOCK EXPIRED  STRUCTURE FLIPPED  AGAINST SWING  WRONG BREAK TYPE
+BLOCK TOO THIN  NO IMBALANCE  RANGE UNKNOWN  WRONG HALF  NO DRAW
+DRAW TOO CLOSE  DRAW TOO FAR  COST BLOCKED  SPREAD BLOCKED  SIZE BLOCKED
+SIGNAL  ENTERED  OTHER
 ```
 
-Two of these are worth knowing about in advance. `NO DRAW` is effectively
-unreachable while the premium/discount filter is on — an entry in discount is by
-definition below the top of the dealing range — so the filter and the draw check
-are not independent conditions. And `AGAINST SWING` is the counter that says the
-default structure setting, rather than the market, is what is keeping the bot
-flat.
+Four of these are worth knowing about in advance, because each one names a
+**setting** rather than a market:
+
+- `AGAINST SWING` — `InpSmcStructure` is keeping the bot flat, not the market.
+- `WRONG BREAK TYPE` — `InpSmcBreakType` is.
+- `WRONG HALF` — `InpSmcSelectivity` is.
+- `RANGE UNKNOWN` — `InpSmcSwingSize` is too slow for the 160-candle window.
+
+And one is a quirk of the geometry: `NO DRAW` is effectively unreachable while
+the premium/discount filter is on, because an entry in discount is by definition
+below the top of the dealing range. The filter and the draw check are not
+independent conditions.
 
 ## Exits
 
@@ -212,13 +300,15 @@ invalidated, so a second invalidation would only be the first one arriving late.
 
 ## What is tested, and what that proves
 
-`MQL5/Scripts/Tests/TestSmartMoney.mq5` holds 114 deterministic checks, run in
+`MQL5/Scripts/Tests/TestSmartMoney.mq5` holds 138 deterministic checks, run in
 CI through `tools/test_portable_logic.py` and runnable inside MetaTrader as a
 script. They cover the leg detector, the volatility measure, the rings and
 mitigation, fair value gaps, the order block search including its tie rule and
 its volatility parse, the full replay against a 160-bar fixture whose structure
 is known by construction, equal highs and lows, every refusal path in the rule,
-the configuration validator, the cost and stop arithmetic, the Wilson bound, the
+the configuration validator, every value of every dropdown (including that each
+swing size fits the structure window and leaves enough replay to be able to
+produce a swing at all), the cost and stop arithmetic, the Wilson bound, the
 hold time, the weekend backstop, and the strategy object end to end.
 
 **None of that measures an edge.** A rule that fires exactly where it was

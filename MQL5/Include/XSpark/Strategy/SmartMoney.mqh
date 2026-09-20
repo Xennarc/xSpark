@@ -19,9 +19,10 @@
 //
 // TRANSCRIBED, shape for shape, from the Pine source:
 //   - the leg/pivot detector, including its one-sided confirmation window
-//   - internal structure (5 bars) and swing structure (50 bars) as two separate
-//     structures, each with its own pivots, its own crossed flags and its own
-//     BOS/CHoCH bias
+//   - internal structure (5 candles) and swing structure (50 candles) as two
+//     separate structures, each with its own pivots, its own crossed flags and
+//     its own BOS/CHoCH bias. Both lengths move together with the swing size
+//     preset; the published pair is the NORMAL one
 //   - the order block: the extreme bar of the leg that broke structure, chosen
 //     over the volatility-parsed high/low, oldest bar winning a tie
 //   - order block mitigation on the high/low source
@@ -30,8 +31,8 @@
 //   - fair value gaps, at the published auto threshold
 //
 // THE TRADE, which the indicator does not contain (all DEPARTURES):
-//   1. structure breaks (internal, and by default only when the 50-bar swing
-//      bias agrees) - the indicator's own BOS/CHoCH event
+//   1. structure breaks (internal, and by default only when the swing bias
+//      agrees) - the indicator's own BOS/CHoCH event
 //   2. the order block that break created, while it is still unmitigated
 //   3. the entry is a LIMIT at the block's mean threshold, so the trade waits
 //      for the retracement instead of chasing the break
@@ -80,8 +81,14 @@
 // ---------------------------------------------------------------------------
 
 // Pine: swingsLengthInput = 50, and the internal structure is hard-coded to 5.
+// This pair is the NORMAL size preset; the other two scale both together, so
+// the internal structure stays roughly a tenth of the swing in all three.
 #define XSPARK_SMC_SWING_LENGTH 50
 #define XSPARK_SMC_INTERNAL_LENGTH 5
+#define XSPARK_SMC_FAST_SWING_LENGTH 20
+#define XSPARK_SMC_FAST_INTERNAL_LENGTH 3
+#define XSPARK_SMC_SLOW_SWING_LENGTH 65
+#define XSPARK_SMC_SLOW_INTERNAL_LENGTH 8
 
 // Pine: equalHighsLowsLengthInput = 3, equalHighsLowsThresholdInput = 0.1.
 #define XSPARK_SMC_EQUAL_LENGTH 3
@@ -102,6 +109,8 @@
 // indicator draws a block until price mitigates it, however long that takes; a
 // trade taken forty bars after the reason for it is a different trade.
 #define XSPARK_SMC_MAX_BLOCK_AGE_BARS 60
+#define XSPARK_SMC_FAST_BLOCK_AGE_BARS 30
+#define XSPARK_SMC_SLOW_BLOCK_AGE_BARS 70
 
 // DEPARTURE. Stop placement beyond the block's far edge, in instrument points.
 // The far edge is the invalidation - price through it is exactly the condition
@@ -135,33 +144,119 @@
 #define XSPARK_SMC_GAP_AUTO_THRESHOLD true
 
 // ---------------------------------------------------------------------------
-// Which structure the trade is taken from, and what confirms it.
+// The four levers, and why they are the only four.
 // ---------------------------------------------------------------------------
 //
-// Named choices rather than loose numbers: every value is a configuration that
-// is internally consistent on its own, so there is no combination to get wrong
-// (AGENTS.md rule 49). Ordinals are a wire format - append, never renumber.
+// The published indicator exposes about forty settings. Most of them are the
+// indicator being an indicator: colours, label sizes, which boxes to draw, how
+// far to extend them, Historical vs Present, Colored vs Monochrome. None of
+// those can change what a trade does, because this EA draws nothing.
+//
+// Of the rest, four change which trades exist, and each is offered here as a
+// NAMED CHOICE rather than as the numbers behind it: every value is a
+// configuration that is internally consistent on its own, so there is no
+// combination to get wrong (AGENTS.md rule 49).
+//
+//   which structure   <- the indicator's Internal vs Swing order blocks
+//   which break       <- its Bullish/Bearish Structure = All / BOS / CHoCH
+//   how big a swing   <- its Show Swings Points length
+//   how selective     <- its Premium/Discount Zones and Fair Value Gaps
+//
+// What is NOT offered, and why, so an absence is not mistaken for an oversight:
+//
+//   Order Block Filter (Atr vs Cumulative Mean Range). The published note on it
+//     recommends the cumulative mean range "when a low amount of data is
+//     available", and a rebuilt window is exactly that case - 200 bars of ATR
+//     cannot be read out of a 160-bar window. So there is one correct answer
+//     here, not a choice, and it is a constant.
+//   Order Block Mitigation (Close vs High/Low). In the indicator this decides
+//     when a box stops being drawn. Here the same level is the STOP, and a zone
+//     price has already traded through is not an entry at any price - so the
+//     high/low reading, which is also the indicator's own default, is the only
+//     one consistent with where the stop sits.
+//   Bars Confirmation and Threshold for equal highs and lows. Both are numbers
+//     that can only be copied from their defaults (AGENTS.md rule 48), and here
+//     they affect one line of the journal rather than any entry.
+//   Confluence Filter. Off in the source, and its published expression compares
+//     a price to a distance; mechanizing it faithfully would mechanize a defect.
+//   Everything under Highs & Lows MTF, and the Fair Value Gaps timeframe. Drawn
+//     levels from other chart periods. This model reads one chart period.
+//
+// Ordinals are a wire format: append, never renumber (AGENTS.md rule 50).
 
 enum EXSparkSmcStructure
 {
-   XSPARK_SMC_INTERNAL_WITH_SWING = 0, // 5-bar break, 50-bar trend must agree
-   XSPARK_SMC_INTERNAL_ONLY       = 1, // 5-bar break alone (more trades)
-   XSPARK_SMC_SWING_ONLY          = 2  // 50-bar break alone (far fewer trades)
+   XSPARK_SMC_INTERNAL_WITH_SWING = 0, // Internal break, the swing trend must agree
+   XSPARK_SMC_INTERNAL_ONLY       = 1, // Internal break alone (more trades)
+   XSPARK_SMC_SWING_ONLY          = 2  // Swing break alone (far fewer trades)
 };
 
-enum EXSparkSmcConfluence
+// The indicator's All / BOS / CHoCH filter. There it decides which labels are
+// drawn; here it decides which breaks are traded, which is the same distinction
+// doing real work: a change of character is the FIRST break against the prior
+// bias, and a break of structure is one that extends it.
+enum EXSparkSmcBreakType
 {
-   XSPARK_SMC_BLOCK_ONLY     = 0, // Enter the order block on its own
-   XSPARK_SMC_BLOCK_WITH_GAP = 1  // Also require the move to leave a price gap
+   XSPARK_SMC_BREAK_ANY          = 0, // Both reversals and continuations
+   XSPARK_SMC_BREAK_REVERSAL     = 1, // Reversals only (the first break the other way)
+   XSPARK_SMC_BREAK_CONTINUATION = 2  // Continuations only (breaks that extend a trend)
+};
+
+// The indicator's swing length, which it defaults to 50. One choice moves the
+// swing length, the internal length and how long a block stays enterable
+// together, because a 20-candle swing with a 60-candle memory is not a faster
+// version of the same rule, it is a different rule.
+enum EXSparkSmcSwingSize
+{
+   XSPARK_SMC_SWING_NORMAL = 0, // Normal: 50-candle swings (the published setting)
+   XSPARK_SMC_SWING_FAST   = 1, // Fast: 20-candle swings, more trades
+   XSPARK_SMC_SWING_SLOW   = 2  // Slow: 65-candle swings, fewest trades
+};
+
+// The indicator's Premium/Discount Zones and Fair Value Gaps switches, folded
+// into one dial because they are the same question asked twice: how much has to
+// line up before this is an entry.
+enum EXSparkSmcSelectivity
+{
+   XSPARK_SMC_BALANCED   = 0, // Balanced: only enter from the right half of the range
+   XSPARK_SMC_STRICT     = 1, // Strict: also require the move to leave a price gap
+   XSPARK_SMC_PERMISSIVE = 2  // Permissive: enter the zone wherever it sits
 };
 
 string XSparkSmcStructureName(const int mode)
 {
    if(mode == XSPARK_SMC_INTERNAL_ONLY)
-      return "internal (5-bar) structure alone";
+      return "internal structure alone";
    if(mode == XSPARK_SMC_SWING_ONLY)
-      return "swing (50-bar) structure alone";
-   return "internal (5-bar) structure with the 50-bar swing bias agreeing";
+      return "swing structure alone";
+   return "internal structure with the swing bias agreeing";
+}
+
+string XSparkSmcBreakTypeName(const int break_type)
+{
+   if(break_type == XSPARK_SMC_BREAK_REVERSAL)
+      return "changes of character only (the first break against the bias)";
+   if(break_type == XSPARK_SMC_BREAK_CONTINUATION)
+      return "breaks of structure only (breaks that extend the bias)";
+   return "both changes of character and breaks of structure";
+}
+
+string XSparkSmcSwingSizeName(const int size)
+{
+   if(size == XSPARK_SMC_SWING_FAST)
+      return "fast";
+   if(size == XSPARK_SMC_SWING_SLOW)
+      return "slow";
+   return "normal";
+}
+
+string XSparkSmcSelectivityName(const int selectivity)
+{
+   if(selectivity == XSPARK_SMC_STRICT)
+      return "strict: the right half of the dealing range AND an unfilled price gap";
+   if(selectivity == XSPARK_SMC_PERMISSIVE)
+      return "permissive: the order block wherever it sits in the dealing range";
+   return "balanced: the right half of the dealing range, no gap required";
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +429,7 @@ struct XSparkSmcBlock
    datetime time;              // the block bar
    int      index;             // series index of the block bar
    int      bias;              // XSPARK_SIGNAL_BUY or XSPARK_SIGNAL_SELL
-   bool     internal;          // created by the 5-bar structure rather than the 50-bar
+   bool     internal;          // created by the internal structure, not the swing
    bool     choch;             // the break was a change of character, not a continuation
    int      break_index;       // series index of the bar that broke structure
    datetime break_time;
@@ -493,9 +588,10 @@ struct XSparkSmcConfig
    bool   gap_auto_threshold;
 
    int    structure_mode;     // EXSparkSmcStructure
-   bool   require_gap;        // EXSparkSmcConfluence
-   bool   use_premium_discount;
-   int    max_block_age_bars;
+   int    break_type;         // EXSparkSmcBreakType
+   bool   require_gap;        // set by EXSparkSmcSelectivity
+   bool   use_premium_discount;  // set by EXSparkSmcSelectivity
+   int    max_block_age_bars;    // set by EXSparkSmcSwingSize
 
    // The thinnest order block worth entering, as a price distance. Supplied by
    // the EA from the round-trip cost, because only the EA knows the spread. A
@@ -521,6 +617,7 @@ void XSparkSmcDefaultConfig(XSparkSmcConfig &config)
    config.gap_auto_threshold = XSPARK_SMC_GAP_AUTO_THRESHOLD;
 
    config.structure_mode = XSPARK_SMC_INTERNAL_WITH_SWING;
+   config.break_type = XSPARK_SMC_BREAK_ANY;
    config.require_gap = false;
    config.use_premium_discount = XSPARK_SMC_USE_PREMIUM_DISCOUNT;
    config.max_block_age_bars = XSPARK_SMC_MAX_BLOCK_AGE_BARS;
@@ -571,6 +668,14 @@ bool XSparkSmcConfigUsable(const XSparkSmcConfig &config, string &reason)
       return false;
    }
 
+   if(config.break_type != XSPARK_SMC_BREAK_ANY &&
+      config.break_type != XSPARK_SMC_BREAK_REVERSAL &&
+      config.break_type != XSPARK_SMC_BREAK_CONTINUATION)
+   {
+      reason = "The break selection is not one this model knows.";
+      return false;
+   }
+
    if(config.max_block_age_bars <= 0)
    {
       reason = "An order block must be allowed to be at least one bar old.";
@@ -618,6 +723,100 @@ bool XSparkSmcConfigUsable(const XSparkSmcConfig &config, string &reason)
 int XSparkSmcRequiredBars(const XSparkSmcConfig &config)
 {
    return config.swing_length + config.max_block_age_bars + config.equal_length + 3;
+}
+
+// How many candles of the window the replay actually walks. A swing pivot is
+// only confirmed once `swing_length` newer candles have printed below it, so the
+// window spends that many candles before it can produce its first one - and the
+// dealing range needs a swing high AND a swing low before any entry is possible.
+//
+// This is the ceiling the 160-candle structure window imposes on the slow
+// preset, and the reason there is no slower one. The EA prints it at startup so
+// a configuration that will mostly report RANGE UNKNOWN says so on the first
+// bar rather than after a quiet week.
+int XSparkSmcReplayBars(const XSparkSmcConfig &config, const int window_bars)
+{
+   const int bars = window_bars - 1 - config.swing_length;
+   return bars > 0 ? bars : 0;
+}
+
+// Whether the window leaves enough room for the chosen swing size to produce
+// the two pivots a dealing range needs. Three swing lengths of replay is the
+// floor: fewer, and one zigzag has to land exactly right for the model to see a
+// range at all.
+bool XSparkSmcWindowIsComfortable(const XSparkSmcConfig &config, const int window_bars)
+{
+   if(config.swing_length <= 0)
+      return false;
+
+   return XSparkSmcReplayBars(config, window_bars) >= 3 * config.swing_length;
+}
+
+// The swing size preset. Moves the swing length, the internal length and the
+// block's shelf life together: each value is a whole configuration, and none of
+// the three numbers is separately settable, because a fast swing with a slow
+// memory is not a faster version of this rule (AGENTS.md rule 49).
+bool XSparkSmcApplySwingSize(XSparkSmcConfig &config, const int size, string &reason)
+{
+   reason = "";
+
+   if(size == XSPARK_SMC_SWING_FAST)
+   {
+      config.swing_length = XSPARK_SMC_FAST_SWING_LENGTH;
+      config.internal_length = XSPARK_SMC_FAST_INTERNAL_LENGTH;
+      config.max_block_age_bars = XSPARK_SMC_FAST_BLOCK_AGE_BARS;
+      return true;
+   }
+
+   if(size == XSPARK_SMC_SWING_SLOW)
+   {
+      config.swing_length = XSPARK_SMC_SLOW_SWING_LENGTH;
+      config.internal_length = XSPARK_SMC_SLOW_INTERNAL_LENGTH;
+      config.max_block_age_bars = XSPARK_SMC_SLOW_BLOCK_AGE_BARS;
+      return true;
+   }
+
+   if(size == XSPARK_SMC_SWING_NORMAL)
+   {
+      config.swing_length = XSPARK_SMC_SWING_LENGTH;
+      config.internal_length = XSPARK_SMC_INTERNAL_LENGTH;
+      config.max_block_age_bars = XSPARK_SMC_MAX_BLOCK_AGE_BARS;
+      return true;
+   }
+
+   reason = "The swing size is not one this model knows.";
+   return false;
+}
+
+// The selectivity preset. Both switches are the same question - how much has to
+// line up - so they move together and cannot be set to a pair nobody tested.
+bool XSparkSmcApplySelectivity(XSparkSmcConfig &config, const int selectivity, string &reason)
+{
+   reason = "";
+
+   if(selectivity == XSPARK_SMC_STRICT)
+   {
+      config.use_premium_discount = true;
+      config.require_gap = true;
+      return true;
+   }
+
+   if(selectivity == XSPARK_SMC_PERMISSIVE)
+   {
+      config.use_premium_discount = false;
+      config.require_gap = false;
+      return true;
+   }
+
+   if(selectivity == XSPARK_SMC_BALANCED)
+   {
+      config.use_premium_discount = true;
+      config.require_gap = false;
+      return true;
+   }
+
+   reason = "The selectivity is not one this model knows.";
+   return false;
 }
 
 void XSparkSmcPushBlock(XSparkSmcBlockRing &ring, const XSparkSmcBlock &block)
@@ -1201,7 +1400,8 @@ bool XSparkSmcReplay(const double &opens[], const double &highs[], const double 
 // market never produced instead of going silent.
 struct XSparkSmcVerdicts
 {
-   string structure;  // "NO STRUCTURE", "BLOCK EXPIRED", "STRUCTURE FLIPPED", "AGAINST SWING", "BOS", "CHOCH"
+   string structure;  // "NO STRUCTURE", "BLOCK EXPIRED", "STRUCTURE FLIPPED",
+                      // "AGAINST SWING", "WRONG BREAK TYPE", "BOS", "CHOCH"
    string block;      // "ORDER BLOCK", "BLOCK TOO THIN"
    string imbalance;  // "IMBALANCE", "NO IMBALANCE", "OFF"
    string location;   // "DISCOUNT", "PREMIUM", "WRONG HALF", "RANGE UNKNOWN", "OFF"
@@ -1378,6 +1578,7 @@ bool XSparkSmcEvaluate(const XSparkSmcState &state, const XSparkSmcConfig &confi
    bool saw_fresh = false;
    bool saw_live = false;
    bool saw_aligned = false;
+   bool saw_break_type = false;
    bool found = false;
    XSparkSmcBlock chosen;
    XSparkSmcResetBlock(chosen);
@@ -1406,6 +1607,15 @@ bool XSparkSmcEvaluate(const XSparkSmcState &state, const XSparkSmcConfig &confi
       if(config.structure_mode == XSPARK_SMC_INTERNAL_WITH_SWING && state.swing_trend != block.bias)
          continue;
       saw_aligned = true;
+
+      // The indicator's All / BOS / CHoCH filter, doing real work: a change of
+      // character is the first break against the prior bias and a break of
+      // structure is one that extends it, so this is the difference between
+      // trading reversals and trading continuations.
+      if((config.break_type == XSPARK_SMC_BREAK_REVERSAL && !block.choch) ||
+         (config.break_type == XSPARK_SMC_BREAK_CONTINUATION && block.choch))
+         continue;
+      saw_break_type = true;
 
       if(block.high - block.low < config.min_block_price)
       {
@@ -1440,7 +1650,13 @@ bool XSparkSmcEvaluate(const XSparkSmcState &state, const XSparkSmcConfig &confi
       else if(!saw_aligned)
       {
          verdicts.structure = "AGAINST SWING";
-         setup.reason = "The internal break points against the 50-bar swing bias.";
+         setup.reason = "The internal break points against the swing bias.";
+      }
+      else if(!saw_break_type)
+      {
+         verdicts.structure = "WRONG BREAK TYPE";
+         setup.reason = StringFormat("A block is live but this bot is taking %s.",
+                                     XSparkSmcBreakTypeName(config.break_type));
       }
       else
       {
@@ -2017,8 +2233,8 @@ public:
          return false;
       }
 
-      // The structure window, not the short indicator window: a 50-bar swing
-      // cannot be read out of 50 bars.
+      // The structure window, not the short indicator window: a 50-candle swing
+      // cannot be read out of 50 candles.
       if(!cache.StructureIsValid())
       {
          report.block_reason = "The structure window is not fully loaded yet.";

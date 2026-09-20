@@ -726,6 +726,189 @@ void RunSmcEvaluateTests()
 }
 
 // ---------------------------------------------------------------------------
+// Which break is traded.
+// ---------------------------------------------------------------------------
+//
+// The indicator's All / BOS / CHoCH filter, which there decides which labels
+// are drawn and here decides which breaks are traded.
+
+void RunSmcBreakTypeTests()
+{
+   XSparkSmcConfig any_break;
+   SmcTestConfig(any_break);
+
+   XSparkSmcConfig reversals;
+   SmcTestConfig(reversals);
+   reversals.break_type = XSPARK_SMC_BREAK_REVERSAL;
+
+   XSparkSmcConfig continuations;
+   SmcTestConfig(continuations);
+   continuations.break_type = XSPARK_SMC_BREAK_CONTINUATION;
+
+   XSparkSmcState state;
+   XSparkSmcSetup setup;
+   XSparkSmcVerdicts verdicts;
+
+   // SmcBuildState leaves the block marked as a change of character.
+   SmcBuildState(state, XSPARK_SIGNAL_BUY);
+   SmcCheck("a change of character is taken when both kinds are traded",
+            XSparkSmcEvaluate(state, any_break, 0.01, setup, verdicts) &&
+            verdicts.structure == "CHOCH");
+
+   SmcCheck("a change of character is taken when only reversals are traded",
+            XSparkSmcEvaluate(state, reversals, 0.01, setup, verdicts) &&
+            verdicts.structure == "CHOCH");
+
+   SmcCheck("a change of character is refused when only continuations are traded",
+            !XSparkSmcEvaluate(state, continuations, 0.01, setup, verdicts) &&
+            verdicts.structure == "WRONG BREAK TYPE");
+
+   // The mirror: the same block as a break of structure.
+   SmcBuildState(state, XSPARK_SIGNAL_BUY);
+   state.internal_blocks.items[0].choch = false;
+
+   SmcCheck("a break of structure is taken when both kinds are traded",
+            XSparkSmcEvaluate(state, any_break, 0.01, setup, verdicts) &&
+            verdicts.structure == "BOS");
+
+   SmcCheck("a break of structure is taken when only continuations are traded",
+            XSparkSmcEvaluate(state, continuations, 0.01, setup, verdicts) &&
+            verdicts.structure == "BOS");
+
+   SmcCheck("a break of structure is refused when only reversals are traded",
+            !XSparkSmcEvaluate(state, reversals, 0.01, setup, verdicts) &&
+            verdicts.structure == "WRONG BREAK TYPE");
+
+   // The refusal must name what the bot is actually taking, or the operator
+   // cannot tell it from a market that simply produced nothing.
+   SmcCheck("the refusal says which kind of break this bot takes",
+            StringFind(setup.reason, "change") >= 0 || StringFind(setup.reason, "structure") >= 0);
+
+   // Ordering: the swing-alignment refusal is reported before this one, because
+   // a break pointing the wrong way is the more fundamental miss.
+   SmcBuildState(state, XSPARK_SIGNAL_BUY);
+   state.swing_trend = XSPARK_SIGNAL_SELL;
+   state.internal_blocks.items[0].choch = false;
+   SmcCheck("a block against the swing reports that before the break type",
+            !XSparkSmcEvaluate(state, reversals, 0.01, setup, verdicts) &&
+            verdicts.structure == "AGAINST SWING");
+
+   string reason = "";
+   XSparkSmcConfig broken;
+   XSparkSmcDefaultConfig(broken);
+   broken.break_type = 99;
+   SmcCheck("an unknown break selection is refused",
+            !XSparkSmcConfigUsable(broken, reason) && reason != "");
+}
+
+// ---------------------------------------------------------------------------
+// The presets behind the dropdowns.
+// ---------------------------------------------------------------------------
+//
+// Each dropdown applies a whole configuration. What these check is that every
+// value is one the model accepts and the window can actually hold - a choice
+// that can never produce a trade is a broken choice, not a conservative one.
+
+void RunSmcPresetTests()
+{
+   string reason = "";
+
+   XSparkSmcConfig normal;
+   XSparkSmcDefaultConfig(normal);
+   XSparkSmcConfig applied;
+   XSparkSmcDefaultConfig(applied);
+
+   SmcCheck("the normal swing size is what the shipped defaults already are",
+            XSparkSmcApplySwingSize(applied, XSPARK_SMC_SWING_NORMAL, reason) &&
+            applied.swing_length == normal.swing_length &&
+            applied.internal_length == normal.internal_length &&
+            applied.max_block_age_bars == normal.max_block_age_bars);
+   SmcCheck("the normal swing size is the indicator's published pair",
+            applied.swing_length == 50 && applied.internal_length == 5);
+
+   XSparkSmcConfig fast;
+   XSparkSmcDefaultConfig(fast);
+   XSparkSmcConfig slow;
+   XSparkSmcDefaultConfig(slow);
+
+   SmcCheck("every swing size applies and validates",
+            XSparkSmcApplySwingSize(fast, XSPARK_SMC_SWING_FAST, reason) &&
+            XSparkSmcConfigUsable(fast, reason) &&
+            XSparkSmcApplySwingSize(slow, XSPARK_SMC_SWING_SLOW, reason) &&
+            XSparkSmcConfigUsable(slow, reason));
+
+   SmcCheck("the three sizes are ordered, and each moves all three numbers",
+            fast.swing_length < normal.swing_length && normal.swing_length < slow.swing_length &&
+            fast.internal_length < normal.internal_length && normal.internal_length < slow.internal_length &&
+            fast.max_block_age_bars < normal.max_block_age_bars &&
+            normal.max_block_age_bars < slow.max_block_age_bars);
+
+   // Every size must fit the structure window, or the strategy object refuses
+   // to initialize on it and the dropdown ships a value that cannot run.
+   SmcCheck("every swing size fits the cached structure window",
+            XSparkSmcRequiredBars(fast) < XSPARK_SCOREBOT_STRUCTURE_BASE_BARS &&
+            XSparkSmcRequiredBars(normal) < XSPARK_SCOREBOT_STRUCTURE_BASE_BARS &&
+            XSparkSmcRequiredBars(slow) < XSPARK_SCOREBOT_STRUCTURE_BASE_BARS);
+
+   // And every size must leave enough replay to produce a swing pivot at all.
+   SmcCheck("every swing size leaves more replay than one swing needs",
+            XSparkSmcReplayBars(fast, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS) > fast.swing_length &&
+            XSparkSmcReplayBars(normal, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS) > normal.swing_length &&
+            XSparkSmcReplayBars(slow, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS) > slow.swing_length);
+
+   // The window is comfortable for the fast size and tight for the slow one.
+   // That is the honest state of a 160-candle window, and the EA warns on it
+   // rather than letting the funnel discover it a week later.
+   SmcCheck("the fast size has room to spare and the slow one does not",
+            XSparkSmcWindowIsComfortable(fast, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS) &&
+            !XSparkSmcWindowIsComfortable(slow, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS));
+
+   SmcCheck("replay bars shrink as the swing grows, and never go negative",
+            XSparkSmcReplayBars(fast, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS) >
+            XSparkSmcReplayBars(slow, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS) &&
+            XSparkSmcReplayBars(normal, 10) == 0);
+
+   SmcCheck("an unknown swing size is refused rather than silently normal",
+            !XSparkSmcApplySwingSize(applied, 99, reason) && reason != "");
+
+   // Selectivity.
+   XSparkSmcConfig balanced;
+   XSparkSmcDefaultConfig(balanced);
+   XSparkSmcConfig strict;
+   XSparkSmcDefaultConfig(strict);
+   XSparkSmcConfig permissive;
+   XSparkSmcDefaultConfig(permissive);
+
+   SmcCheck("balanced keeps the range filter and asks for no gap",
+            XSparkSmcApplySelectivity(balanced, XSPARK_SMC_BALANCED, reason) &&
+            balanced.use_premium_discount && !balanced.require_gap);
+   SmcCheck("strict keeps the range filter and adds the gap",
+            XSparkSmcApplySelectivity(strict, XSPARK_SMC_STRICT, reason) &&
+            strict.use_premium_discount && strict.require_gap);
+   SmcCheck("permissive drops both",
+            XSparkSmcApplySelectivity(permissive, XSPARK_SMC_PERMISSIVE, reason) &&
+            !permissive.use_premium_discount && !permissive.require_gap);
+   SmcCheck("balanced is what the shipped defaults already are",
+            balanced.use_premium_discount == normal.use_premium_discount &&
+            balanced.require_gap == normal.require_gap);
+   SmcCheck("an unknown selectivity is refused",
+            !XSparkSmcApplySelectivity(balanced, 99, reason) && reason != "");
+
+   // Each preset must still describe itself: the EA prints these at startup and
+   // an empty string there is an operator with no idea what the bot is doing.
+   SmcCheck("every dropdown value names itself for the journal",
+            XSparkSmcStructureName(XSPARK_SMC_INTERNAL_WITH_SWING) != "" &&
+            XSparkSmcStructureName(XSPARK_SMC_SWING_ONLY) != "" &&
+            XSparkSmcBreakTypeName(XSPARK_SMC_BREAK_ANY) != "" &&
+            XSparkSmcBreakTypeName(XSPARK_SMC_BREAK_REVERSAL) != "" &&
+            XSparkSmcBreakTypeName(XSPARK_SMC_BREAK_CONTINUATION) != "" &&
+            XSparkSmcSwingSizeName(XSPARK_SMC_SWING_FAST) != "" &&
+            XSparkSmcSwingSizeName(XSPARK_SMC_SWING_SLOW) != "" &&
+            XSparkSmcSelectivityName(XSPARK_SMC_STRICT) != "" &&
+            XSparkSmcSelectivityName(XSPARK_SMC_PERMISSIVE) != "");
+}
+
+// ---------------------------------------------------------------------------
 // Configuration.
 // ---------------------------------------------------------------------------
 
@@ -742,6 +925,7 @@ void RunSmcConfigTests()
             config.equal_length == 3 && SmcNear(config.equal_threshold, 0.1));
    SmcCheck("the shipped default trades internal structure with the swing bias",
             config.structure_mode == XSPARK_SMC_INTERNAL_WITH_SWING &&
+            config.break_type == XSPARK_SMC_BREAK_ANY &&
             !config.require_gap && config.use_premium_discount);
    SmcCheck("the shipped configuration fits the cached structure window",
             XSparkSmcRequiredBars(config) < XSPARK_SCOREBOT_STRUCTURE_BASE_BARS);
@@ -990,6 +1174,8 @@ void RunSmcTests()
    RunSmcReplayTests();
    RunSmcEqualTests();
    RunSmcEvaluateTests();
+   RunSmcBreakTypeTests();
+   RunSmcPresetTests();
    RunSmcConfigTests();
    RunSmcCostAndStopTests();
    RunSmcWinRateTests();

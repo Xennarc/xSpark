@@ -66,8 +66,10 @@
 input group "01. Start here"
 input bool   InpSmcEnableTrading = false;        // Place real trades (off = watch and log only)
 input double InpSmcRiskPct = 1.0;                // Money risked on one trade (% of your balance)
-input EXSparkSmcStructure InpSmcStructure = XSPARK_SMC_INTERNAL_WITH_SWING; // Which structure break to trade
-input EXSparkSmcConfluence InpSmcConfluence = XSPARK_SMC_BLOCK_ONLY; // What the entry zone must show
+input EXSparkSmcStructure InpSmcStructure = XSPARK_SMC_INTERNAL_WITH_SWING; // Which structure's breaks to trade
+input EXSparkSmcBreakType InpSmcBreakType = XSPARK_SMC_BREAK_ANY; // Reversals, continuations, or both
+input EXSparkSmcSwingSize InpSmcSwingSize = XSPARK_SMC_SWING_NORMAL; // How big a swing counts as structure
+input EXSparkSmcSelectivity InpSmcSelectivity = XSPARK_SMC_BALANCED; // How much must line up before entering
 
 // THE COST THE BROKER CHARGES PER LOT. This model's stop is the height of an
 // order block plus a small buffer, so spread plus commission is a large share
@@ -133,7 +135,7 @@ input bool   InpSmcClearKillswitchLatch = false; // Clear the emergency stop onc
 // The per-server-day funnel. One counter per terminal verdict a closed candle
 // can reach, so a run that takes no trades says WHICH condition the market
 // never produced rather than going silent.
-#define XSPARK_SMC_FUNNEL_STAGES 17
+#define XSPARK_SMC_FUNNEL_STAGES 18
 
 CXSparkLogger          g_logger;
 CXSparkMarketState     g_market_state;
@@ -196,19 +198,20 @@ void XSparkSmcResetFunnel()
    g_funnel_names[1] = "BLOCK EXPIRED";
    g_funnel_names[2] = "STRUCTURE FLIPPED";
    g_funnel_names[3] = "AGAINST SWING";
-   g_funnel_names[4] = "BLOCK TOO THIN";
-   g_funnel_names[5] = "NO IMBALANCE";
-   g_funnel_names[6] = "RANGE UNKNOWN";
-   g_funnel_names[7] = "WRONG HALF";
-   g_funnel_names[8] = "NO DRAW";
-   g_funnel_names[9] = "DRAW TOO CLOSE";
-   g_funnel_names[10] = "DRAW TOO FAR";
-   g_funnel_names[11] = "COST BLOCKED";
-   g_funnel_names[12] = "SPREAD BLOCKED";
-   g_funnel_names[13] = "SIZE BLOCKED";
-   g_funnel_names[14] = "SIGNAL";
-   g_funnel_names[15] = "ENTERED";
-   g_funnel_names[16] = "OTHER";
+   g_funnel_names[4] = "WRONG BREAK TYPE";
+   g_funnel_names[5] = "BLOCK TOO THIN";
+   g_funnel_names[6] = "NO IMBALANCE";
+   g_funnel_names[7] = "RANGE UNKNOWN";
+   g_funnel_names[8] = "WRONG HALF";
+   g_funnel_names[9] = "NO DRAW";
+   g_funnel_names[10] = "DRAW TOO CLOSE";
+   g_funnel_names[11] = "DRAW TOO FAR";
+   g_funnel_names[12] = "COST BLOCKED";
+   g_funnel_names[13] = "SPREAD BLOCKED";
+   g_funnel_names[14] = "SIZE BLOCKED";
+   g_funnel_names[15] = "SIGNAL";
+   g_funnel_names[16] = "ENTERED";
+   g_funnel_names[17] = "OTHER";
 
    for(int i = 0; i < XSPARK_SMC_FUNNEL_STAGES; i++)
       g_funnel_counts[i] = 0;
@@ -697,7 +700,8 @@ void XSparkSmcEvaluateNewBarCore()
       else if(report.pullback_verdict == "BLOCK TOO THIN")
          g_funnel_stage = "BLOCK TOO THIN";
       else if(report.htf_verdict == "NO STRUCTURE" || report.htf_verdict == "BLOCK EXPIRED" ||
-              report.htf_verdict == "STRUCTURE FLIPPED" || report.htf_verdict == "AGAINST SWING")
+              report.htf_verdict == "STRUCTURE FLIPPED" || report.htf_verdict == "AGAINST SWING" ||
+              report.htf_verdict == "WRONG BREAK TYPE")
          g_funnel_stage = report.htf_verdict;
 
       XSparkSmcVerboseBlock("SMC", g_last_block_reason);
@@ -883,7 +887,22 @@ int OnInit()
 
    XSparkSmcDefaultConfig(g_smc_config);
    g_smc_config.structure_mode = (int)InpSmcStructure;
-   g_smc_config.require_gap = InpSmcConfluence == XSPARK_SMC_BLOCK_WITH_GAP;
+   g_smc_config.break_type = (int)InpSmcBreakType;
+
+   // Each dropdown applies a whole configuration rather than one number, so a
+   // combination nobody tested cannot be assembled from the Inputs tab.
+   string preset_reason = "";
+   if(!XSparkSmcApplySwingSize(g_smc_config, (int)InpSmcSwingSize, preset_reason))
+   {
+      g_config_valid = false;
+      g_config_reason += preset_reason + " ";
+   }
+
+   if(!XSparkSmcApplySelectivity(g_smc_config, (int)InpSmcSelectivity, preset_reason))
+   {
+      g_config_valid = false;
+      g_config_reason += preset_reason + " ";
+   }
 
    string config_reason = "";
    if(!XSparkSmcConfigUsable(g_smc_config, config_reason))
@@ -1005,13 +1024,36 @@ int OnInit()
                               g_smc_config.stop_buffer_points));
 
    g_logger.Info("SMC",
-                 StringFormat("Structure [%s]: %s. Entry zone [%s]: %s. Premium/discount is %s, so a buy is taken only from the lower half of the dealing range and a sell only from the upper half.",
+                 StringFormat("Structure [%s]: %s. Breaks [%s]: %s. Selectivity [%s]: %s.",
                               EnumToString(InpSmcStructure),
                               XSparkSmcStructureName(g_smc_config.structure_mode),
-                              EnumToString(InpSmcConfluence),
-                              g_smc_config.require_gap ? "the order block, and the leg must also have left an unfilled price gap"
-                                                       : "the order block on its own",
-                              g_smc_config.use_premium_discount ? "ON" : "OFF"));
+                              EnumToString(InpSmcBreakType),
+                              XSparkSmcBreakTypeName(g_smc_config.break_type),
+                              EnumToString(InpSmcSelectivity),
+                              XSparkSmcSelectivityName((int)InpSmcSelectivity)));
+
+   // The window is fixed at 160 closed candles, so a bigger swing buys fewer
+   // candles to find one in. Said on the first bar rather than discovered from
+   // a week of RANGE UNKNOWN in the funnel.
+   const int replay_bars = XSparkSmcReplayBars(g_smc_config, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS);
+   const string window_line =
+      StringFormat("Swing size [%s]: %s - a %d-candle swing, a %d-candle internal structure, and an order block that stays enterable for %d candles. "
+                   "A swing pivot needs %d newer candles to confirm it, and the %d-candle window leaves %d candles of replay to find two of them in.",
+                   EnumToString(InpSmcSwingSize),
+                   XSparkSmcSwingSizeName((int)InpSmcSwingSize),
+                   g_smc_config.swing_length,
+                   g_smc_config.internal_length,
+                   g_smc_config.max_block_age_bars,
+                   g_smc_config.swing_length,
+                   XSPARK_SCOREBOT_STRUCTURE_BASE_BARS,
+                   replay_bars);
+
+   if(XSparkSmcWindowIsComfortable(g_smc_config, XSPARK_SCOREBOT_STRUCTURE_BASE_BARS))
+      g_logger.Info("SMC", window_line);
+   else
+      g_logger.Warn("SMC",
+                    window_line +
+                    " That is tight: the dealing range needs a swing high AND a swing low inside it, so expect RANGE UNKNOWN in the funnel and few trades. A faster swing size, or a lower chart period, gives the window more to work with.");
 
    g_logger.Info("SMC",
                  StringFormat("Exit: the target is the DRAW ON LIQUIDITY - the extreme the indicator labels Strong or Weak - so the reward ratio is an output, not a setting. Draws nearer than %.2f x the stop are refused and further than %.2f x are treated as a different trade; "
