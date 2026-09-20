@@ -936,6 +936,48 @@ void RunIctStrategyTests()
 }
 #endif
 
+void RunIctWeekendCloseTests()
+{
+   bool use_close = false;
+   int hour = 0, minute = 0;
+   string reason = "";
+
+   // Friday session ending 21:00 (75600s) flattens fifteen minutes earlier.
+   IctCheck("the flatten sits a lead time before the Friday session end",
+            XSparkIctWeekendClose(false, true, 75600, use_close, hour, minute, reason) &&
+            use_close && hour == 20 && minute == 45);
+
+   // A market that trades through the weekend has nothing to protect against.
+   IctCheck("a weekend-trading market is not flattened",
+            XSparkIctWeekendClose(true, true, 75600, use_close, hour, minute, reason) &&
+            !use_close && hour == 0 && minute == 0 && reason != "");
+
+   // No usable Friday session: fall back to the shipped time, still closing.
+   IctCheck("an unreported Friday session falls back to the shipped time",
+            XSparkIctWeekendClose(false, false, 0, use_close, hour, minute, reason) &&
+            use_close && hour == XSPARK_ICT_WEEKEND_CLOSE_HOUR &&
+            minute == XSPARK_ICT_WEEKEND_CLOSE_MINUTE);
+   IctCheck("an out-of-range Friday session falls back too",
+            XSparkIctWeekendClose(false, true, 999999, use_close, hour, minute, reason) &&
+            use_close && hour == XSPARK_ICT_WEEKEND_CLOSE_HOUR);
+
+   // A session ending inside the lead time cannot push the flatten into the
+   // previous day; it clamps to the start of the day instead.
+   IctCheck("a session ending inside the lead time clamps to midnight",
+            XSparkIctWeekendClose(false, true, 300, use_close, hour, minute, reason) &&
+            use_close && hour == 0 && minute == 0);
+
+   // A full-day session reads as 24:00 and flattens at 23:45.
+   IctCheck("a full-day Friday session flattens before midnight",
+            XSparkIctWeekendClose(false, true, XSPARK_ICT_SECONDS_PER_DAY, use_close, hour, minute, reason) &&
+            use_close && hour == 23 && minute == 45);
+
+   // The backstop must sit AFTER every kill zone, or it would be doing the
+   // kill-zone flatten's job and closing trades the model still wants open.
+   IctCheck("the weekend backstop sits after the last kill zone ends",
+            XSPARK_ICT_WEEKEND_CLOSE_HOUR * 60 + XSPARK_ICT_WEEKEND_CLOSE_MINUTE > XSPARK_ICT_NEWYORK_END_MIN);
+}
+
 void RunIctTests()
 {
    RunIctSwingTests();
@@ -951,6 +993,7 @@ void RunIctTests()
    RunIctBullishMirrorTests();
    RunIctCostAndStopTests();
    RunIctHoldAndFlattenTests();
+   RunIctWeekendCloseTests();
    RunIctWilsonTests();
 #ifdef XSPARK_PORTABLE_TEST
    RunIctStrategyTests();
