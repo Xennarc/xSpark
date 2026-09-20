@@ -455,7 +455,7 @@ That is simpler, and it is also safer in a way that is worth stating plainly. Be
 
 The spread filter, the broker's minimum-stop-distance check, the free-margin check, the stale-quote gate and the weekend close each had a boolean that turned them off. None of those booleans had a defensible "off" setting. They are gone, and the controls are now mandatory. Rule 5 says never silently weaken a risk control; this is the opposite, and it is worth being explicit that deleting a switch and deleting a control are not the same act.
 
-The killswitch lost its separate on/off boolean too, folded into its own percentage: zero means off. An operator loading an old `.set` that had the boolean false and a percentage set now gets the killswitch on, which is the safe direction for a silent change to go.
+The total-drawdown killswitch was folded the same way in the first version of this reduction - the boolean gone, zero on the percentage meaning off. That one was wrong, and the addendum at the end of this ADR says why it was put back.
 
 ### Freezing a number forces you to justify it, and one did not survive that
 
@@ -486,3 +486,19 @@ So it is now derived. `SymbolInfoSessionTrade` gives the symbol's own Friday ses
 An unreadable session falls back to the old 20:00 and logs that it did. Closing early costs a few hours of a market that is about to shut; closing late costs the gap, and the stop cannot act across it.
 
 One detail worth recording because it is invisible from the call site: `PositionManager::ShouldWeekendClose` bounds-checks nothing, so an hour above 23 would silently never fire on a Friday. The derivation therefore validates its own output and falls back rather than passing a value that would disable the control without saying so.
+
+### Addendum: the killswitch keeps its own switch, because off is a state you return from
+
+Folding the killswitch's boolean into its percentage looked like the same move as deleting the spread filter's switch. It is not, and the difference is what the operator does next.
+
+The controls whose switches were deleted have no defensible "off". The killswitch does: a year-long backtest. It closes the account out partway through a losing stretch and leaves the rest of the period untraded, so an operator judging a full year on the Strategy Tester switches it off, sees the whole equity curve, and switches it back on for live trading. That is a round trip, and it is the normal way this bot gets evaluated.
+
+A percentage where zero means off cannot make that round trip without losing something. Switching off overwrites the level, so switching back on means retyping it - a level that has now never been validated against anything, chosen from memory, on the way to a live account. One setting that reads as one thing is really two states and a number the operator has to carry between them.
+
+So there are two settings again: `InpFlowUseTotalDDKillSwitch` says whether the control runs, `InpFlowMaxTotalDDPct` says at what level, and the level is required to be a usable level even while the switch is off. Turning the switch back on cannot reveal a configuration nobody checked. Off is expressed once, by the switch, and the group is named so the Inputs tab says which setting the switch makes inert.
+
+Two things follow that are worth stating because neither is obvious from the call site.
+
+Switching the killswitch off does not clear a latch. The enable flag guards the *setting* of the latch; the restore from persisted state is unconditional, and so is the entry block the latch produces. That is deliberate - a latch records that equity really did fall that far, which is a fact about the account rather than about the setting - but it used to be silent, and an operator whose emergency stop reads "off" staring at an EA that will not enter deserves a line saying so. `SafetyManager::Initialize` now logs that case as CRITICAL and names the setting that clears it. On the Strategy Tester the question does not arise: the terminal's global variables are emulated per run, so a test starts with no latch to restore.
+
+The daily loss limit is deliberately not given the same switch. It resets at each broker day rather than latching for the run, so it dents a year-long equity curve without truncating it, and unlike the killswitch it has no "off" an operator returns from. It stays mandatory.

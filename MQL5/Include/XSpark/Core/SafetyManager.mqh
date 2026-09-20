@@ -311,6 +311,18 @@ public:
          m_store.Set("tL", 0.0);
       }
 
+      // A latch is a fact about the account, not about the switch: it records
+      // that equity already fell past the limit. Switching the killswitch off
+      // stops it latching again; it deliberately does not undo one that has
+      // already fired, because the fall it recorded still happened. Say that
+      // plainly, or an operator whose emergency stop reads "off" is left
+      // looking at an EA that will not enter and no line explaining why.
+      if(m_total_dd_killswitch_latched && !m_use_total_dd_killswitch)
+         logger.Critical("SafetyManager",
+                         "Total DD killswitch is switched OFF, but a latch from an earlier run is still in "
+                         "force and new entries stay blocked. Switching it off does not clear a latch; clear "
+                         "it deliberately with this EA's clear-the-emergency-stop input.");
+
       const datetime server_time = TimeTradeServer() == 0 ? TimeCurrent() : TimeTradeServer();
       const double equity = AccountInfoDouble(ACCOUNT_EQUITY);
       const bool drawdown_ready = RefreshDrawdownState(equity, server_time, logger);

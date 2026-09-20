@@ -65,6 +65,36 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
         end = manager.index('\n   }', start)
         return set(re.findall(r'PositionStateKey\(state\.identifier, "(\w+)"\)', manager[start:end]))
 
+    # The total-drawdown killswitch is the one control that can close an account
+    # out mid-run, so how an EA switches it off is checked as source. Deriving
+    # the enable flag from the level ("0 means off") reads as one setting but is
+    # two: the operator who switches it off loses the level they had, and the
+    # level they type back in on the way to live has never been validated. Each
+    # EA must therefore hand SafetyManager a plain input, and its shipped
+    # drawdown defaults must satisfy the ordering its own validator enforces -
+    # a daily stop at or above the emergency stop can never fire.
+    for ea in ['MQL5/Experts/XSpark/XSpark.mq5', 'MQL5/Experts/XSparkFlow/XSparkFlow.mq5']:
+        text = (ROOT / ea).read_text()
+        call = text.index('g_safety_manager.Initialize(')
+        args = [line.split('//')[0].strip().rstrip(',')
+                for line in text[call:text.index('))', call)].splitlines()]
+        args[0] = args[0].split('Initialize(', 1)[1]
+        enable = args[7]
+        if not re.fullmatch(r'Inp\w+', enable):
+            raise RuntimeError(f'{ea}: killswitch enable is derived, not an input: {enable}')
+        if not re.search(r'^input\s+bool\s+' + enable + r'\s*=', text, re.M):
+            raise RuntimeError(f'{ea}: {enable} is not a bool input')
+        levels = {}
+        for name in ['MaxDailyDDPct', 'MaxTotalDDPct']:
+            match = re.search(r'^input\s+double\s+Inp\w*' + name + r'\s*=\s*([\d.]+)\s*;', text, re.M)
+            if not match:
+                raise RuntimeError(f'{ea}: no shipped default for {name}')
+            levels[name] = float(match.group(1))
+        if not 0.0 < levels['MaxDailyDDPct'] < levels['MaxTotalDDPct'] < 100.0:
+            raise RuntimeError(f'{ea}: shipped drawdown defaults fail their own validation: {levels}')
+        print(f'{Path(ea).name}: killswitch switched by {enable}, '
+              f"defaults {levels['MaxDailyDDPct']}% daily < {levels['MaxTotalDDPct']}% emergency.")
+
     written = state_keys('PersistState')
     restored = state_keys('LoadPersistedState')
     cleared = state_keys('ClearPersistedState')

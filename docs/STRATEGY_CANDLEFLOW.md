@@ -42,7 +42,7 @@ rather than in points.
 
 ## Settings
 
-Nine, and most people change two of them.
+Ten, and most people change two of them.
 
 A setting earns a place in the Inputs tab only if the operator knows something
 the code does not. You know your account and your appetite for risk, so those
@@ -58,7 +58,8 @@ get it wrong.
 | `InpFlowProfitStyle` | Balanced | Whether and when profit is banked as the trade runs. |
 | `InpFlowTrailStyle` | Balanced | How much room an open trade is given. |
 | `InpFlowMaxDailyDDPct` | 15.0 | Stop opening trades if the account falls this much today. |
-| `InpFlowMaxTotalDDPct` | 25.0 | Close everything if the account falls this much. 0 switches it off. |
+| `InpFlowUseTotalDDKillSwitch` | true | Whether the emergency stop runs at all. |
+| `InpFlowMaxTotalDDPct` | 25.0 | Account fall that sets off the emergency stop. |
 | `InpFlowMagicNumber` | 770332 | This bot's ID tag. A different one per chart. |
 | `InpFlowVerboseLog` | false | Detailed logging, for troubleshooting. |
 | `InpFlowClearKillswitchLatch` | false | Clear a latched emergency stop once, then set back to false. |
@@ -88,6 +89,21 @@ that can quietly stop the bot from trading, because there are no numbers.
 "The amount risked" is the distance from the entry to the first stop, so "2 × the
 amount risked" is twice that distance in your favour.
 
+### The two stopping rules, and which one you turn off to backtest
+
+They are not the same kind of control and the Inputs tab separates them.
+
+**`InpFlowMaxDailyDDPct`** pauses new entries for the rest of the broker day. Open trades keep being managed, and the next broker day starts clean. There is no switch for it, because it has no "off" worth returning from: over a long test it dents the equity curve without ending it.
+
+**`InpFlowUseTotalDDKillSwitch`** and **`InpFlowMaxTotalDDPct`** are the emergency stop. It closes every trade this bot owns, refuses to open another, and stays that way across restarts until you clear it.
+
+That last part is why it is a switch and not a level of zero. Running a one-year backtest with the emergency stop on means the run can be closed out in month four and the remaining eight months are untraded - which is not a picture of how the strategy performs. So switch it off in the Strategy Tester, read the whole curve, and switch it back on for live trading. The level is still sitting there, still validated, still the one you chose.
+
+Two things worth knowing:
+
+- The level must be a usable percentage even while the switch is off. There is only one way to express "off", and it is the switch.
+- Switching it off does **not** clear an emergency stop that has already fired. The latch records that the account really did fall that far, and only `InpFlowClearKillswitchLatch` undoes it. If the switch reads off and the bot still will not enter, the Experts log says so in a CRITICAL line. A Strategy Tester run never inherits a latch, so this only comes up on a live chart.
+
 ### The two comparisons worth running
 
 Both are one dropdown change, which is why the preset files that used to exist
@@ -104,7 +120,7 @@ understates the levels.
 
 ### What is no longer a setting
 
-Sixty-four inputs were removed. They fall into three groups, and the reasoning
+Sixty-three inputs were removed. They fall into three groups, and the reasoning
 differs for each.
 
 **Measured from the market, not chosen.** The widest spread worth trading

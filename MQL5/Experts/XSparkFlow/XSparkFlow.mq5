@@ -58,14 +58,30 @@ input group "02. How an open trade is handled"
 input EXSparkProfitStyle InpFlowProfitStyle = XSPARK_PROFIT_STYLE_BALANCED; // Taking profit as the trade runs
 input EXSparkTrailStyle  InpFlowTrailStyle = XSPARK_TRAIL_STYLE_BALANCED; // How much room the trade is given
 
-// WHEN TO STOP. Both are percentages of your account balance. The daily one
-// pauses new trades until tomorrow; the total one closes everything and stays
-// off until you clear it at the bottom of this list.
-input group "03. When to stop trading"
+// THE DAILY LOSS LIMIT. A percentage of your account balance. Reaching it
+// pauses new entries for the rest of the broker day; open trades keep being
+// managed, and the next broker day starts clean.
+input group "03. Daily loss limit"
 input double InpFlowMaxDailyDDPct = 15.0; // Stop opening trades if the account falls this much today
-input double InpFlowMaxTotalDDPct = 25.0; // Close everything if the account falls this much (0 = off)
 
-input group "04. Advanced - rarely touched"
+// THE EMERGENCY STOP. A separate, harsher control: it closes every trade this
+// bot owns and refuses to open another until you clear it deliberately.
+//
+// It is a switch rather than a level of zero because switching it off and
+// setting it back on must not make you retype the level you had. Testing is
+// exactly that case: over a long backtest the emergency stop would close the
+// account out partway through and leave the rest of the period untraded, so an
+// operator judging a full year turns it off, sees the whole equity curve, and
+// turns it back on for live trading with the level untouched.
+//
+// Off stops it from firing; it does not undo one that has already fired. A
+// latch from an earlier run still blocks entries, because it records that the
+// account did fall that far. Clearing that is a separate, deliberate act.
+input group "04. Emergency stop - off means the level below is ignored"
+input bool   InpFlowUseTotalDDKillSwitch = true; // Emergency stop: close everything on a big account fall
+input double InpFlowMaxTotalDDPct = 25.0; // Account fall that sets off the emergency stop (%)
+
+input group "05. Advanced - rarely touched"
 input ulong  InpFlowMagicNumber = XSPARK_CANDLEFLOW_MAGIC_DEFAULT; // This bot's ID tag - a different one per chart
 input bool   InpFlowVerboseLog = false; // Write detailed logs (for troubleshooting)
 input bool   InpFlowClearKillswitchLatch = false; // Clear the emergency stop once, then set back to false
@@ -268,16 +284,21 @@ bool XSparkFlowValidateInputs()
       return false;
    }
 
-   if(!MathIsValidNumber(InpFlowMaxTotalDDPct) || InpFlowMaxTotalDDPct < 0.0 || InpFlowMaxTotalDDPct >= 100.0)
+   // The level is required to be a usable level even while the switch is off,
+   // so that turning the switch back on cannot reveal a configuration that was
+   // never checked. Off is expressed once, by the switch.
+   if(!MathIsValidNumber(InpFlowMaxTotalDDPct) || InpFlowMaxTotalDDPct <= 0.0 || InpFlowMaxTotalDDPct >= 100.0)
    {
-      g_logger.Critical("EA", "The emergency stop must be a percentage below 100, or 0 to switch it off.");
+      g_logger.Critical("EA",
+                        "The emergency stop level must be a percentage above 0 and below 100. "
+                        "To switch the emergency stop off, use its own setting rather than the level.");
       return false;
    }
 
    // A daily stop at or above the emergency stop can never fire: the emergency
    // stop closes everything first. Only meaningful while the emergency stop is
    // switched on.
-   if(InpFlowMaxTotalDDPct > 0.0 && InpFlowMaxDailyDDPct >= InpFlowMaxTotalDDPct)
+   if(InpFlowUseTotalDDKillSwitch && InpFlowMaxDailyDDPct >= InpFlowMaxTotalDDPct)
    {
       g_logger.Critical("EA",
                         StringFormat("The daily stop (%.2f%%) must be below the emergency stop (%.2f%%), or the daily one can never act.",
@@ -1340,7 +1361,7 @@ int OnInit()
                                    true,
                                    XSPARK_CANDLEFLOW_SEED_SPREAD_CAP_POINTS,
                                    XSPARK_CANDLEFLOW_MAX_SPREAD_ATR_PCT,
-                                   (InpFlowMaxTotalDDPct > 0.0),
+                                   InpFlowUseTotalDDKillSwitch,
                                    InpFlowMaxTotalDDPct,
                                    InpFlowMaxDailyDDPct,
                                    XSPARK_CANDLEFLOW_MAX_QUOTE_AGE_SECONDS,
