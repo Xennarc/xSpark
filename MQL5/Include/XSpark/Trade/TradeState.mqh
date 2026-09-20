@@ -183,6 +183,13 @@ struct XSparkRLedger
    double sum_r_squared;
    double min_r;
    double max_r;
+   // A trade that closed in front (R > 0) and one that closed behind (R < 0).
+   // A trade that closed exactly at its entry is neither, so wins + losses may
+   // be below the count. Kept beside the moments rather than derived from them
+   // because a scalper's stated objective is a win RATE, and a mean cannot be
+   // turned back into one.
+   int    wins;
+   int    losses;
 };
 
 void XSparkResetRLedger(XSparkRLedger &ledger)
@@ -192,6 +199,8 @@ void XSparkResetRLedger(XSparkRLedger &ledger)
    ledger.sum_r_squared = 0.0;
    ledger.min_r = 0.0;
    ledger.max_r = 0.0;
+   ledger.wins = 0;
+   ledger.losses = 0;
 }
 
 void XSparkRLedgerAdd(XSparkRLedger &ledger, const double r)
@@ -208,6 +217,23 @@ void XSparkRLedgerAdd(XSparkRLedger &ledger, const double r)
    ledger.count++;
    ledger.sum_r += r;
    ledger.sum_r_squared += r * r;
+
+   if(r > 0.0)
+      ledger.wins++;
+   else if(r < 0.0)
+      ledger.losses++;
+}
+
+// Share of recorded trades that closed in front, as a fraction of ALL recorded
+// trades - a scratch counts against the rate rather than being dropped from
+// it, because a rate that ignored scratches would flatter a strategy whose
+// break-even lock turns winners into zeros. Zero when nothing is recorded.
+double XSparkRLedgerWinRate(XSparkRLedger &ledger)
+{
+   if(ledger.count <= 0)
+      return 0.0;
+
+   return (double)ledger.wins / (double)ledger.count;
 }
 
 double XSparkRLedgerMean(XSparkRLedger &ledger)

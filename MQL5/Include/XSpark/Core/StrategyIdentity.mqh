@@ -20,6 +20,7 @@
 
 #define XSPARK_SCOREBOT_MAGIC_DEFAULT 770331
 #define XSPARK_CANDLEFLOW_MAGIC_DEFAULT 770332
+#define XSPARK_TRENDSCALP_MAGIC_DEFAULT 770333
 
 // Names the strategy that ships with this Magic Number, or an empty string when
 // the number is not a shipped default. An operator running several instances of
@@ -32,6 +33,9 @@ string XSparkStrategyClaimingMagic(const ulong magic)
 
    if(magic == XSPARK_CANDLEFLOW_MAGIC_DEFAULT)
       return "CandleFlow (XSparkFlow.ex5)";
+
+   if(magic == XSPARK_TRENDSCALP_MAGIC_DEFAULT)
+      return "TrendScalp (XSparkScalp.ex5)";
 
    return "";
 }

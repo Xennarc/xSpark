@@ -449,5 +449,15 @@ void Run() {
  Seed();saved.clear();Manager adopted;
  LadderOnce(adopted,200,200.1,logger,1.0,30,2.0,30);
  Check("a position adopted without a record is never laddered",adopted.partial_calls.empty() && VolumeIs(live[0].volume,1));
+
+ // The realised-R ledger's win count, which is the number a scalper is judged
+ // on. A scratch is neither a win nor a loss and still counts against the rate.
+ XSparkRLedger ledger; XSparkResetRLedger(ledger);
+ Check("an empty ledger has no win rate", XSparkRLedgerWinRate(ledger)==0.0);
+ XSparkRLedgerAdd(ledger,1.0); XSparkRLedgerAdd(ledger,-1.0); XSparkRLedgerAdd(ledger,0.0); XSparkRLedgerAdd(ledger,0.5);
+ Check("wins and losses are counted and a scratch is neither", ledger.count==4 && ledger.wins==2 && ledger.losses==1);
+ Check("the win rate is wins over every recorded trade", XSparkRLedgerWinRate(ledger)==0.5);
+ XSparkRLedgerAdd(ledger, std::numeric_limits<double>::quiet_NaN());
+ Check("an unusable R is not recorded at all", ledger.count==4 && ledger.wins==2);
 }
 } // namespace

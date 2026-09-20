@@ -670,6 +670,22 @@ void TestRLedgerFitness()
    Check("mean R is correct", NearlyEqual(XSparkRLedgerMean(ledger), 0.5));
    Check("min R is tracked", NearlyEqual(ledger.min_r, -1.0));
    Check("max R is tracked", NearlyEqual(ledger.max_r, 2.0));
+   Check("wins and losses are counted", ledger.wins == 2 && ledger.losses == 2);
+   Check("the win rate is wins over every recorded trade", NearlyEqual(XSparkRLedgerWinRate(ledger), 0.5));
+
+   // A scratch is neither a win nor a loss, and it still counts against the
+   // rate: three winners out of five recorded trades is 60%, not 75%.
+   XSparkRLedger scratched;
+   XSparkResetRLedger(scratched);
+   Check("an empty ledger has no win rate", NearlyEqual(XSparkRLedgerWinRate(scratched), 0.0));
+   XSparkRLedgerAdd(scratched, 1.0);
+   XSparkRLedgerAdd(scratched, 1.0);
+   XSparkRLedgerAdd(scratched, 1.0);
+   XSparkRLedgerAdd(scratched, 0.0);
+   XSparkRLedgerAdd(scratched, -1.0);
+   Check("a scratch is neither a win nor a loss",
+         scratched.count == 5 && scratched.wins == 3 && scratched.losses == 1);
+   Check("a scratch still counts against the win rate", NearlyEqual(XSparkRLedgerWinRate(scratched), 0.6));
 
    // Sample stdev of {2,-1,-1,2}: deviations 1.5,-1.5,-1.5,1.5 -> sum sq 9 -> /3 = 3 -> sqrt = 1.7320508
    Check("sample stdev uses n-1", NearlyEqual(XSparkRLedgerStdDev(ledger), MathSqrt(3.0)));
