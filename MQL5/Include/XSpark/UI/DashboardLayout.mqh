@@ -47,9 +47,14 @@ int XSparkDashboardSeverity(const string status)
    if(status == "ANALYSIS ONLY" || status == "TRADING DISABLED")
       return XSPARK_UI_SEV_IDLE;
 
+   // Gates that hold entries and release on their own: a cost, a daily count
+   // or an opposite open trade. OPPOSING EXPOSURE was a pre-existing status
+   // XSparkFlow already raised and nothing had mapped, so it rendered as a
+   // FAULT; it is a transient gate and belongs here.
    if(status == "SPREAD BLOCKED" || status == "ATR BLOCKED" ||
       status == "SESSION BLOCKED" || status == "STALE QUOTE" ||
-      status == "WEEKEND CLOSE")
+      status == "WEEKEND CLOSE" || status == "COST BLOCKED" ||
+      status == "DAILY CAP" || status == "OPPOSING EXPOSURE")
    {
       return XSPARK_UI_SEV_BLOCKED;
    }

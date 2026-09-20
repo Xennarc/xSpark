@@ -9,6 +9,34 @@ datetime StructToTime(const MqlDateTime& p) {return p.hour*3600+p.min*60+p.sec;}
 datetime TimeTradeServer() {return 47000;}
 datetime TimeCurrent() {return 47000;}
 double XSparkPriceToScorePoints(double price, double point) {return price/point;}
+// Trade-server return codes, with the values MetaTrader documents at
+// https://www.mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes
+// Only the portable build reads these numbers: in MQL5 the names come from the
+// terminal. They exist so XSparkCloseRetcodeClass compiles into the fixtures
+// and can be driven with the codes a broker actually returns.
+const long TRADE_RETCODE_REQUOTE = 10004;
+const long TRADE_RETCODE_REJECT = 10006;
+const long TRADE_RETCODE_PLACED = 10008;
+const long TRADE_RETCODE_DONE = 10009;
+const long TRADE_RETCODE_DONE_PARTIAL = 10010;
+const long TRADE_RETCODE_ERROR = 10011;
+const long TRADE_RETCODE_TIMEOUT = 10012;
+const long TRADE_RETCODE_INVALID_STOPS = 10016;
+const long TRADE_RETCODE_TRADE_DISABLED = 10017;
+const long TRADE_RETCODE_MARKET_CLOSED = 10018;
+const long TRADE_RETCODE_NO_MONEY = 10019;
+const long TRADE_RETCODE_PRICE_CHANGED = 10020;
+const long TRADE_RETCODE_PRICE_OFF = 10021;
+const long TRADE_RETCODE_TOO_MANY_REQUESTS = 10024;
+const long TRADE_RETCODE_SERVER_DISABLES_AT = 10026;
+const long TRADE_RETCODE_CLIENT_DISABLES_AT = 10027;
+const long TRADE_RETCODE_LOCKED = 10028;
+const long TRADE_RETCODE_FROZEN = 10029;
+const long TRADE_RETCODE_CONNECTION = 10031;
+const long TRADE_RETCODE_ONLY_REAL = 10032;
+const long TRADE_RETCODE_LIMIT_ORDERS = 10033;
+const long TRADE_RETCODE_LIMIT_VOLUME = 10034;
+const long TRADE_RETCODE_POSITION_CLOSED = 10036;
 enum {TIME_DATE=1, TIME_MINUTES=2};
 string TimeToString(datetime t, int=0) {return std::to_string(t);}
 double MathLog(double x) {return std::log(x);}
