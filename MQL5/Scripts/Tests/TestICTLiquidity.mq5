@@ -601,6 +601,100 @@ void RunIctBullishMirrorTests()
             IctNear(setup.entry_limit - setup.stop, 112.6 - 103.0));
 }
 
+// The strategy object end to end: the same fixture, loaded into the shared
+// indicator cache, through Evaluate and into an XSparkSignal. This is the only
+// test that proves the class reads the cache in the order the model expects -
+// a reversed copy would still pass every pure-function test above.
+#ifdef XSPARK_PORTABLE_TEST
+void IctCacheBar(XSparkCandle &bar, const double open, const double high,
+                 const double low, const double close)
+{
+   // 34 whole days plus 28800 seconds, so the clock reads 08:00 UTC - inside
+   // the London kill zone. A timestamp chosen for tidiness rather than for the
+   // window is the quiet way to make every one of these tests vacuous.
+   bar.time = (datetime)(34 * 86400 + 28800);
+   bar.open = open; bar.high = high; bar.low = low; bar.close = close;
+   bar.tick_volume = 100;
+}
+
+void RunIctStrategyTests()
+{
+   double opens[];
+   double highs[];
+   double lows[];
+   double closes[];
+   IctBearishFixture(opens, highs, lows, closes);
+
+   CXSparkIndicatorCache cache;
+   cache.base.resize(XSPARK_SCOREBOT_CLOSED_BASE_BARS);
+   for(int i = 0; i < XSPARK_SCOREBOT_CLOSED_BASE_BARS; i++)
+   {
+      // Past the fixture, repeat its oldest bar: the sequence never reads that
+      // far, and a flat tail cannot accidentally create a swing.
+      const int f = i < 14 ? i : 13;
+      IctCacheBar(cache.base[i], opens[f], highs[f], lows[f], closes[f]);
+   }
+
+   CXSparkIctLiquidity strategy;
+   XSparkIctConfig config;
+   IctTestConfig(config);
+   strategy.Configure(config);
+
+   XSparkSignal signal;
+   XSparkScoreBotReport report;
+
+   IctCheck("an uninitialized ICT strategy never signals",
+            !strategy.Evaluate(cache, signal, report) &&
+            report.status == "SCANNING" && report.joint_verdict == "BLOCKED");
+
+   IctCheck("the strategy refuses a symbol it was not given",
+            !strategy.Initialize(""));
+
+   IctCheck("the strategy initializes on the test configuration",
+            strategy.Initialize("TEST"));
+
+   // The stub cache reports ATR14 = 1.0, against which the fixture's 4.5 body
+   // is 4.5 typical candles and its stop distance 9.6 - over the 3.5 ceiling.
+   // So the shipped ceiling must be widened for this fixture to reach a signal,
+   // which is itself worth pinning: the geometry check is live in the class.
+   strategy.SetClockOffset(0);
+   IctCheck("the sequence is refused when the stop exceeds the ceiling",
+            !strategy.Evaluate(cache, signal, report) && report.status == "SCANNING");
+
+   XSparkIctConfig wide;
+   IctTestConfig(wide);
+   wide.max_stop_atr = 12.0;
+   strategy.Configure(wide);
+
+   IctCheck("the strategy produces the sell the model found",
+            strategy.Evaluate(cache, signal, report) &&
+            signal.direction == XSPARK_SIGNAL_SELL &&
+            report.status == "SIGNAL" && report.joint_verdict == "PASS");
+   IctCheck("the signal carries the imbalance edge as its entry limit",
+            IctNear(signal.entry_limit, 103.0));
+   IctCheck("the signal carries the stop beyond the swept extreme",
+            IctNear(signal.desired_stop, 112.0 + wide.stop_buffer_atr * 1.0));
+   IctCheck("the signal leaves the target to execution and carries the ratio",
+            signal.desired_target == 0.0 && IctNear(signal.dynamic_rr, wide.target_r));
+   IctCheck("the report names the ICT pattern and the swept level",
+            report.pattern_mode == "ICT LIQUIDITY" &&
+            report.pattern_name == "SWEEP + MSS + FVG SHORT" &&
+            IctNear(report.detected_level, 112.0));
+   IctCheck("the signal carries the symbol and the fixed score",
+            signal.symbol == "TEST" && signal.score == XSPARK_ICT_SIGNAL_SCORE);
+
+   // Outside the kill zone the same cache must refuse, which also proves the
+   // clock offset reaches the model.
+   strategy.SetClockOffset(8);   // shifts 08:00 UTC out of the London window
+   IctCheck("a clock offset that moves the bar out of the zone refuses",
+            !strategy.Evaluate(cache, signal, report) && report.htf_verdict == "OUTSIDE ZONE");
+
+   strategy.Deinitialize();
+   IctCheck("a deinitialized strategy never signals",
+            !strategy.Evaluate(cache, signal, report));
+}
+#endif
+
 void RunIctTests()
 {
    RunIctSwingTests();
@@ -612,6 +706,9 @@ void RunIctTests()
    RunIctConfigTests();
    RunIctEvaluateTests();
    RunIctBullishMirrorTests();
+#ifdef XSPARK_PORTABLE_TEST
+   RunIctStrategyTests();
+#endif
 
    Print("ICT RESULT passed=", g_ict_passed, " failed=", g_ict_failed);
 }

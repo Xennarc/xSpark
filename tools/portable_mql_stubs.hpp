@@ -56,6 +56,12 @@ bool GlobalVariableSetOnCondition(const string& k,double value,double previous) 
 }
 void GlobalVariablesFlush() {}
 class CXSparkMarketState {public: double Ask() {return 100.3;} double Bid() {return 100.2;} };
+// Mirrors IndicatorCache.mqh. The real header is not in the portable FILES
+// list because it calls CopyRates and indicator handles, so the one constant
+// strategies read from it is restated here.
+#ifndef XSPARK_SCOREBOT_CLOSED_BASE_BARS
+#define XSPARK_SCOREBOT_CLOSED_BASE_BARS 50
+#endif
 class CXSparkIndicatorCache {
 public:
  std::vector<XSparkCandle> base, structure_base, structure_higher;

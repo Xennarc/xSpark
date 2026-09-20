@@ -1,6 +1,8 @@
 #ifndef XSPARK_STRATEGY_ICT_LIQUIDITY_MQH
 #define XSPARK_STRATEGY_ICT_LIQUIDITY_MQH
 
+#include <XSpark/Core/IndicatorCache.mqh>
+#include <XSpark/Strategy/ScoreBotTypes.mqh>
 #include <XSpark/Strategy/StrategyInterface.mqh>
 
 // ---------------------------------------------------------------------------
@@ -59,7 +61,13 @@
 // How far back the model looks for the swing being swept, and for the sweep
 // itself once structure has shifted. Beyond this a "sweep" and the break that
 // follows are no longer one event.
-#define XSPARK_ICT_SWING_LOOKBACK 60
+//
+// The lookback is bounded by the shared indicator cache, which holds
+// XSPARK_SCOREBOT_CLOSED_BASE_BARS closed bars. The deepest read the sequence
+// makes is sweep age + lookback + strength, so these must leave room inside
+// that window or the oldest swing silently cannot be found - which would look
+// like "no sweep" rather than like a missing bar.
+#define XSPARK_ICT_SWING_LOOKBACK 30
 #define XSPARK_ICT_SWEEP_MAX_AGE_BARS 12
 
 // The displacement leg's body, as a multiple of the typical candle. Below this
@@ -850,5 +858,260 @@ double XSparkIctNoEdgeWinRate(const double target_r)
       return 0.0;
    return 1.0 / (1.0 + target_r);
 }
+
+
+// ---------------------------------------------------------------------------
+// The strategy object.
+// ---------------------------------------------------------------------------
+//
+// Reads the shared indicator cache, runs the pure model above, and fills the
+// same XSparkSignal every other strategy fills. It creates signals and nothing
+// else: no order call, no broker state, no exposure decision (AGENTS.md rules
+// 6-8). The EA bounds the stop against the live quote and the cost floor, and
+// RiskManager and ExecutionEngine decide whether anything is sent.
+//
+// The one thing carried here that TrendScalp does not carry is an entry LIMIT.
+// This model does not enter at the market on the signal bar - it waits for
+// price to retrace into the imbalance - so the signal names the worst price it
+// will accept and execution refuses a fill beyond it.
+
+// Minutes since midnight UTC for a broker timestamp, given the broker's offset
+// from UTC in hours. Wraps, so an offset either side of midnight is still a
+// clock reading rather than a negative number.
+int XSparkIctMinutesUtc(const datetime broker_time, const int utc_offset_hours)
+{
+   const long seconds_per_day = 86400;
+   long utc = (long)broker_time - (long)utc_offset_hours * 3600;
+   long within_day = utc % seconds_per_day;
+   if(within_day < 0)
+      within_day += seconds_per_day;
+   return (int)(within_day / 60);
+}
+
+// The score every ICT signal carries. The model is a sequence that either
+// completed or did not, so there is nothing to grade: a fixed score keeps the
+// shared report and panel readable without inventing a confidence.
+#define XSPARK_ICT_SIGNAL_SCORE 5.0
+
+class CXSparkIctLiquidity : public IXSparkStrategy
+{
+private:
+   XSparkIctConfig m_config;
+   string m_symbol;
+   bool   m_initialized;
+   string m_last_reason;
+   int    m_utc_offset_hours;
+
+public:
+   CXSparkIctLiquidity()
+   {
+      XSparkDefaultIctConfig(m_config);
+      m_symbol = "";
+      m_initialized = false;
+      m_last_reason = "The ICT strategy is not initialized.";
+      m_utc_offset_hours = 0;
+   }
+
+   void Configure(const XSparkIctConfig &config)
+   {
+      m_config = config;
+   }
+
+   // The broker's clock offset from UTC. The kill zones are the only part of
+   // this model that depends on wall-clock time, so a wrong offset moves the
+   // windows rather than corrupting the shapes.
+   void SetClockOffset(const int utc_offset_hours)
+   {
+      m_utc_offset_hours = utc_offset_hours;
+   }
+
+   double TargetRewardRatio()
+   {
+      if(!MathIsValidNumber(m_config.target_r) || m_config.target_r <= 0.0)
+         return 0.0;
+      return m_config.target_r;
+   }
+
+   bool Initialize(const string symbol)
+   {
+      m_initialized = false;
+      m_symbol = "";
+
+      if(symbol == "")
+      {
+         m_last_reason = "The ICT strategy needs a symbol.";
+         return false;
+      }
+
+      string reason = "";
+      if(!XSparkIctConfigUsable(m_config, reason))
+      {
+         m_last_reason = reason;
+         return false;
+      }
+
+      // The deepest bar the sequence can read. Refused here rather than at the
+      // first signal, because a lookback past the cache does not fail loudly -
+      // it just never finds the oldest swing.
+      const int deepest = m_config.sweep_max_age_bars + m_config.swing_lookback + m_config.swing_strength + 2;
+      if(deepest >= XSPARK_SCOREBOT_CLOSED_BASE_BARS)
+      {
+         m_last_reason = StringFormat("The sequence would read %d bars back but only %d closed bars are cached.",
+                                      deepest, XSPARK_SCOREBOT_CLOSED_BASE_BARS);
+         return false;
+      }
+
+      m_symbol = symbol;
+      m_initialized = true;
+      m_last_reason = "";
+      return true;
+   }
+
+   void Deinitialize()
+   {
+      m_initialized = false;
+      m_symbol = "";
+      m_last_reason = "The ICT strategy is not initialized.";
+   }
+
+   bool Evaluate(CXSparkIndicatorCache &cache,
+                 XSparkSignal &signal,
+                 XSparkScoreBotReport &report)
+   {
+      XSparkResetSignal(signal);
+      XSparkResetScoreBotReport(report);
+      report.pattern_mode = "ICT LIQUIDITY";
+      report.entry_location = "FAIR VALUE GAP";
+      report.htf_verdict = "OFF";
+      report.pullback_verdict = "OFF";
+      report.rsi_verdict = "OFF";
+      report.joint_verdict = "BLOCKED";
+      report.status = "SCANNING";
+
+      if(!m_initialized)
+      {
+         report.block_reason = "The ICT strategy is not initialized.";
+         m_last_reason = report.block_reason;
+         return false;
+      }
+
+      if(!cache.IsValid())
+      {
+         report.block_reason = cache.LastReason();
+         m_last_reason = report.block_reason;
+         return false;
+      }
+
+      const double atr14 = cache.ATR14Base();
+      const double atr50 = cache.ATR50Base();
+
+      // Copy the cached closed bars into series arrays: index 0 is the bar just
+      // closed, which is what the model calls eval_index.
+      double opens[];
+      double highs[];
+      double lows[];
+      double closes[];
+      ArrayResize(opens, XSPARK_SCOREBOT_CLOSED_BASE_BARS);
+      ArrayResize(highs, XSPARK_SCOREBOT_CLOSED_BASE_BARS);
+      ArrayResize(lows, XSPARK_SCOREBOT_CLOSED_BASE_BARS);
+      ArrayResize(closes, XSPARK_SCOREBOT_CLOSED_BASE_BARS);
+
+      XSparkCandle bar1;
+      if(!cache.BaseBar(1, bar1))
+      {
+         report.block_reason = "The closed signal candle is unavailable.";
+         m_last_reason = report.block_reason;
+         return false;
+      }
+
+      for(int i = 0; i < XSPARK_SCOREBOT_CLOSED_BASE_BARS; i++)
+      {
+         XSparkCandle bar;
+         if(!cache.BaseBar(i + 1, bar))
+         {
+            report.block_reason = StringFormat("Only %d closed bars are available; the sequence needs more.", i);
+            m_last_reason = report.block_reason;
+            return false;
+         }
+         opens[i] = bar.open;
+         highs[i] = bar.high;
+         lows[i] = bar.low;
+         closes[i] = bar.close;
+      }
+
+      report.signal_bar_time = bar1.time;
+      report.atr14 = atr14;
+      report.atr50 = atr50;
+      report.atr_points = 0.0;
+      report.context.bar1_open = bar1.open;
+      report.context.bar1_high = bar1.high;
+      report.context.bar1_low = bar1.low;
+      report.context.bar1_close = bar1.close;
+      report.context.atr14 = atr14;
+
+      const int minutes_utc = XSparkIctMinutesUtc(bar1.time, m_utc_offset_hours);
+
+      XSparkIctSetup setup;
+      XSparkIctVerdicts verdicts;
+
+      if(!XSparkIctEvaluate(opens, highs, lows, closes, 0, minutes_utc, atr14, m_config, setup, verdicts))
+      {
+         // The verdicts are the funnel: the EA counts them so a run that takes
+         // no trades says which ICT condition the market never produced.
+         report.htf_verdict = verdicts.zone;
+         report.pullback_verdict = verdicts.sweep;
+         report.entry_location = verdicts.imbalance != "" ? verdicts.imbalance : "FAIR VALUE GAP";
+         report.block_reason = setup.reason;
+         m_last_reason = setup.reason;
+         return false;
+      }
+
+      report.htf_verdict = verdicts.zone;
+      report.pullback_verdict = verdicts.sweep;
+      report.detected_level = setup.swept_level;
+      report.scored = true;
+      report.threshold_passed = true;
+      report.components.pattern = XSPARK_ICT_SIGNAL_SCORE;
+      report.components.raw = XSPARK_ICT_SIGNAL_SCORE;
+      report.components.final_score = XSPARK_ICT_SIGNAL_SCORE;
+      report.components.session_weight = 1.0;
+      report.joint_verdict = "PASS";
+      report.status = "SIGNAL";
+      report.block_reason = "";
+      report.pattern_name = setup.direction == XSPARK_SIGNAL_SELL ? "SWEEP + MSS + FVG SHORT"
+                                                                  : "SWEEP + MSS + FVG LONG";
+
+      signal.symbol = m_symbol;
+      signal.direction = setup.direction;
+      signal.desired_stop = setup.stop;
+      // Execution derives the take-profit from the ratio and the stop distance
+      // it actually gets, so the modelled target is not carried as a price.
+      signal.desired_target = 0.0;
+      signal.dynamic_rr = TargetRewardRatio();
+      // The imbalance edge. Unlike a market entry this is the worst price the
+      // model will accept: execution refuses a fill beyond it rather than
+      // chasing the displacement it just measured.
+      signal.entry_limit = setup.entry_limit;
+      signal.score = XSPARK_ICT_SIGNAL_SCORE;
+      signal.effective_threshold = 0.0;
+      signal.pattern_score = XSPARK_ICT_SIGNAL_SCORE;
+      signal.session_weight = 1.0;
+      signal.atr14 = atr14;
+      signal.atr50 = atr50;
+      signal.signal_bar_time = bar1.time;
+      signal.instance_time = bar1.time;
+      signal.pattern_name = report.pattern_name;
+      signal.context = report.context;
+      signal.reason = setup.reason;
+
+      m_last_reason = signal.reason;
+      return true;
+   }
+
+   string LastReason()
+   {
+      return m_last_reason;
+   }
+};
 
 #endif
