@@ -50,7 +50,7 @@ rather than in points.
 | `InpFlowMinStopATRMult` | 0.25 | Stop floor. A stop closer than this to the fill is widened to it. |
 | `InpFlowMaxStopATRMult` | 0.0 | Stop ceiling. A wider stop refuses the entry. 0 disables it. |
 | `InpFlowMinBodyATRMult` | 0.0 | Ignore candles whose body is smaller than this. 0 disables it, keeping the rule literally single-factor. |
-| `InpFlowTP1AtR` / `InpFlowTP1ClosePct` | **1.5 / 30** | Bank 30% of the opening size once the trade is 1.5× its own risk in front. |
+| `InpFlowTP1AtR` / `InpFlowTP1ClosePct` | **1.5 / 40** | Bank 40% of the opening size once the trade is 1.5× its own risk in front. |
 | `InpFlowTP2AtR` / `InpFlowTP2ClosePct` | **3.0 / 30** | Bank another 30% at 3×. |
 | `InpFlowTP3AtR` / `InpFlowTP3ClosePct` | 0.0 / 0.0 | A third step, off by default. |
 | `InpFlowFinalTargetR` | 0.0 | A hard broker take-profit for whatever is left. Off by default — see below. |
@@ -115,9 +115,13 @@ part still running.
 
 | Step | Fires when the trade is | Closes | Leaves |
 | --- | --- | --- | --- |
-| 1 | 1.5 × its own initial risk in front | 30% of the **opening** size | 70% |
-| 2 | 3.0 × in front | another 30% of the opening size | 40% |
+| 1 | 1.5 × its own initial risk in front | 40% of the **opening** size | 60% |
+| 2 | 3.0 × in front | another 30% of the opening size | 30% |
 | 3 | off by default | — | — |
+
+The first step is the larger one deliberately. The failure being addressed is a
+trade that runs well and then hands it back, and the earlier share is the one a
+retrace cannot reach.
 
 Every distance is a multiple of the distance from the entry to the **first** stop,
 so the ladder rescales with the instrument and the timeframe exactly as the trail
@@ -126,13 +130,13 @@ what is left — percentages of a shrinking remainder would bank a different sha
 of the trade at each step than the one configured, and would never reach zero.
 
 Internally a step is a **budget** rather than a share to close: "bring this
-position down to 70% of what it opened with", not "close 30% of it now". In the
+position down to 60% of what it opened with", not "close 40% of it now". In the
 ordinary case those are the same order. They differ in the two cases that
 matter, and both differences are the point:
 
 - A close the broker **confirmed** but that XSpark never got to record — the
   terminal died in between — is a step with nothing left to do, rather than a
-  second 30% off the same trade on restart.
+  second 40% off the same trade on restart.
 - A step that had to be **skipped** because its share was below the broker's
   minimum volume is made good by the next step, which closes its own share and
   the skipped one together, rather than being lost for the rest of the trade.
@@ -178,10 +182,24 @@ would leave a residual below it. A step whose share rounds under either bound is
 therefore skipped, logged once, and the whole position simply stays on its
 trailing stop.
 
-This is the common case on a small account, not an edge case. With a 0.01
-minimum lot the shipped two-step ladder needs roughly **0.03 lots** on the
-position before either step can fire. Below that the ladder is inert and the
-journal says so once per position.
+With a 0.01 minimum lot the shipped ladder fires both of its steps from
+**0.03 lots** upward. Below that it banks little or nothing, and the journal
+says so once per position.
+
+Shares are normalised **down**, so a small position banks slightly less than
+configured and never more — which is the safe direction, because the shortfall
+stays open under the trailing stop. Worked through, at a 0.01 minimum and step:
+
+| Opening size | Step 1 closes | Step 2 closes | Banked | Left running |
+| --- | --- | --- | --- | --- |
+| 0.03 | 0.01 | 0.01 | 67% | 0.01 |
+| 0.05 | 0.02 | 0.01 | 60% | 0.02 |
+| 0.10 | 0.04 | 0.03 | 70% | 0.03 |
+| 1.00 | 0.40 | 0.30 | 70% | 0.30 |
+
+This is also why the first step is 40% rather than 30%: at 0.03 lots a 30%
+share rounds to nothing and the step is skipped entirely, where 40% rounds to
+0.01 and fires.
 
 ### Progress survives a restart
 
@@ -250,12 +268,12 @@ and the defensive refusal that guarantees it is unchanged.
 
 Taking profit in steps does not raise expectancy. It moves money out of the
 right tail and into the middle. A long from 100 risking 2.00, with the shipped
-1.5R/30% and 3.0R/30%:
+1.5R/40% and 3.0R/30%:
 
 | The trade | Without the ladder | With it |
 | --- | --- | --- |
-| Runs to 6R, trails out at 3.5R | **3.50R** | 0.3(1.5) + 0.3(3.0) + 0.4(3.5) = **2.75R** |
-| Runs to 3.5R, gives it all back to the break-even lock | **0.10R** | 0.3(1.5) + 0.3(3.0) + 0.4(0.1) = **1.39R** |
+| Runs to 6R, trails out at 3.5R | **3.50R** | 0.4(1.5) + 0.3(3.0) + 0.3(3.5) = **2.55R** |
+| Runs to 3.5R, gives it all back to the break-even lock | **0.10R** | 0.4(1.5) + 0.3(3.0) + 0.3(0.1) = **1.53R** |
 
 The second row is the shape that was reported. Whether the change is net
 positive depends entirely on the give-back distribution in your own data, which

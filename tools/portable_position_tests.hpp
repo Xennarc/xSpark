@@ -383,6 +383,23 @@ void Run() {
  LadderOnce(tiny,104,104.1,logger,1.0,30,2.0,30);
  Check("a later step makes good what a skipped one could not take",tiny.partial_calls.size()==2 && VolumeIs(live[0].volume,0.01));
 
+ // The SHIPPED split on the smallest position it is meant to serve. 40% of
+ // 0.03 lots is 0.012, which rounds down to 0.01 and fires; a 30% first step
+ // would be 0.009 and would be skipped. This is why the shipped first share is
+ // the larger one, and the case pins that reasoning to an assertion.
+ Seed();Manager shipped;
+ for(auto& b:live) {b.volume=0.03; saved[b.id].initial_lots=0.03;}
+ LadderOnce(shipped,103,103.1,logger,
+            XSPARK_LADDER_DEFAULT_LEVEL1_R,XSPARK_LADDER_DEFAULT_LEVEL1_PCT,
+            XSPARK_LADDER_DEFAULT_LEVEL2_R,XSPARK_LADDER_DEFAULT_LEVEL2_PCT);
+ Check("the shipped first step fires on the smallest position it serves",
+       shipped.partial_calls.size()==2 && VolumeIs(shipped.partial_volumes[0],0.01) && VolumeIs(live[0].volume,0.02));
+ LadderOnce(shipped,106,106.1,logger,
+            XSPARK_LADDER_DEFAULT_LEVEL1_R,XSPARK_LADDER_DEFAULT_LEVEL1_PCT,
+            XSPARK_LADDER_DEFAULT_LEVEL2_R,XSPARK_LADDER_DEFAULT_LEVEL2_PCT);
+ Check("the shipped second step fires there too, leaving a residual",
+       shipped.partial_calls.size()==4 && VolumeIs(live[0].volume,0.01));
+
  // A rejected close backs off instead of re-sending on every tick, and latches
  // off after enough consecutive rejections. The trail keeps running throughout.
  Seed();Manager rejected;rejected.reject_partials=true;

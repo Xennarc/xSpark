@@ -71,14 +71,21 @@
 // The shipped configuration. Declared here so the test that proves the defaults
 // form a VALID ladder is testing what actually ships rather than a copy of it.
 //
-// Two steps, both after the trade has earned more than it risked, closing 30%
-// each and leaving 40% on the trailing stop. Chosen so the common case the
-// operator described - a trade that runs well and then hands it back - banks
-// most of the move before the retrace can reach it, while the remainder still
-// carries the open-ended upside the strategy exists for. Plausible, not
-// measured: nothing here is a profitability claim.
+// Two steps, both after the trade has earned more than it risked, closing 40%
+// and then 30% and leaving 30% on the trailing stop. Weighted toward the first
+// step because the failure being addressed is a trade that runs well and then
+// hands it back: the earlier share is the one the retrace cannot reach. The
+// remainder still carries the open-ended upside the strategy exists for.
+//
+// 40% first also survives a small position better, which is not a coincidence
+// worth leaving unexplained. At a 0.01 minimum lot, 30% of 0.03 lots rounds to
+// nothing and the first step is skipped entirely; 40% rounds to 0.01 and fires.
+// Every share is normalised DOWN, so rounding always leaves more running than
+// configured, never less.
+//
+// Plausible, not measured: nothing here is a profitability claim.
 #define XSPARK_LADDER_DEFAULT_LEVEL1_R 1.5
-#define XSPARK_LADDER_DEFAULT_LEVEL1_PCT 30.0
+#define XSPARK_LADDER_DEFAULT_LEVEL1_PCT 40.0
 #define XSPARK_LADDER_DEFAULT_LEVEL2_R 3.0
 #define XSPARK_LADDER_DEFAULT_LEVEL2_PCT 30.0
 #define XSPARK_LADDER_DEFAULT_LEVEL3_R 0.0

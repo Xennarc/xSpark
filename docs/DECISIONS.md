@@ -389,7 +389,7 @@ The window is small and it is real: the broker confirms the partial, and the ter
 
 The fix is to stop expressing a step as a share to close and start expressing it as a budget: *bring this position down to 70% of what it opened with*. In the ordinary case that is the same order, to the lot. In the crash case the position is already at 70%, the subtraction yields nothing, and the step is a no-op that heals itself. Idempotence is not a property that had to be added on top; it is what the arithmetic already does once it is written the other way round.
 
-The same change removed the third defect for free. A step whose share rounded below the broker's minimum volume used to be lost for the rest of the trade — and at a 0.01 minimum lot, 30% of anything under about 0.04 lots rounds to nothing, which is an ordinary retail position rather than an edge case. Under a budget, the next step closes its own share and the skipped one together, because it is measured against the live volume rather than against what the previous step was supposed to have done.
+The same change removed the third defect for free. A step whose share rounded below the broker's minimum volume used to be lost for the rest of the trade — and at a 0.01 minimum lot a 30% share of anything under about 0.04 lots rounds to nothing, which is an ordinary retail position rather than an edge case. Under a budget, the next step closes its own share and the skipped one together, because it is measured against the live volume rather than against what the previous step was supposed to have done.
 
 The persisted progress value is therefore no longer load-bearing for safety. It records how far up the ladder the trade has been so the steps are not re-offered; losing it costs accuracy, never a second close. It is a high-water R multiple rather than the bitmask ADR-031 used, because the steps are strictly ascending and one number then says which of them are behind the trade. An unreadable value is read as *every step is already behind us*, which makes the ladder inert rather than replaying it — a module that cannot trust its own record of what it has done to a live position must not cause another broker operation on the strength of it.
 
@@ -409,8 +409,16 @@ The discrimination is the whole value of it. A record that vanished because the 
 
 ### What this costs, and the number that is not in the tests
 
-Taking profit in steps does not raise expectancy; it moves money out of the right tail and into the middle. On a trade that runs to 6R and trails out at 3.5R the shipped ladder returns 2.75R instead of 3.50R. On a trade that runs to 3.5R and hands it all back to the break-even lock it returns 1.39R instead of 0.10R. The second shape is the one that was reported, and whether the change is net positive depends entirely on the give-back distribution in the operator's own data.
+Taking profit in steps does not raise expectancy; it moves money out of the right tail and into the middle. On a trade that runs to 6R and trails out at 3.5R the shipped ladder returns 2.55R instead of 3.50R. On a trade that runs to 3.5R and hands it all back to the break-even lock it returns 1.53R instead of 0.10R. The second shape is the one that was reported, and whether the change is net positive depends entirely on the give-back distribution in the operator's own data.
 
 `presets/xauusd-m30-candleflow-no-targets.set` exists so that can be measured in one comparison: it is the shipped preset with the four take-profit settings zeroed and nothing else changed. The plain-trail preset is not that baseline — it also strips the chandelier, the tightening and the break-even lock, so comparing against it measures four changes at once.
 
 One caveat belongs with it rather than buried in the code. The ladder triggers on a tick-resolution exit-side quote while the trail's peak advances only on closed candles, so under "Open prices only" modelling a spike that reaches a level inside a bar and closes back below it never banks anything. Low-resolution modelling systematically understates the ladder, and a comparison run that way measures the modelling rather than the change.
+
+### Addendum: the shipped split is 40/30, not 30/30
+
+The operator who reported the give-back trades roughly 0.03 to 0.10 lots and asked for the defaults weighted toward banking rather than toward running. Both point the same way, which is why the first step is the larger one.
+
+The trade-off argument is the ordinary one: the earlier share is the share a retrace cannot reach, so moving weight into it protects more of the reported failure and costs more of the right tail. The lot-size argument is arithmetic and would have been invisible without asking. At a 0.01 minimum lot a 30% share of 0.03 lots normalises down to zero and the first step is skipped entirely; 40% normalises to 0.01 and fires. The budget model means the skipped share is not lost — the second step takes it — but a step that never fires is still a step the operator configured and did not get.
+
+Shares are normalised down throughout, so a small position banks slightly less than configured and never more. The shortfall stays open under the trailing stop, which is the safe direction to round in.
