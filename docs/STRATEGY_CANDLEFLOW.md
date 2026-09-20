@@ -125,6 +125,18 @@ does. Every percentage is of the volume the position **opened** with, never of
 what is left — percentages of a shrinking remainder would bank a different share
 of the trade at each step than the one configured, and would never reach zero.
 
+Internally a step is a **budget** rather than a share to close: "bring this
+position down to 70% of what it opened with", not "close 30% of it now". In the
+ordinary case those are the same order. They differ in the two cases that
+matter, and both differences are the point:
+
+- A close the broker **confirmed** but that XSpark never got to record — the
+  terminal died in between — is a step with nothing left to do, rather than a
+  second 30% off the same trade on restart.
+- A step that had to be **skipped** because its share was below the broker's
+  minimum volume is made good by the next step, which closes its own share and
+  the skipped one together, rather than being lost for the rest of the trade.
+
 The arithmetic lives in `Trade/ProfitLadder.mqh`, beside the trailing stop and
 for the same reason: taking profit in steps is a property of an open position,
 not of an entry rule. `PositionManager` applies it; `CandleFlow.mqh` never sees
@@ -141,10 +153,16 @@ it.
   close in charge of the trade.
 - **One step per management pass.** Each step is its own broker operation, and a
   pass that sent three of them would size the second and third from a volume the
-  first has not been confirmed to have changed. A candle that jumps through every
-  level banks one step per pass instead, at whatever the market is then — which
-  is at or beyond the level either way, because a trigger is only ever reached
-  from the profitable side.
+  first has not been confirmed to have changed. A candle that jumps through
+  several levels takes the **furthest** one in a single order — its budget
+  already contains every share below it — at the price the market is actually
+  at, rather than banking the nearest share now and leaving the rest to a later
+  pass at a price that may have retraced.
+- **A rejected close backs off.** A crossed trigger stays crossed, so a broker
+  that refuses the order would otherwise get one every tick for the rest of the
+  trade. After a rejection the step waits 30 seconds, and after five consecutive
+  rejections the ladder switches itself off for that position until the EA
+  restarts. The trailing stop is unaffected throughout.
 - **The trigger is the exit-side price** — the Bid for a long, the Ask for a
   short — because that is the price the position could actually be closed at.
 - **Profit first, then protection, on the same pass.** Banking a step runs a
@@ -165,18 +183,28 @@ minimum lot the shipped two-step ladder needs roughly **0.03 lots** on the
 position before either step can fire. Below that the ladder is inert and the
 journal says so once per position.
 
-### Which steps have been banked survives a restart
+### Progress survives a restart
 
-The set of banked steps is a bitmask persisted per position alongside the trail
-peak. A step re-fired after a restart would close the same share of the trade
-twice; a step forgotten would leave money the operator configured to bank sitting
-on the trailing stop instead. A stored value naming a step this build does not
-have is read as "nothing banked", which is safe only because every step is
-re-tested against the live price before it can fire — a level the trade has not
-reached cannot be re-taken by forgetting it.
+How far up the ladder a position has been banked is persisted alongside the
+trail peak, as the R multiple of the highest step already taken. A step
+forgotten across a restart would leave money the operator configured to bank
+sitting on the trailing stop instead.
 
-It is a bitmask rather than a count because a step that could not be closed does
-not block the steps above it, so the banked set is not necessarily a prefix.
+A stored value that cannot be trusted — not a number, negative, or past the
+ceiling — is read as "every step is already behind us", which makes the ladder
+**inert** for that position rather than replaying it. A module that cannot trust
+its own record of what it has done to a live position must not cause another
+broker operation on the strength of it, and the position keeps its trailing stop
+either way.
+
+The persisted value is not what stops a confirmed-but-unrecorded close from
+being repeated — the budget arithmetic above is. The two are independent on
+purpose: losing the record costs accuracy, never a second close.
+
+If a confirmed close cannot be recorded at all against a position that is still
+live, XSpark no longer knows what it has banked. That is the ambiguous state
+AGENTS.md rule 24 exists for, so the EA raises its state-recovery latch: new
+entries stop, open positions keep being managed, and the panel says so.
 
 ### The hard target ships off, and that is the recommendation
 
@@ -200,13 +228,58 @@ time so the candle's signal is not consumed first.
 With `InpFlowFinalTargetR = 0` the order is sent with `TP = 0` exactly as before,
 and the defensive refusal that guarantees it is unchanged.
 
+### Three consequences you cannot see from the Inputs tab
+
+1. **A banked step lowers the position's live volume**, which `AccountExposure`
+   sums, so it frees budget under `InpFlowMaxAccountRiskPct`. That is inert at
+   `InpFlowMaxOpenTrades = 1` and live the moment that limit is raised. It is
+   not martingale — nothing sizes from a previous outcome — but it is a
+   behaviour change in an account-level risk control, so it is written down.
+2. **A non-zero `InpFlowFinalTargetR` puts every entry under a reward-ratio
+   band.** A broker whose stop level pushes the target more than 25% past the
+   requested distance has the entry refused outright, with the candle's signal
+   already spent. The refusal is in the journal; the panel shows the reason.
+3. **The Strategy Tester's modelling mode changes the result.** The ladder
+   triggers on a tick-resolution exit-side quote, while the trail's peak advances
+   only on closed candles. Under "Open prices only" a spike that reaches 3R
+   inside a bar and closes back at 0.5R never banks a step at all, so
+   **low-resolution modelling understates the ladder**. Run the comparison on
+   real ticks or it measures the modelling rather than the change.
+
+### What the ladder costs, honestly
+
+Taking profit in steps does not raise expectancy. It moves money out of the
+right tail and into the middle. A long from 100 risking 2.00, with the shipped
+1.5R/30% and 3.0R/30%:
+
+| The trade | Without the ladder | With it |
+| --- | --- | --- |
+| Runs to 6R, trails out at 3.5R | **3.50R** | 0.3(1.5) + 0.3(3.0) + 0.4(3.5) = **2.75R** |
+| Runs to 3.5R, gives it all back to the break-even lock | **0.10R** | 0.3(1.5) + 0.3(3.0) + 0.4(0.1) = **1.39R** |
+
+The second row is the shape that was reported. Whether the change is net
+positive depends entirely on the give-back distribution in your own data, which
+is what the no-targets preset below exists to measure. If total profit falls on a
+trend-following rule after adding this, that is the first row happening more
+often than the second — not the feature being broken.
+
 ### Turning the whole thing off
 
 Set `InpFlowTP1AtR` and `InpFlowTP2AtR` to 0 and the strategy is the original
-no-target rule, price for price. `presets/xauusd-m30-candleflow-plain-trail.set`
-writes all seven settings out as explicit zeros — a `.set` file applies only the
-identifiers it lists, so a baseline that omitted them would silently be measuring
-the ladder as well as the trail.
+no-target rule, price for price.
+
+Two presets write all seven settings out as explicit zeros, because a `.set`
+file applies only the identifiers it lists and a baseline that omitted them
+would silently be measuring the ladder as well as whatever else it changed:
+
+- **`presets/xauusd-m30-candleflow-no-targets.set`** — the full trailing stack,
+  ladder off. This is the **only one-file A/B for "did the ladder help"**: it
+  differs from `xauusd-m30-candleflow.set` in the take-profit settings and
+  nothing else.
+- **`presets/xauusd-m30-candleflow-plain-trail.set`** — ladder off *and* every
+  trailing layer off. Comparing against this measures four changes at once, so
+  it answers a different question: whether the trailing stack earns its
+  complexity.
 
 ### The floor is not optional
 
@@ -382,7 +455,8 @@ anchor-trailing path of `PositionManager` through the C++ adapter and runs them:
 - the one-way ratchet in the manager loop, long and short, and that a missing
   anchor leaves the stop untouched;
 - the take-profit ladder: validation of every refusable configuration, the
-  trigger prices in both directions, the banked-step bitmask, and — through the
+  trigger prices in both directions, the cumulative shares and the volume budget
+  they imply, the persisted progress value, and — through the
   real `ManagePositions` source against broker doubles — that a step closes a
   share of the *opening* volume, never fires twice, is restored after a restart,
   is skipped when no legal volume exists, never runs in ScoreBot's trailing mode,

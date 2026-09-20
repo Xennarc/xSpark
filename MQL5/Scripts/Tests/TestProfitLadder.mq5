@@ -139,27 +139,44 @@ void RunProfitLadderTests()
    LadderCheck("a target that falls below zero is refused",
                !XSparkProfitLadderTargetPrice(XSPARK_SIGNAL_SELL, 100.0, 2.0, 60.0, price));
 
-   // ---- the banked-step mask ---------------------------------------------
-   int mask = 0;
+   // ---- cumulative shares and the budget they imply -----------------------
+   LadderLevels(ladder, 1.0, 30.0, 2.0, 30.0, 3.5, 20.0, 0.0);
+   LadderCheck("the first step's cumulative share is its own",
+               LadderNear(XSparkProfitLadderCumulativePct(ladder, 0), 30.0));
+   LadderCheck("a later step's cumulative share includes every share below it",
+               LadderNear(XSparkProfitLadderCumulativePct(ladder, 1), 60.0) &&
+               LadderNear(XSparkProfitLadderCumulativePct(ladder, 2), 80.0));
+   LadderCheck("a step outside the ladder has no cumulative share",
+               LadderNear(XSparkProfitLadderCumulativePct(ladder, -1), 0.0) &&
+               LadderNear(XSparkProfitLadderCumulativePct(ladder, 9), 0.0));
+
+   LadderCheck("the budget after the first step is what its share leaves open",
+               LadderNear(XSparkProfitLadderTargetRemaining(ladder, 1.0, 0), 0.7));
+   LadderCheck("the budget after the last step is what every share leaves open",
+               LadderNear(XSparkProfitLadderTargetRemaining(ladder, 1.0, 2), 0.2));
+   LadderCheck("the budget scales with the opening volume",
+               LadderNear(XSparkProfitLadderTargetRemaining(ladder, 0.5, 0), 0.35));
+   LadderCheck("an unusable opening volume has no budget",
+               LadderNear(XSparkProfitLadderTargetRemaining(ladder, 0.0, 0), 0.0));
+   // The ceiling on the total share is what guarantees this: a budget can never
+   // reach zero, so a residual always survives for the trailing stop to hold.
+   XSparkProfitLadder full; LadderLevels(full, 1.0, 45.0, 2.0, 45.0, 0.0, 0.0, 0.0);
+   LadderCheck("even the largest legal ladder leaves a residual",
+               XSparkValidateProfitLadder(full, reason) &&
+               XSparkProfitLadderTargetRemaining(full, 1.0, 1) > 0.0);
+
+   // ---- the persisted progress value --------------------------------------
    LadderCheck("a fresh position has banked nothing",
-               !XSparkProfitLadderLevelTaken(mask, 0) && !XSparkProfitLadderLevelTaken(mask, 2));
-   mask = XSparkProfitLadderMarkTaken(mask, 1);
-   LadderCheck("marking one step leaves its neighbours alone",
-               XSparkProfitLadderLevelTaken(mask, 1) &&
-               !XSparkProfitLadderLevelTaken(mask, 0) &&
-               !XSparkProfitLadderLevelTaken(mask, 2));
-   LadderCheck("marking the same step twice changes nothing",
-               XSparkProfitLadderMarkTaken(mask, 1) == mask);
-   LadderCheck("a step outside the ladder is never marked",
-               XSparkProfitLadderMarkTaken(mask, 9) == mask &&
-               XSparkProfitLadderMarkTaken(mask, -1) == mask);
-   LadderCheck("a step outside the ladder never reads as due",
-               XSparkProfitLadderLevelTaken(mask, 9) && XSparkProfitLadderLevelTaken(mask, -1));
-   LadderCheck("a stored mask naming a step this build lacks is read as empty",
-               XSparkProfitLadderSanitizeMask(1 << XSPARK_PROFIT_LADDER_MAX_LEVELS) == 0 &&
-               XSparkProfitLadderSanitizeMask(-4) == 0);
-   LadderCheck("a representable stored mask survives unchanged",
-               XSparkProfitLadderSanitizeMask(mask) == mask);
+               LadderNear(XSparkProfitLadderSanitizeHighWater(0.0), 0.0));
+   LadderCheck("a recorded progress value survives unchanged",
+               LadderNear(XSparkProfitLadderSanitizeHighWater(2.5), 2.5));
+   // Note the DIRECTION: untrusted progress makes the ladder inert rather than
+   // replaying it, because no step may exceed the ceiling.
+   LadderCheck("a negative progress value makes the ladder inert",
+               LadderNear(XSparkProfitLadderSanitizeHighWater(-1.0), XSPARK_PROFIT_LADDER_MAX_R));
+   LadderCheck("a progress value past the ceiling makes the ladder inert",
+               LadderNear(XSparkProfitLadderSanitizeHighWater(XSPARK_PROFIT_LADDER_MAX_R + 1.0),
+                          XSPARK_PROFIT_LADDER_MAX_R));
 
    // ---- which step is due -------------------------------------------------
    // A long from 100 risking 2.0: step one at 1.0R is 102, step two at 2.0R
@@ -169,60 +186,65 @@ void RunProfitLadderTests()
    double pct = 0.0, trigger = 0.0;
 
    LadderCheck("nothing is due before the first step is reached",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 101.9, ladder, 0,
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 101.9, ladder, 0.0,
                                            level, pct, trigger));
    LadderCheck("the first step is due exactly at its price",
-               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 102.0, ladder, 0,
+               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 102.0, ladder, 0.0,
                                           level, pct, trigger) &&
                level == 0 && LadderNear(pct, 30.0) && LadderNear(trigger, 102.0));
 
-   // A candle that jumps clean through two steps still banks the lower one
-   // first: each step is its own broker operation, one per management pass.
-   LadderCheck("a price beyond two steps still takes the lower one first",
-               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 105.0, ladder, 0,
-                                          level, pct, trigger) && level == 0);
-   LadderCheck("with the first banked the same price takes the second",
-               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 105.0, ladder, 1,
+   // A candle that jumps clean through two steps takes the FURTHEST one, whose
+   // cumulative share already contains the lower one's. One order, at the price
+   // the market is actually at.
+   LadderCheck("a price beyond two steps takes the furthest of them",
+               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 105.0, ladder, 0.0,
                                           level, pct, trigger) &&
-               level == 1 && LadderNear(trigger, 104.0));
-   LadderCheck("with both banked nothing is due until the third price",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 105.0, ladder, 3,
+               level == 1 && LadderNear(pct, 60.0) && LadderNear(trigger, 104.0));
+   LadderCheck("a price beyond every step takes the last one",
+               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 200.0, ladder, 0.0,
+                                          level, pct, trigger) &&
+               level == 2 && LadderNear(pct, 80.0));
+   LadderCheck("with the first banked the same price still takes the second",
+               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 105.0, ladder, 1.0,
+                                          level, pct, trigger) && level == 1);
+   LadderCheck("with the second banked nothing is due until the third price",
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 105.0, ladder, 2.0,
                                            level, pct, trigger));
    LadderCheck("the third step is due at its own price",
-               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 107.0, ladder, 3,
+               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 107.0, ladder, 2.0,
                                           level, pct, trigger) &&
-               level == 2 && LadderNear(pct, 20.0));
+               level == 2 && LadderNear(pct, 80.0));
    LadderCheck("a fully banked ladder is never due again",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 200.0, ladder, 7,
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 200.0, ladder, 3.5,
+                                           level, pct, trigger));
+   LadderCheck("progress that cannot be trusted makes every step inert",
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 200.0, ladder, -1.0,
                                            level, pct, trigger));
 
-   // A step whose close was refused stays untaken while the steps above it are
-   // banked, so the taken set is not necessarily a leading run.
-   LadderCheck("a skipped lower step is still offered after a higher one banked",
-               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 107.0, ladder, 2,
-                                          level, pct, trigger) && level == 0);
-
    LadderCheck("a short's step is due when the price falls to it",
-               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_SELL, 100.0, 2.0, 98.0, ladder, 0,
+               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_SELL, 100.0, 2.0, 98.0, ladder, 0.0,
                                           level, pct, trigger) &&
                level == 0 && LadderNear(trigger, 98.0));
    LadderCheck("a short's step is not due while the price is above it",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_SELL, 100.0, 2.0, 98.1, ladder, 0,
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_SELL, 100.0, 2.0, 98.1, ladder, 0.0,
                                            level, pct, trigger));
+   LadderCheck("a short's gap through two steps takes the furthest",
+               XSparkProfitLadderDueLevel(XSPARK_SIGNAL_SELL, 100.0, 2.0, 95.0, ladder, 0.0,
+                                          level, pct, trigger) && level == 1);
 
    LadderCheck("a position with no recorded risk can never be due",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 0.0, 200.0, ladder, 0,
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 0.0, 200.0, ladder, 0.0,
                                            level, pct, trigger));
    LadderCheck("an unusable price can never be due",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 0.0, ladder, 0,
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 0.0, ladder, 0.0,
                                            level, pct, trigger));
    LadderCheck("a directionless position can never be due",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_NONE, 100.0, 2.0, 200.0, ladder, 0,
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_NONE, 100.0, 2.0, 200.0, ladder, 0.0,
                                            level, pct, trigger));
 
    XSparkResetProfitLadder(ladder);
    LadderCheck("an empty ladder is never due",
-               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 200.0, ladder, 0,
+               !XSparkProfitLadderDueLevel(XSPARK_SIGNAL_BUY, 100.0, 2.0, 200.0, ladder, 0.0,
                                            level, pct, trigger));
 
    Print("PROFIT LADDER RESULT passed=", g_ladder_passed, " failed=", g_ladder_failed);

@@ -16,8 +16,14 @@
 // market once, on the way out: the trade has to retrace by the whole trail
 // distance before the stop can act. On a strategy whose only exit is that stop,
 // a trade that runs 6R and returns 2R is banked at 2R. A ladder banks a share
-// of the position at fixed distances on the way UP, so the retrace only costs
-// the part still running.
+// of the position at fixed distances while the trade is moving IN ITS FAVOUR -
+// upward on a long, downward on a short - so the retrace only costs the part
+// still running.
+//
+// Each step is expressed as a BUDGET rather than as a share to close: "leave
+// this much of the opening volume open", not "close 30% now". That is what
+// makes a step idempotent, which is what makes it safe to have a confirmed
+// broker close and no record of it. See XSparkProfitLadderTargetRemaining.
 //
 // What it is NOT. It never adds to a position, never re-enters, never sizes
 // from a previous outcome and never moves a stop. It only ever removes exposure
@@ -42,8 +48,25 @@
 #define XSPARK_PROFIT_LADDER_MAX_TOTAL_PCT 90.0
 
 // A fat-fingered target is caught rather than sent. Nothing sensible asks for a
-// hundred times the amount risked.
+// hundred times the amount risked. It doubles as the sentinel a progress value
+// that cannot be trusted is read as: no step can ever exceed it, so an unusable
+// record makes the ladder inert for that position rather than replaying it.
 #define XSPARK_PROFIT_LADDER_MAX_R 100.0
+
+// How long the ladder waits after the broker rejects a close before trying the
+// same step again. A crossed trigger stays crossed, so without this a broker
+// that keeps refusing gets one order per tick for the rest of the trade.
+#define XSPARK_PROFIT_LADDER_RETRY_SECONDS 30
+
+// After this many consecutive rejections the ladder stops trying for that
+// position until the EA restarts. Something is wrong that retrying will not
+// fix, and the trailing stop is still in charge of the trade either way.
+#define XSPARK_PROFIT_LADDER_MAX_REJECTS 5
+
+// Progress is compared in R multiples, which are a ratio of two prices. The
+// tolerance only has to separate two configured levels, and validation already
+// keeps those XSPARK_PROFIT_LADDER_MIN_SPACING_R apart.
+#define XSPARK_PROFIT_LADDER_R_EPSILON 0.000000001
 
 // The shipped configuration. Declared here so the test that proves the defaults
 // form a VALID ladder is testing what actually ships rather than a copy of it.
@@ -72,8 +95,11 @@
 struct XSparkProfitLadder
 {
    // Step i fires when the trade has earned level_r[i] times the distance from
-   // its entry to its FIRST stop, and closes level_pct[i] percent of the volume
-   // the position OPENED with. Both zero means the step is unused.
+   // its entry to its FIRST stop, and brings the position down to the share of
+   // its OPENING volume that level_pct[i] and every share below it leave open.
+   // In the ordinary case - nothing skipped, nothing already banked - that is
+   // exactly "close level_pct[i] percent of the starting size", which is what
+   // the Inputs tab says. Both zero means the step is unused.
    double level_r[XSPARK_PROFIT_LADDER_MAX_LEVELS];
    double level_pct[XSPARK_PROFIT_LADDER_MAX_LEVELS];
 
@@ -292,67 +318,90 @@ bool XSparkProfitLadderTargetPrice(const EXSparkSignalDirection direction,
    return true;
 }
 
-// Which steps a position has already banked, as a bit per step.
+// The share of the opening volume that is closed by the time a given step has
+// been taken - that step's own share plus every share below it.
+double XSparkProfitLadderCumulativePct(const XSparkProfitLadder &ladder, const int level_index)
+{
+   const int levels = XSparkProfitLadderActiveLevels(ladder);
+
+   if(level_index < 0 || level_index >= levels)
+      return 0.0;
+
+   double total = 0.0;
+
+   for(int index = 0; index <= level_index; index++)
+      total += ladder.level_pct[index];
+
+   return total;
+}
+
+// How much of the position should still be open once a given step is complete.
 //
-// A bitmask rather than a count because a step that could not be closed - the
-// residual would have fallen below the broker's minimum volume - must not block
-// the steps above it, so the taken set is not necessarily a prefix.
-bool XSparkProfitLadderLevelTaken(const int taken_mask, const int level_index)
+// This is what makes a step IDEMPOTENT, and that is the whole reason the ladder
+// is expressed as a budget rather than as a share to close. A step asks "how far
+// above its target is the position still", not "close 30% of it" - so a close
+// the broker confirmed but which the terminal died before recording is simply a
+// step that now has nothing left to do, rather than one that closes another 30%
+// on the next start. It also lets a step that had to be skipped be made good by
+// the next one, instead of being lost for the rest of the trade.
+//
+// The ceiling on the total share guarantees the result is a positive fraction of
+// the opening volume, so a residual always exists.
+double XSparkProfitLadderTargetRemaining(const XSparkProfitLadder &ladder,
+                                         const double initial_volume,
+                                         const int level_index)
 {
-   if(level_index < 0 || level_index >= XSPARK_PROFIT_LADDER_MAX_LEVELS)
-      return true; // out of range is "nothing to do here", never "fire it"
+   if(!MathIsValidNumber(initial_volume) || initial_volume <= 0.0)
+      return 0.0;
 
-   return (taken_mask & (1 << level_index)) != 0;
+   return initial_volume * (100.0 - XSparkProfitLadderCumulativePct(ladder, level_index)) / 100.0;
 }
 
-int XSparkProfitLadderMarkTaken(const int taken_mask, const int level_index)
+// Guards a progress value restored from storage.
+//
+// Note the direction. Anything unusable is read as "every step is already
+// behind us", which makes the ladder inert for that position rather than
+// replaying it. A module that cannot trust its own record of what it has
+// already done to a live position must not cause another broker operation on
+// the strength of it; the position keeps its trailing stop either way.
+double XSparkProfitLadderSanitizeHighWater(const double stored)
 {
-   if(level_index < 0 || level_index >= XSPARK_PROFIT_LADDER_MAX_LEVELS)
-      return taken_mask;
+   if(!MathIsValidNumber(stored) || stored < 0.0 || stored > XSPARK_PROFIT_LADDER_MAX_R)
+      return XSPARK_PROFIT_LADDER_MAX_R;
 
-   return taken_mask | (1 << level_index);
-}
-
-// Guards a mask restored from storage. Anything outside the representable set
-// is treated as "no step has been banked", which is the cautious direction to
-// be wrong in only because the trigger comparison below is re-evaluated against
-// the live price: a step whose price has not been reached cannot fire.
-int XSparkProfitLadderSanitizeMask(const int taken_mask)
-{
-   const int all = (1 << XSPARK_PROFIT_LADDER_MAX_LEVELS) - 1;
-
-   if(taken_mask < 0 || (taken_mask & ~all) != 0)
-      return 0;
-
-   return taken_mask;
+   return stored;
 }
 
 // The single step due on this pass, if any.
 //
-// Deliberately ONE step per call. Each step is a separate broker operation, and
-// a pass that sent three of them would be three orders from one price sample,
-// with the second and third sized from a volume the first has not been
-// confirmed to have changed yet. A candle that jumps through every level
-// therefore banks one step per management pass instead, at whatever the market
-// is then - which is at or beyond the level either way, because the trigger is
-// only reached from the profitable side.
+// Deliberately ONE step per call: each step is its own broker operation, and a
+// pass that sent several would size the later ones from a volume the earlier
+// ones have not been confirmed to have changed.
+//
+// The scan runs DOWNWARD, from the highest step to the lowest, and returns the
+// FURTHEST one the price has reached. Validation keeps the steps strictly
+// ascending, so the furthest reached step subsumes every step below it: its
+// cumulative share already includes theirs. A candle that gaps through two
+// steps therefore banks both shares in one order at the price the market is
+// actually at, instead of banking the lower share now and leaving the upper one
+// to a later pass at a price that may have retraced in the meantime.
 //
 // The comparison is against the EXIT-SIDE price - the Bid for a long, the Ask
 // for a short - because that is the price the position could actually be closed
-// at. Comparing against the entry side would report a level as reached while
-// the fill would still be short of it, by one spread, on every trade.
+// at. Comparing against the entry side would report a step as reached while the
+// fill would still be short of it, by one spread, on every trade.
 bool XSparkProfitLadderDueLevel(const EXSparkSignalDirection direction,
                                 const double entry,
                                 const double risk_distance,
                                 const double exit_side_price,
                                 const XSparkProfitLadder &ladder,
-                                const int taken_mask,
+                                const double high_water_r,
                                 int &level_index,
-                                double &close_pct,
+                                double &cumulative_pct,
                                 double &trigger_price)
 {
    level_index = -1;
-   close_pct = 0.0;
+   cumulative_pct = 0.0;
    trigger_price = 0.0;
 
    if(direction != XSPARK_SIGNAL_BUY && direction != XSPARK_SIGNAL_SELL)
@@ -365,12 +414,11 @@ bool XSparkProfitLadderDueLevel(const EXSparkSignalDirection direction,
       return false;
    }
 
-   const int levels = XSparkProfitLadderActiveLevels(ladder);
-   const int mask = XSparkProfitLadderSanitizeMask(taken_mask);
+   const double water = XSparkProfitLadderSanitizeHighWater(high_water_r);
 
-   for(int index = 0; index < levels; index++)
+   for(int index = XSparkProfitLadderActiveLevels(ladder) - 1; index >= 0; index--)
    {
-      if(XSparkProfitLadderLevelTaken(mask, index))
+      if(ladder.level_r[index] <= water + XSPARK_PROFIT_LADDER_R_EPSILON)
          continue;
 
       double target = 0.0;
@@ -384,7 +432,7 @@ bool XSparkProfitLadderDueLevel(const EXSparkSignalDirection direction,
          continue;
 
       level_index = index;
-      close_pct = ladder.level_pct[index];
+      cumulative_pct = XSparkProfitLadderCumulativePct(ladder, index);
       trigger_price = target;
       return true;
    }

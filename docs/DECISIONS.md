@@ -378,3 +378,39 @@ A `.set` file applies only the identifiers it lists. `xauusd-m30-candleflow-plai
 ### What is still unmeasured
 
 The step distances and shares are plausible, not measured, in exactly the sense ADR-029 used the phrase. No backtest, forward test or live result is recorded in this repository, including the one the operator described. The defaults are a recommendation for the failure that was reported; whether they are the right numbers is a question for the Strategy Tester, and the way to ask it is the same A/B the trailing stack already has — the two presets, the same period, both directions of the comparison run rather than assumed.
+
+## ADR-032 - A Take-Profit Step Is A Budget, Not A Share, And A Rejected One Backs Off
+
+ADR-031 shipped the ladder as "close 30% of the opening size at this distance". An adversarial review of that commit found three defects, and two of them turned out to be the same defect wearing different clothes.
+
+### A confirmed close that was never recorded
+
+The window is small and it is real: the broker confirms the partial, and the terminal dies before the progress is written. On restart the record still says nothing was banked, the price is still past the trigger, and a ladder that closes a fixed share takes another 30% off a position that has already given up its first 30%.
+
+The fix is to stop expressing a step as a share to close and start expressing it as a budget: *bring this position down to 70% of what it opened with*. In the ordinary case that is the same order, to the lot. In the crash case the position is already at 70%, the subtraction yields nothing, and the step is a no-op that heals itself. Idempotence is not a property that had to be added on top; it is what the arithmetic already does once it is written the other way round.
+
+The same change removed the third defect for free. A step whose share rounded below the broker's minimum volume used to be lost for the rest of the trade — and at a 0.01 minimum lot, 30% of anything under about 0.04 lots rounds to nothing, which is an ordinary retail position rather than an edge case. Under a budget, the next step closes its own share and the skipped one together, because it is measured against the live volume rather than against what the previous step was supposed to have done.
+
+The persisted progress value is therefore no longer load-bearing for safety. It records how far up the ladder the trade has been so the steps are not re-offered; losing it costs accuracy, never a second close. It is a high-water R multiple rather than the bitmask ADR-031 used, because the steps are strictly ascending and one number then says which of them are behind the trade. An unreadable value is read as *every step is already behind us*, which makes the ladder inert rather than replaying it — a module that cannot trust its own record of what it has done to a live position must not cause another broker operation on the strength of it.
+
+### One order per pass, but the furthest step
+
+The scan now runs from the top of the ladder down and takes the furthest step the price has reached, rather than the nearest unbanked one. Because a step's budget already contains every share below it, a candle that gaps through two levels banks both shares in one order at the price the market is actually at — instead of banking the lower share now and leaving the upper one to a later pass, at a price that may have retraced in the meantime. It is still exactly one broker operation per management pass, which is the property that mattered.
+
+### A rejected close is not retried on the next tick
+
+A crossed trigger stays crossed. A broker that refuses the partial therefore used to get one `PositionClosePartial` per tick for the rest of the trade, which is the order-spam failure AGENTS.md rules 18 and 19 are about, arriving through an exit path rather than an entry one. A step now waits thirty seconds after a rejection and switches itself off for that position after five consecutive ones. Nothing is recorded as banked by a rejection, the trailing stop keeps running throughout, and a restart clears the latch because it rebuilds every record from broker truth.
+
+### When the bot no longer knows what it banked
+
+If a close is confirmed and the managed record for a position that is still live cannot be found afterwards, XSpark has caused a broker operation it cannot account for. That is the ambiguous state rule 24 exists for, and it now raises the existing state-recovery latch: new entries stop, open positions stay managed, the panel says so.
+
+The discrimination is the whole value of it. A record that vanished because the position *closed* is a consistent outcome — reconciliation pruned it, the closure was logged, its state was cleared — and latching there would block trading on every ordinary stop-out that happened to coincide with a step. The check is therefore "is the position still live", not "did the lookup fail".
+
+### What this costs, and the number that is not in the tests
+
+Taking profit in steps does not raise expectancy; it moves money out of the right tail and into the middle. On a trade that runs to 6R and trails out at 3.5R the shipped ladder returns 2.75R instead of 3.50R. On a trade that runs to 3.5R and hands it all back to the break-even lock it returns 1.39R instead of 0.10R. The second shape is the one that was reported, and whether the change is net positive depends entirely on the give-back distribution in the operator's own data.
+
+`presets/xauusd-m30-candleflow-no-targets.set` exists so that can be measured in one comparison: it is the shipped preset with the four take-profit settings zeroed and nothing else changed. The plain-trail preset is not that baseline — it also strips the chandelier, the tightening and the break-even lock, so comparing against it measures four changes at once.
+
+One caveat belongs with it rather than buried in the code. The ladder triggers on a tick-resolution exit-side quote while the trail's peak advances only on closed candles, so under "Open prices only" modelling a spike that reaches a level inside a bar and closes back below it never banks anything. Low-resolution modelling systematically understates the ladder, and a comparison run that way measures the modelling rather than the change.

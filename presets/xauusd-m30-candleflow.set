@@ -23,7 +23,11 @@
 ;   keeps the open-ended upside the rule exists for.
 ;
 ;   Set InpFlowTP1AtR and InpFlowTP2AtR to 0 to get the original behaviour,
-;   where the trailing stop is the only exit.
+;   where the trailing stop is the only exit. xauusd-m30-candleflow-no-targets.set
+;   is exactly this file with those levels off, and is the one-change A/B for
+;   "did the levels help". Run it ON REAL TICKS: the levels trigger on a
+;   tick-resolution price while the trailing stop only advances on finished
+;   candles, so low-resolution modelling understates them.
 ;
 ;   A step needs enough lots to be legal: it must close at least the broker's
 ;   minimum and leave at least that much behind. On a 0.01 minimum a two-step

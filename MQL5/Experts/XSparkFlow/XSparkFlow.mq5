@@ -775,14 +775,17 @@ bool XSparkFlowPrepareTradePlan(XSparkSignal &signal,
                                 ? MathAbs(plan.final_tp - plan.entry_reference) / plan.risk_distance
                                 : 0.0;
 
-      if(planned_rr < InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MIN_FACTOR - 0.0000001 ||
-         planned_rr > InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MAX_FACTOR + 0.0000001)
+      // Judged against the ratio the PLAN carries, which is the one the engine
+      // will re-derive the target from - not against the raw input, which a
+      // refused ladder may have decoupled from it.
+      if(planned_rr < plan.dynamic_rr * XSPARK_FLOW_TARGET_RR_MIN_FACTOR - 0.0000001 ||
+         planned_rr > plan.dynamic_rr * XSPARK_FLOW_TARGET_RR_MAX_FACTOR + 0.0000001)
       {
-         g_last_block_reason = StringFormat("Broker-valid target is %.2f times the amount risked; the setting asks for %.2f and %.2f-%.2f is accepted.",
+         g_last_block_reason = StringFormat("Broker-valid target is %.2f times the amount risked; the plan asks for %.2f and %.2f-%.2f is accepted.",
                                             planned_rr,
-                                            InpFlowFinalTargetR,
-                                            InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MIN_FACTOR,
-                                            InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MAX_FACTOR);
+                                            plan.dynamic_rr,
+                                            plan.dynamic_rr * XSPARK_FLOW_TARGET_RR_MIN_FACTOR,
+                                            plan.dynamic_rr * XSPARK_FLOW_TARGET_RR_MAX_FACTOR);
          return false;
       }
    }
@@ -1312,7 +1315,6 @@ int OnInit()
    config.atr_min_points = InpFlowATRMinPoints;
    config.atr_max_points = InpFlowATRMaxPoints;
    config.score_point_size = g_score_point_size;
-   config.final_target_r = InpFlowFinalTargetR;
 
    XSparkResetProfitLadder(g_profit_ladder);
    g_profit_ladder.level_r[0] = InpFlowTP1AtR;
@@ -1356,6 +1358,12 @@ int OnInit()
       g_config_valid = false;
       g_config_reason += " " + ladder_reason;
    }
+
+   // Taken from the VALIDATED ladder rather than from the raw input, and after
+   // the refusal above, so a ladder that was emptied cannot leave the strategy
+   // publishing a reward ratio the execution engine would then act on. The
+   // ladder owns this number; the strategy only reports it on the signal.
+   config.final_target_r = g_profit_ladder.final_target_r;
 
    if(!g_config_valid)
       g_logger.Critical("CandleFlow", g_config_reason + " New entries blocked; existing positions remain managed.");
@@ -1417,10 +1425,10 @@ int OnInit()
    double flow_min_rr = XSPARK_FLOW_UNUSED_RR;
    double flow_max_rr = XSPARK_FLOW_UNUSED_RR;
 
-   if(g_config_valid && MathIsValidNumber(InpFlowFinalTargetR) && InpFlowFinalTargetR > 0.0)
+   if(g_config_valid && g_profit_ladder.final_target_r > 0.0)
    {
-      flow_min_rr = InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MIN_FACTOR;
-      flow_max_rr = InpFlowFinalTargetR * XSPARK_FLOW_TARGET_RR_MAX_FACTOR;
+      flow_min_rr = g_profit_ladder.final_target_r * XSPARK_FLOW_TARGET_RR_MIN_FACTOR;
+      flow_max_rr = g_profit_ladder.final_target_r * XSPARK_FLOW_TARGET_RR_MAX_FACTOR;
    }
 
    if(!g_execution_engine.Initialize(InpFlowMagicNumber,
@@ -1481,8 +1489,8 @@ int OnInit()
                               "stop floor %.2f x range; ceiling %s; body filter %s; movement gate %s.",
                               EnumToString(g_base_timeframe),
                               XSparkFlowLadderSummary(),
-                              InpFlowFinalTargetR > 0.0
-                                 ? StringFormat("%.2fR, accepted broker-valid band %.2f-%.2f", InpFlowFinalTargetR, flow_min_rr, flow_max_rr)
+                              g_profit_ladder.final_target_r > 0.0
+                                 ? StringFormat("%.2fR, accepted broker-valid band %.2f-%.2f", g_profit_ladder.final_target_r, flow_min_rr, flow_max_rr)
                                  : "off",
                               InpFlowBufferATRMult,
                               InpFlowBufferRangePct,
@@ -1643,6 +1651,14 @@ void OnTick()
                                       InpFlowWeekendCloseHour,
                                       InpFlowWeekendCloseMinute,
                                       g_logger);
+
+   // A take-profit close the broker confirmed and XSpark could not record
+   // against a still-live position is the ambiguous state AGENTS.md rule 24
+   // exists for: the bot no longer knows how much of that trade it has banked.
+   // The latch blocks new entries and keeps managing what is already open, and
+   // it is already drawn on the panel. LatchStateRecovery is idempotent.
+   if(g_position_manager.UnrecordedProfitStep())
+      g_safety_manager.LatchStateRecovery(g_position_manager.UnrecordedProfitStepReason(), g_logger);
 
    if(!g_state_purged && TerminalInfoInteger(TERMINAL_CONNECTED) != 0)
    {

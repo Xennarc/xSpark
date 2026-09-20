@@ -13,7 +13,11 @@ bool connected=true;
 enum {POSITION_IDENTIFIER, POSITION_TIME, POSITION_MAGIC, POSITION_TYPE,
  POSITION_PRICE_OPEN, POSITION_SL, POSITION_VOLUME, POSITION_TP, POSITION_SYMBOL,
  SYMBOL_DIGITS, SYMBOL_TRADE_TICK_SIZE, SYMBOL_TRADE_TICK_VALUE, SYMBOL_TRADE_TICK_VALUE_LOSS,
+ SYMBOL_VOLUME_MIN, SYMBOL_VOLUME_STEP,
  TERMINAL_CONNECTED, POSITION_TYPE_BUY=100, POSITION_TYPE_SELL=101};
+// The broker's lot bounds, shared by the fake and by the production
+// LegalLadderCloseVolume compiled in below. Gold minimums on a retail account.
+double broker_volume_min = 0.01, broker_volume_step = 0.01;
 using ENUM_POSITION_TYPE = long;
 int PositionsTotal() {return int(live.size());}
 ulong PositionGetTicket(int i) {selected=i; return i==unreadable ? 0 : live.at(i).ticket;}
@@ -38,7 +42,18 @@ double PositionGetDouble(int p) {
 }
 string PositionGetString(int) {return live.at(selected).symbol;}
 long SymbolInfoInteger(const string&,int) {return 2;}
-double SymbolInfoDouble(const string&,int) {return 1;}
+double SymbolInfoDouble(const string&,int p) {
+ if(p==SYMBOL_VOLUME_MIN) return broker_volume_min;
+ if(p==SYMBOL_VOLUME_STEP) return broker_volume_step;
+ return 1;
+}
+// Only the lot ROUNDING is a double; the legality RULE above it is production
+// source. SymbolMath's version additionally normalises to the step's precision,
+// which cannot change which side of a bound a value falls on.
+double XSparkNormalizeVolumeDown(double v,double step) {
+ if(v<=0||step<=0) return 0;
+ return std::floor(v/step+0.000000001)*step;
+}
 long TerminalInfoInteger(int) {return connected;}
 string DoubleToString(double v,int) {return std::to_string(v);}
 // IDENTITY_SOURCE
@@ -46,7 +61,7 @@ string DoubleToString(double v,int) {return std::to_string(v);}
 bool XSparkAdjustProtectionLevels(const string&,EXSparkSignalDirection,double,double sl,double tp,bool,
                                   double& out_sl,double& out_tp,string&) {out_sl=sl;out_tp=tp;return true;}
 class CXSparkLogger {public:
- void Info(const string&,const string&) {} void Warn(const string&,const string&) {} void Error(const string&,const string&) {}
+ void Info(const string&,const string&) {} void Warn(const string&,const string&) {} void Error(const string&,const string&) {} void Critical(const string&,const string&) {}
 };
 // ACCOUNT_EXPOSURE_SOURCE
 XSparkTrailPlan MakeTrailPlan(int mode = XSPARK_TRAIL_ATR_AFTER_PARTIAL) {
@@ -58,11 +73,14 @@ public:
  string m_symbol="TEST",m_last_reason,m_flatten_campaign_reason;
  ulong m_magic_number=999;
  int m_managed_position_count=0,m_unmanaged_position_count=0,m_flatten_attempts=0;
+ bool m_profit_step_unrecorded=false;
+ string m_profit_step_unrecorded_reason;
  std::vector<XSparkTradeState> m_states;
  std::vector<ulong> partial_calls, modify_calls;
  std::vector<double> partial_volumes;
  XSparkTrailPlan m_trail_plan = MakeTrailPlan();
  bool close_first_fully=false;
+ bool reject_partials=false;
  bool LoadPersistedState(XSparkTradeState& s) {
   if(!saved.count(s.identifier)) return false;
   auto ticket=s.ticket; s=saved.at(s.identifier); s.ticket=ticket; return true;
@@ -78,21 +96,21 @@ public:
  void RepairMissingProtection(datetime,CXSparkLogger&) {}
  int VolumeDigits() {return 2;}
  int SymbolDigits() {return 2;}
- double volume_min=0.01, volume_step=0.01;
- // Mirrors the production bounds: round the share of the INITIAL volume down to
- // the lot step, refuse it below the broker minimum, refuse a close that would
- // take the whole position, and refuse one that would leave an illegal residual.
+ // ScoreBot_v3's partial path only. The ladder's own volume rule is production
+ // source, spliced in at PRODUCTION_METHODS below.
  double LegalPartialCloseVolume(double initial,double current,double pct) {
-  if(initial<=0||current<=0||pct<=0||volume_min<=0||volume_step<=0) return 0;
-  const double close=std::floor(initial*pct/100/volume_step+1e-9)*volume_step;
-  if(close<volume_min-1e-9||close>=current) return 0;
-  if(current-close<volume_min-1e-9) return 0;
+  if(initial<=0||current<=0||pct<=0) return 0;
+  const double close=std::floor(initial*pct/100/broker_volume_step+1e-9)*broker_volume_step;
+  if(close<broker_volume_min-1e-9||close>=current) return 0;
+  if(current-close<broker_volume_min-1e-9) return 0;
   return close;
  }
  bool ClosePartial(ulong ticket,double volume,CXSparkLogger&) {
   if(!PositionSelectByTicket(ticket)) return false;
   partial_calls.push_back(ticket);
   partial_volumes.push_back(volume);
+  // The broker refusing the close. Recorded as an attempt, but nothing moves.
+  if(reject_partials) return false;
   if(close_first_fully && ticket==11) {live.erase(live.begin()+selected);selected=-1;}
   else live[selected].volume-=volume;
   return true;
@@ -155,15 +173,19 @@ void TrailPlanned(Manager& m, double bid, double ask, CXSparkLogger& logger,
 // so an exact comparison here would be testing binary representation rather
 // than the rule. A tolerance far below the smallest lot step is the real check.
 bool VolumeIs(double actual, double expected) {return std::abs(actual-expected) < 0.000000001;}
-void LadderOnce(Manager& m, double bid, double ask, CXSparkLogger& logger,
+bool LadderOnce(Manager& m, double bid, double ask, CXSparkLogger& logger,
                 double r1, double pct1, double r2, double pct2,
                 double anchor_long = 0, double anchor_short = 0) {
  XSparkTrailPlan plan = MakeTrailPlan(XSPARK_TRAIL_CANDLE_ANCHOR);
  plan.anchor_long = anchor_long; plan.anchor_short = anchor_short;
  plan.ladder.level_r[0] = r1; plan.ladder.level_pct[0] = pct1;
  plan.ladder.level_r[1] = r2; plan.ladder.level_pct[1] = pct2;
- m.SetTrailPlan(plan);
+ // Returned, never ignored: SetTrailPlan validates the trail and the ladder as
+ // ONE object and leaves the PREVIOUS plan in force on refusal, so a fixture
+ // that dropped this would silently be exercising an empty ladder and passing.
+ const bool accepted = m.SetTrailPlan(plan);
  m.ManagePositions(bid,ask,1,0,0,0,false,20,0,logger);
+ return accepted;
 }
 void Run() {
  CXSparkLogger logger;
@@ -285,11 +307,11 @@ void Run() {
  // positions are long from 100 with 2.0 of initial risk and 1.00 lots, so a
  // step at 1.0R triggers at 102 and one at 2.0R at 104.
  Seed();Manager ladder;
- LadderOnce(ladder,101.9,102.0,logger,1.0,30,2.0,30);
+ Check("the ladder plan is accepted",LadderOnce(ladder,101.9,102.0,logger,1.0,30,2.0,30));
  Check("no step fires before its price is reached",ladder.partial_calls.empty() && VolumeIs(live[0].volume,1));
  LadderOnce(ladder,102,102.1,logger,1.0,30,2.0,30);
  Check("the first step closes its share of the starting size",ladder.partial_calls.size()==2 && VolumeIs(live[0].volume,0.7) && VolumeIs(live[1].volume,0.7));
- Check("the banked step is recorded and persisted",ladder.m_states[0].profit_levels_taken==1 && saved.at(101).profit_levels_taken==1);
+ Check("progress is recorded and persisted",ladder.m_states[0].profit_high_water_r==1.0 && saved.at(101).profit_high_water_r==1.0);
  LadderOnce(ladder,102,102.1,logger,1.0,30,2.0,30);
  Check("a banked step never fires twice at the same price",ladder.partial_calls.size()==2 && VolumeIs(live[0].volume,0.7));
  LadderOnce(ladder,104,104.1,logger,1.0,30,2.0,30);
@@ -298,7 +320,7 @@ void Run() {
  // remainder would have been 0.21, which is what a ladder sized from the live
  // volume would have sent on the second step.
  Check("every step is sized from the opening volume",VolumeIs(ladder.partial_volumes[0],0.3) && VolumeIs(ladder.partial_volumes[3],0.3));
- Check("both banked steps are recorded",ladder.m_states[0].profit_levels_taken==3 && saved.at(101).profit_levels_taken==3);
+ Check("progress advances to the second step",ladder.m_states[0].profit_high_water_r==2.0);
  LadderOnce(ladder,106,106.1,logger,1.0,30,2.0,30);
  Check("an exhausted ladder stops closing",ladder.partial_calls.size()==4 && VolumeIs(live[0].volume,0.4));
 
@@ -306,7 +328,24 @@ void Run() {
  Manager reopened;
  LadderOnce(reopened,104,104.1,logger,1.0,30,2.0,30);
  Check("a restart mid-ladder repeats no step",reopened.partial_calls.empty() && VolumeIs(live[0].volume,0.4));
- Check("a restart mid-ladder restores the banked steps",reopened.m_states[0].profit_levels_taken==3);
+ Check("a restart mid-ladder restores the progress",reopened.m_states[0].profit_high_water_r==2.0);
+
+ // THE CRASH WINDOW. The broker confirmed the close and the terminal died
+ // before the progress was written, so the volume is already reduced while the
+ // record still says nothing was banked. A ladder that closed a fixed share
+ // would bank a second 30% here; a budget has nothing left to do.
+ Seed();for(auto& b:live) b.volume=0.7;
+ Manager crashed;
+ LadderOnce(crashed,102,102.1,logger,1.0,30,2.0,30);
+ Check("a confirmed close that was never recorded is not replayed",crashed.partial_calls.empty() && VolumeIs(live[0].volume,0.7));
+
+ // A candle that gaps through both steps banks both shares in ONE order, at
+ // the price the market is actually at, rather than leaving the upper step to
+ // a later pass at a price that may have retraced.
+ Seed();Manager gapped;
+ LadderOnce(gapped,106,106.1,logger,1.0,30,2.0,30);
+ Check("a gap through both steps banks them in one order",gapped.partial_calls.size()==2 && VolumeIs(gapped.partial_volumes[0],0.6) && VolumeIs(live[0].volume,0.4));
+ Check("a gap through both steps records the furthest one",gapped.m_states[0].profit_high_water_r==2.0);
 
  // Profit first, then protection, on the SAME pass: the tick that banked a
  // step is the tick the stop most wants ratcheting on, and the state array it
@@ -333,13 +372,32 @@ void Run() {
  other_mode.ManagePositions(102,102.1,1,2.5,50,2,false,20,0,logger);
  Check("the ladder never runs in the partial-then-trail mode",other_mode.partial_calls.empty() && VolumeIs(live[0].volume,1));
 
- // A step whose share rounds below the broker minimum is skipped, and the
- // position keeps every lot it has rather than being closed on a guess.
+ // A small position. 30% of 0.02 lots rounds to 0.00, so the first step cannot
+ // fire - but the SECOND step's budget is 40% of 0.02, which needs 0.01 closed,
+ // and that is legal. A per-step percentage would have banked nothing at all.
  Seed();Manager tiny;
  for(auto& b:live) {b.volume=0.02; saved[b.id].initial_lots=0.02;}
  LadderOnce(tiny,102,102.1,logger,1.0,30,2.0,30);
  Check("a step with no legal volume closes nothing",tiny.partial_calls.empty() && VolumeIs(live[0].volume,0.02));
- Check("a skipped step is not recorded as banked",tiny.m_states[0].profit_levels_taken==0);
+ Check("a skipped step is not recorded as banked",tiny.m_states[0].profit_high_water_r==0.0);
+ LadderOnce(tiny,104,104.1,logger,1.0,30,2.0,30);
+ Check("a later step makes good what a skipped one could not take",tiny.partial_calls.size()==2 && VolumeIs(live[0].volume,0.01));
+
+ // A rejected close backs off instead of re-sending on every tick, and latches
+ // off after enough consecutive rejections. The trail keeps running throughout.
+ Seed();Manager rejected;rejected.reject_partials=true;
+ LadderOnce(rejected,102,102.1,logger,1.0,30,2.0,30,101);
+ Check("a rejected close is attempted once",rejected.partial_calls.size()==2 && VolumeIs(live[0].volume,1));
+ Check("a rejected close still lets the stop trail",live[0].stop==101);
+ Check("a rejection does not record progress",rejected.m_states[0].profit_high_water_r==0.0);
+ LadderOnce(rejected,102,102.1,logger,1.0,30,2.0,30,101);
+ Check("a rejected close is not retried inside the cooldown",rejected.partial_calls.size()==2);
+ for(int attempt=0;attempt<XSPARK_PROFIT_LADDER_MAX_REJECTS+2;attempt++) {
+  for(auto& s:rejected.m_states) s.profit_retry_after=0;
+  LadderOnce(rejected,102,102.1,logger,1.0,30,2.0,30,101);
+ }
+ Check("repeated rejections latch the ladder off for the position",
+       rejected.partial_calls.size()==size_t(2*XSPARK_PROFIT_LADDER_MAX_REJECTS) && VolumeIs(live[0].volume,1));
 
  // Shorts bank on the way down.
  SeedShort();Manager ladder_short;
@@ -357,5 +415,11 @@ void Run() {
  Check("a ladder that would close the whole position is refused by the manager",!refused.SetTrailPlan(bad));
  refused.ManagePositions(102,102.1,1,0,0,0,false,20,0,logger);
  Check("a refused ladder banks nothing",refused.partial_calls.empty() && VolumeIs(live[0].volume,1));
+
+ // A position adopted with no persisted record has no trustworthy original
+ // risk, and every trigger is measured against it. It must never be laddered.
+ Seed();saved.clear();Manager adopted;
+ LadderOnce(adopted,200,200.1,logger,1.0,30,2.0,30);
+ Check("a position adopted without a record is never laddered",adopted.partial_calls.empty() && VolumeIs(live[0].volume,1));
 }
 } // namespace

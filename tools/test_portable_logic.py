@@ -47,9 +47,9 @@ with tempfile.TemporaryDirectory(prefix="xspark-logic-") as tmp:
     methods = []
     for name in ['FindStateByTicket', 'FindStateByIdentifier', 'PositionMatchesInstance',
                  'PositionDirection', 'AddOrUpdateSelectedPosition', 'CountUnmanagedStates',
-                 'CountMatchingLivePositions', 'FindLiveTicketByIdentifier', 'Reconcile', 'ApplyProfitLadder',
-                 'ManagePositions', 'SetTrailPlan']:
-        match = re.search(r'^   (?:int|bool|void|EXSparkSignalDirection) ' + name + r'\(', manager, re.M)
+                 'CountMatchingLivePositions', 'FindLiveTicketByIdentifier', 'Reconcile',
+                 'LegalLadderCloseVolume', 'ApplyProfitLadder', 'ManagePositions', 'SetTrailPlan']:
+        match = re.search(r'^   (?:int|bool|void|double|EXSparkSignalDirection) ' + name + r'\(', manager, re.M)
         if not match:
             raise RuntimeError('Missing production method: ' + name)
         end = manager.index('\n   }', match.start()) + len('\n   }')

@@ -57,11 +57,6 @@
 // whenever the operator has not configured a hard target.
 #define XSPARK_CANDLEFLOW_NO_TARGET_RR 0.0
 
-// The largest hard target the rule will publish. A target beyond this is a
-// mistyped setting rather than an intention, and it is refused at startup
-// rather than sent to a broker.
-#define XSPARK_CANDLEFLOW_MAX_TARGET_RR 100.0
-
 // The single entry factor: which way the closed candle finished.
 //
 // A candle that closed exactly at its open has no direction and is not a
@@ -331,7 +326,9 @@ struct XSparkCandleFlowConfig
    double min_body_atr_mult;  // body filter as a multiple of ATR14; 0 disables
    // Hard take-profit for the whole position, as a multiple of the entry risk.
    // Zero is the strategy's original no-target behaviour, where the trailing
-   // stop is the only exit. Supplied by the EA, like the volatility band below.
+   // stop is the only exit. Supplied by the EA from the profit ladder, which
+   // owns this setting and its bounds; the rule only reports it on the signal
+   // so the panel and the plan agree about what the trade is aiming at.
    double final_target_r;
    bool   use_volatility_gate;
    double atr_min_points;
@@ -401,14 +398,6 @@ bool XSparkValidateCandleFlowConfig(const XSparkCandleFlowConfig &config, string
    if(!MathIsValidNumber(config.final_target_r) || config.final_target_r < 0.0)
    {
       reason = "The final take-profit target must be finite and non-negative.";
-      return false;
-   }
-
-   if(config.final_target_r > XSPARK_CANDLEFLOW_MAX_TARGET_RR)
-   {
-      reason = StringFormat("The final take-profit target is %.2f times the amount risked; the ceiling is %.0f.",
-                            config.final_target_r,
-                            XSPARK_CANDLEFLOW_MAX_TARGET_RR);
       return false;
    }
 

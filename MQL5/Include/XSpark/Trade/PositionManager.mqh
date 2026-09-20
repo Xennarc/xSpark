@@ -38,6 +38,11 @@ private:
    XSparkRLedger m_r_ledger;
    int    m_managed_position_count;
    int    m_unmanaged_position_count;
+   // Set when a take-profit close was confirmed by the broker but could not be
+   // recorded against a still-live position. The caller turns this into a state
+   // recovery latch, because XSpark then no longer knows what it has banked.
+   bool   m_profit_step_unrecorded;
+   string m_profit_step_unrecorded_reason;
    string m_last_reason;
    bool   m_last_registration_bound_state;
    bool   m_last_registration_position_closed;
@@ -145,7 +150,7 @@ private:
       ok = m_store.Set(PositionStateKey(state.identifier, "ma"), state.mae_price) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "pk"), state.trail_peak) && ok;
       ok = m_store.Set(PositionStateKey(state.identifier, "pt"), (double)state.trail_peak_time) && ok;
-      ok = m_store.Set(PositionStateKey(state.identifier, "pl"), (double)state.profit_levels_taken) && ok;
+      ok = m_store.Set(PositionStateKey(state.identifier, "pr"), state.profit_high_water_r) && ok;
 
       if(!ok)
          m_last_reason = "Failed to persist XSpark position state to terminal global variables.";
@@ -199,12 +204,11 @@ private:
       state.mae_price = m_store.Get(PositionStateKey(state.identifier, "ma"), state.mae_price);
       state.trail_peak = m_store.Get(PositionStateKey(state.identifier, "pk"), state.trail_peak);
       state.trail_peak_time = (datetime)m_store.Get(PositionStateKey(state.identifier, "pt"), (double)state.trail_peak_time);
-      // Sanitised rather than trusted. A stored mask that names a step this build
-      // does not have is read as "nothing banked", which is only safe because
-      // every step is re-tested against the live price before it can fire: a
-      // level the trade has not reached cannot be re-taken by forgetting it.
-      state.profit_levels_taken =
-         XSparkProfitLadderSanitizeMask((int)m_store.Get(PositionStateKey(state.identifier, "pl"), 0.0));
+      // Sanitised rather than trusted, and in the direction that does nothing: an
+      // unusable progress value makes the ladder inert for this position rather
+      // than replaying it. See XSparkProfitLadderSanitizeHighWater.
+      state.profit_high_water_r =
+         XSparkProfitLadderSanitizeHighWater(m_store.Get(PositionStateKey(state.identifier, "pr"), 0.0));
       return true;
    }
 
@@ -229,6 +233,10 @@ private:
       m_store.Delete(PositionStateKey(state.identifier, "ma"));
       m_store.Delete(PositionStateKey(state.identifier, "pk"));
       m_store.Delete(PositionStateKey(state.identifier, "pt"));
+      m_store.Delete(PositionStateKey(state.identifier, "pr"));
+      // One release only. A branch build wrote take-profit progress as a bitmask
+      // under this key; deleting it here stops those records outliving their
+      // positions on a terminal that ran it.
       m_store.Delete(PositionStateKey(state.identifier, "pl"));
    }
 
@@ -916,6 +924,50 @@ private:
       return close_volume;
    }
 
+   // What a take-profit step may legally close, given where it wants the
+   // position to end up.
+   //
+   // Deliberately separate from LegalPartialCloseVolume, which ScoreBot_v3's
+   // partial still uses unchanged: that one asks "close this percentage of the
+   // opening size", which is not idempotent. This one asks "bring the position
+   // down to this much", so a close the broker confirmed but the terminal died
+   // before recording is a step with nothing left to do rather than a second
+   // bite. In the ordinary case the two agree exactly.
+   //
+   // The two refusals are the mechanical backstop under the configured ceiling
+   // on the total share: together they make it arithmetically impossible for the
+   // ladder to close a position, whatever the configuration or the lot size.
+   double LegalLadderCloseVolume(const double current_volume, const double target_remaining)
+   {
+      const double volume_min = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_MIN);
+      const double volume_step = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
+
+      if(!MathIsValidNumber(current_volume) || current_volume <= 0.0 ||
+         !MathIsValidNumber(target_remaining) || target_remaining < 0.0 ||
+         volume_min <= 0.0 || volume_step <= 0.0)
+      {
+         return 0.0;
+      }
+
+      const double raw = current_volume - target_remaining;
+
+      // Already at or below the budget. Nothing to do, and saying so is what
+      // makes a repeated step a no-op instead of a second close.
+      if(raw <= 0.0)
+         return 0.0;
+
+      const double close_volume = XSparkNormalizeVolumeDown(raw, volume_step);
+
+      if(close_volume < volume_min || close_volume >= current_volume)
+         return 0.0;
+
+      const double residual = XSparkNormalizeVolumeDown(current_volume - close_volume, volume_step);
+      if(residual < volume_min)
+         return 0.0;
+
+      return close_volume;
+   }
+
    // Scaled profit taking for one position on one management pass.
    //
    // Returns true when a step was banked. A confirmed partial is followed by a
@@ -926,9 +978,15 @@ private:
    // exactly the stale-cursor bug the snapshot loop above exists to prevent.
    //
    // Returns false for every other outcome - no step due, no legal volume, a
-   // rejected close - and nothing has been disturbed. A step that could not be
-   // closed is deliberately NOT recorded as taken, so it is retried while its
-   // trigger price still holds.
+   // rejected close, a backoff still running - and nothing has been disturbed.
+   // A step that could not be closed is deliberately NOT recorded, so it is
+   // retried while its trigger price still holds, and a later step makes good
+   // what this one could not take.
+   //
+   // A partial fill counts as banked. The remainder is then larger than
+   // intended, which means LESS was taken off the table, never more risk - and
+   // the next step's budget closes the shortfall along with its own share,
+   // because that budget is measured against the live volume.
    //
    // At most one step per call, by design. Each step is its own broker
    // operation, and a pass that sent several would size the later ones from a
@@ -938,6 +996,7 @@ private:
                           const ulong snapshot_ticket,
                           const double current_volume,
                           const double exit_side_price,
+                          const datetime server_time,
                           CXSparkLogger &logger)
    {
       if(index < 0 || index >= ArraySize(m_states))
@@ -946,102 +1005,179 @@ private:
       if(!XSparkProfitLadderIsEnabled(m_trail_plan.ladder))
          return false;
 
-      const ulong ticket = m_states[index].ticket;
-      const int digits = SymbolDigits();
-
-      int level_index = -1;
-      double close_pct = 0.0;
-      double trigger_price = 0.0;
-
-      // The trigger is measured against the exit-side price the caller sampled,
-      // and against the ORIGINAL entry risk. A position adopted without persisted
-      // state has no original risk, and the caller has already refused to manage
-      // it before reaching here.
-      if(!XSparkProfitLadderDueLevel(m_states[index].direction,
-                                     m_states[index].entry,
-                                     m_states[index].initial_risk_distance,
-                                     exit_side_price,
-                                     m_trail_plan.ladder,
-                                     m_states[index].profit_levels_taken,
-                                     level_index,
-                                     close_pct,
-                                     trigger_price))
-      {
+      // Latched off for this position. Something the broker keeps refusing is
+      // not going to start working on the next tick, and the trailing stop is
+      // still in charge of the trade either way.
+      if(m_states[index].profit_reject_count >= XSPARK_PROFIT_LADDER_MAX_REJECTS)
          return false;
-      }
 
-      // Sized from the volume the position OPENED with, never from what is left.
-      // Percentages of a shrinking remainder would bank a different share of the
-      // trade at every step than the operator configured, and would never reach
-      // zero, so the ladder could not be reasoned about from the Inputs tab.
-      const double close_volume = LegalPartialCloseVolume(m_states[index].initial_lots,
-                                                          current_volume,
-                                                          close_pct);
+      if(m_states[index].profit_retry_after > 0 && server_time < m_states[index].profit_retry_after)
+         return false;
 
-      if(close_volume <= 0.0)
+      // ADR-018: a position adopted without a persisted record has no
+      // trustworthy opening volume, and every step is a fraction of it. Stated
+      // here rather than inherited from the caller's risk-distance guard.
+      if(m_states[index].initial_lots <= 0.0)
+         return false;
+
+      // A recorded opening volume SMALLER than what the position currently
+      // holds is impossible for a position that only ever shrinks, so the
+      // record is wrong and every budget derived from it would be too.
+      const double volume_step = SymbolInfoDouble(m_symbol, SYMBOL_VOLUME_STEP);
+      const double volume_epsilon = volume_step > 0.0 ? volume_step / 2.0 : 0.0;
+
+      if(m_states[index].initial_lots + volume_epsilon < current_volume)
       {
-         // Once a trigger price is crossed it stays crossed, so an unconditional
-         // warning here would repeat on every tick for the rest of the trade.
          if(!m_states[index].profit_block_logged)
          {
             m_states[index].profit_block_logged = true;
             logger.Warn("PositionManager",
-                        StringFormat("Take-profit level %d for ticket=%I64u has no legal close volume: initial=%s current=%s share=%.2f%%. "
-                                     "The whole position stays on its trailing stop.",
-                                     level_index + 1,
-                                     ticket,
+                        StringFormat("Take-profit levels are inactive for ticket=%I64u: its recorded starting size %s is below its current size %s, so the shares cannot be trusted.",
+                                     m_states[index].ticket,
                                      DoubleToString(m_states[index].initial_lots, VolumeDigits()),
-                                     DoubleToString(current_volume, VolumeDigits()),
-                                     close_pct));
+                                     DoubleToString(current_volume, VolumeDigits())));
          }
 
          return false;
       }
 
+      const int digits = SymbolDigits();
+
+      int level_index = -1;
+      double cumulative_pct = 0.0;
+      double trigger_price = 0.0;
+
+      // The trigger is measured against the exit-side price the caller sampled,
+      // and against the ORIGINAL entry risk taken from broker values at bind
+      // time. Neither the entry nor that risk is ever re-based after a step: the
+      // trail's tiering and its break-even lock are measured from the same two
+      // numbers, and moving them would move those too.
+      if(!XSparkProfitLadderDueLevel(m_states[index].direction,
+                                     m_states[index].entry,
+                                     m_states[index].initial_risk_distance,
+                                     exit_side_price,
+                                     m_trail_plan.ladder,
+                                     m_states[index].profit_high_water_r,
+                                     level_index,
+                                     cumulative_pct,
+                                     trigger_price))
+      {
+         return false;
+      }
+
+      // How much of the OPENING volume this step wants left open. Sized as a
+      // budget rather than as a share to close, so a step that has already been
+      // taken - including one the broker confirmed and the terminal died before
+      // recording - simply has nothing left to do.
+      const double target_remaining = XSparkProfitLadderTargetRemaining(m_trail_plan.ladder,
+                                                                        m_states[index].initial_lots,
+                                                                        level_index);
+      const double close_volume = LegalLadderCloseVolume(current_volume, target_remaining);
+
+      if(close_volume <= 0.0)
+      {
+         // Once a trigger price is crossed it stays crossed, so an unconditional
+         // warning here would repeat on every tick for the rest of the trade.
+         // Deliberately NOT recorded as banked: it is retried while the trigger
+         // holds, and a later step can make good what this one could not take.
+         if(!m_states[index].profit_block_logged)
+         {
+            m_states[index].profit_block_logged = true;
+            logger.Warn("PositionManager",
+                        StringFormat("Take-profit level %d for ticket=%I64u has no legal close volume: starting=%s current=%s target_remaining=%s share=%.2f%%. "
+                                     "The whole position stays on its trailing stop.",
+                                     level_index + 1,
+                                     m_states[index].ticket,
+                                     DoubleToString(m_states[index].initial_lots, VolumeDigits()),
+                                     DoubleToString(current_volume, VolumeDigits()),
+                                     DoubleToString(target_remaining, VolumeDigits()),
+                                     cumulative_pct));
+         }
+
+         return false;
+      }
+
+      const ulong pre_close_ticket = m_states[index].ticket;
+
       logger.Info("PositionManager",
-                  StringFormat("Take-profit level %d reached ticket=%I64u target=%s price=%s current_volume=%s close_volume=%s",
+                  StringFormat("Take-profit level %d reached ticket=%I64u target=%s price=%s current_volume=%s close_volume=%s leaves=%s",
                                level_index + 1,
-                               ticket,
+                               pre_close_ticket,
                                DoubleToString(trigger_price, digits),
                                DoubleToString(exit_side_price, digits),
                                DoubleToString(current_volume, VolumeDigits()),
-                               DoubleToString(close_volume, VolumeDigits())));
+                               DoubleToString(close_volume, VolumeDigits()),
+                               DoubleToString(target_remaining, VolumeDigits())));
 
-      if(!ClosePartial(ticket, close_volume, logger))
+      if(!ClosePartial(pre_close_ticket, close_volume, logger))
+      {
+         // Back off rather than re-sending on the next tick. The progress is
+         // deliberately NOT advanced: nothing was banked.
+         m_states[index].profit_reject_count++;
+         m_states[index].profit_retry_after = server_time + XSPARK_PROFIT_LADDER_RETRY_SECONDS;
+
+         if(m_states[index].profit_reject_count >= XSPARK_PROFIT_LADDER_MAX_REJECTS)
+         {
+            logger.Error("PositionManager",
+                         StringFormat("Take-profit level %d for ticket=%I64u was rejected %d times in a row; take-profit levels are off for this position until the EA restarts. Its trailing stop is unaffected.",
+                                      level_index + 1,
+                                      pre_close_ticket,
+                                      m_states[index].profit_reject_count));
+         }
+
          return false;
+      }
 
       Reconcile(logger);
 
       int active_index = FindStateByIdentifier(identifier);
       if(active_index < 0)
-         active_index = FindStateByTicket(ticket);
+         active_index = FindStateByTicket(pre_close_ticket);
       if(active_index < 0)
          active_index = FindStateByTicket(snapshot_ticket);
 
       if(active_index < 0)
       {
-         logger.Error("PositionManager",
-                      StringFormat("Take-profit level %d was banked for identifier=%I64d but its state row vanished; "
-                                   "the step was not recorded and may repeat.",
-                                   level_index + 1,
-                                   identifier));
+         // Two very different situations, and confusing them is expensive either
+         // way. A row that vanished because the position CLOSED is a consistent
+         // outcome - Reconcile pruned it, the closure was logged, its state was
+         // cleared - and latching there would block trading on every ordinary
+         // stop-out that happens to coincide with a step. A row that vanished
+         // while the position is still live is the ambiguous state AGENTS.md
+         // rule 24 exists for: a confirmed broker operation nothing recorded.
+         if(PositionSelectByTicket(pre_close_ticket) && PositionMatchesInstance())
+         {
+            m_profit_step_unrecorded = true;
+            m_profit_step_unrecorded_reason =
+               StringFormat("A take-profit close was confirmed for position identifier=%I64d but its managed record could not be found; XSpark no longer knows what has been banked.",
+                            identifier);
+            logger.Critical("PositionManager", m_profit_step_unrecorded_reason);
+         }
+         else
+         {
+            logger.Info("PositionManager",
+                        StringFormat("Take-profit level %d closed identifier=%I64d entirely or the position closed on the same pass; nothing left to record.",
+                                     level_index + 1,
+                                     identifier));
+         }
+
          return true;
       }
 
-      // Record the step before anything else can fail. Leaving the bit clear
-      // re-fires the same close on the next tick, which would keep banking the
-      // same share of the trade until the residual runs out.
-      m_states[active_index].profit_levels_taken =
-         XSparkProfitLadderMarkTaken(m_states[active_index].profit_levels_taken, level_index);
+      // Record the progress before anything else can fail, and clear the
+      // backoff: a step that went through proves the path works.
+      m_states[active_index].profit_high_water_r = m_trail_plan.ladder.level_r[level_index];
       m_states[active_index].profit_block_logged = false;
+      m_states[active_index].profit_reject_count = 0;
+      m_states[active_index].profit_retry_after = 0;
       PersistStateChecked(m_states[active_index], logger);
 
       logger.Info("PositionManager",
-                  StringFormat("Take-profit level %d banked ticket=%I64u identifier=%I64d steps_taken=%d",
+                  StringFormat("Take-profit level %d banked ticket=%I64u identifier=%I64d banked_through=%.2fR",
                                level_index + 1,
                                m_states[active_index].ticket,
                                identifier,
-                               m_states[active_index].profit_levels_taken));
+                               m_states[active_index].profit_high_water_r));
       return true;
    }
 
@@ -1143,6 +1279,8 @@ public:
       m_exit_deviation_score_points = XSPARK_CLOSE_DEVIATION_SCORE_POINTS;
       m_managed_position_count = 0;
       m_unmanaged_position_count = 0;
+      m_profit_step_unrecorded = false;
+      m_profit_step_unrecorded_reason = "";
       m_last_reason = "Position manager is not initialized.";
       XSparkResetTrailPlan(m_trail_plan);
       m_last_registration_bound_state = false;
@@ -1651,7 +1789,7 @@ public:
             double trail_tp = current_tp;
 
             if(ApplyProfitLadder(index, identifiers[snapshot], tickets[snapshot],
-                                 current_volume, exit_side_price, logger))
+                                 current_volume, exit_side_price, server_time, logger))
             {
                index = FindStateByIdentifier(identifiers[snapshot]);
                if(index < 0)
@@ -2119,6 +2257,20 @@ public:
    // are NOT independent: an unsynchronised terminal reports 0 and every key looks
    // orphaned. The caller must therefore run this only once real position data has
    // been observed, and never during OnInit.
+   // True once a confirmed take-profit close could not be recorded against a
+   // position that is still live. The caller must treat it as an unknown state
+   // and stop opening new trades: AGENTS.md rule 24. It is deliberately sticky
+   // - only a restart, which rebuilds every record from broker truth, clears it.
+   bool UnrecordedProfitStep()
+   {
+      return m_profit_step_unrecorded;
+   }
+
+   string UnrecordedProfitStepReason()
+   {
+      return m_profit_step_unrecorded_reason;
+   }
+
    int PurgeOrphanedState(CXSparkLogger &logger)
    {
       if(!m_initialized)

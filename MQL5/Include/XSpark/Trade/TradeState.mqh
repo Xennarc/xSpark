@@ -285,16 +285,26 @@ struct XSparkTradeState
    // make a candle-close trail depend on when a tick happened to arrive.
    double                 trail_peak;
    datetime               trail_peak_time;        // the candle the peak was last advanced on
-   // Which scaled take-profit steps this position has already banked, one bit
-   // per step. Persisted, because a step re-fired after a restart would close
-   // the same share of the trade twice and a step forgotten would leave money
-   // the operator configured to bank sitting on the trailing stop instead.
-   int                    profit_levels_taken;
+   // The largest take-profit step this position has already banked, in the same
+   // R multiples the steps are configured in. Zero means none. Persisted,
+   // because a step forgotten across a restart would leave money the operator
+   // configured to bank sitting on the trailing stop instead.
+   //
+   // It records progress rather than a set of steps because the steps are
+   // strictly ascending, so one number says which of them are behind the trade.
+   // The step ARITHMETIC is what stops a confirmed-but-unrecorded close from
+   // being replayed, not this field; see XSparkProfitLadderTargetRemaining.
+   double                 profit_high_water_r;
    bool                   partial_block_logged;   // RAM-only: throttles the "no legal partial" warning
    // RAM-only: throttles the "no legal volume for this take-profit step"
    // warning. Once a trigger price is crossed it stays crossed, so an
    // unconditional warning would repeat on every tick for the rest of the trade.
    bool                   profit_block_logged;
+   // RAM-only backoff after a broker rejects a take-profit close. A crossed
+   // trigger stays crossed, so without these the same rejected order would be
+   // sent again on every tick for the rest of the trade.
+   datetime               profit_retry_after;     // no attempt before this server time
+   int                    profit_reject_count;    // consecutive rejections; latches the ladder off
 };
 
 // What the caller wants done to open stops on this pass.
@@ -357,9 +367,11 @@ void XSparkResetTradeState(XSparkTradeState &state)
    state.mae_price = 0.0;
    state.trail_peak = 0.0;
    state.trail_peak_time = 0;
-   state.profit_levels_taken = 0;
+   state.profit_high_water_r = 0.0;
    state.partial_block_logged = false;
    state.profit_block_logged = false;
+   state.profit_retry_after = 0;
+   state.profit_reject_count = 0;
 }
 
 #endif
