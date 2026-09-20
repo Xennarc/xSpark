@@ -26,7 +26,32 @@ void RunStrategyIdentityTests()
                  XSPARK_CANDLEFLOW_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT &&
                  XSPARK_ICT_MAGIC_DEFAULT != XSPARK_SCOREBOT_MAGIC_DEFAULT &&
                  XSPARK_ICT_MAGIC_DEFAULT != XSPARK_CANDLEFLOW_MAGIC_DEFAULT &&
-                 XSPARK_ICT_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT);
+                 XSPARK_ICT_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT &&
+                 XSPARK_SMC_MAGIC_DEFAULT != XSPARK_SCOREBOT_MAGIC_DEFAULT &&
+                 XSPARK_SMC_MAGIC_DEFAULT != XSPARK_CANDLEFLOW_MAGIC_DEFAULT &&
+                 XSPARK_SMC_MAGIC_DEFAULT != XSPARK_TRENDSCALP_MAGIC_DEFAULT &&
+                 XSPARK_SMC_MAGIC_DEFAULT != XSPARK_ICT_MAGIC_DEFAULT);
+
+   // The fifth strategy, checked against every one of the four before it in
+   // both directions. Checking only against the strategy added last is how a
+   // registry acquires a collision it cannot see.
+   IdentityCheck("the Smart Money strategy refuses all four earlier Magic Numbers",
+                 !XSparkMagicIsAvailable(XSPARK_SCOREBOT_MAGIC_DEFAULT, XSPARK_SMC_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_CANDLEFLOW_MAGIC_DEFAULT, XSPARK_SMC_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_TRENDSCALP_MAGIC_DEFAULT, XSPARK_SMC_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_ICT_MAGIC_DEFAULT, XSPARK_SMC_MAGIC_DEFAULT, reason));
+
+   IdentityCheck("all four earlier strategies refuse the Smart Money Magic Number",
+                 !XSparkMagicIsAvailable(XSPARK_SMC_MAGIC_DEFAULT, XSPARK_SCOREBOT_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_SMC_MAGIC_DEFAULT, XSPARK_CANDLEFLOW_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_SMC_MAGIC_DEFAULT, XSPARK_TRENDSCALP_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(XSPARK_SMC_MAGIC_DEFAULT, XSPARK_ICT_MAGIC_DEFAULT, reason));
+
+   IdentityCheck("the refusal names the Smart Money strategy when its number is taken",
+                 StringFind(reason, "Smart Money") >= 0);
+
+   IdentityCheck("the Smart Money strategy may use its own shipped default",
+                 XSparkMagicIsAvailable(XSPARK_SMC_MAGIC_DEFAULT, XSPARK_SMC_MAGIC_DEFAULT, reason));
 
    // The fourth strategy must refuse all three earlier numbers, and all three
    // must refuse its. Every strategy added has to be checked against every
@@ -81,14 +106,16 @@ void RunStrategyIdentityTests()
    IdentityCheck("zero is refused whichever strategy asks",
                  !XSparkMagicIsAvailable(0, XSPARK_SCOREBOT_MAGIC_DEFAULT, reason) &&
                  !XSparkMagicIsAvailable(0, XSPARK_CANDLEFLOW_MAGIC_DEFAULT, reason) &&
-                 !XSparkMagicIsAvailable(0, XSPARK_TRENDSCALP_MAGIC_DEFAULT, reason));
+                 !XSparkMagicIsAvailable(0, XSPARK_TRENDSCALP_MAGIC_DEFAULT, reason) &&
+                 !XSparkMagicIsAvailable(0, XSPARK_SMC_MAGIC_DEFAULT, reason));
 
    // An operator running several instances of one strategy on different charts
    // picks their own numbers. Those belong to nobody and must stay usable.
    IdentityCheck("an operator's own number is available to any strategy",
                  XSparkMagicIsAvailable(990001, XSPARK_SCOREBOT_MAGIC_DEFAULT, reason) &&
                  XSparkMagicIsAvailable(990001, XSPARK_CANDLEFLOW_MAGIC_DEFAULT, reason) &&
-                 XSparkMagicIsAvailable(990001, XSPARK_TRENDSCALP_MAGIC_DEFAULT, reason));
+                 XSparkMagicIsAvailable(990001, XSPARK_TRENDSCALP_MAGIC_DEFAULT, reason) &&
+                 XSparkMagicIsAvailable(990001, XSPARK_SMC_MAGIC_DEFAULT, reason));
 
    IdentityCheck("an unclaimed number has no claimant",
                  XSparkStrategyClaimingMagic(990001) == "");

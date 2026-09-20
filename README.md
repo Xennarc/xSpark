@@ -17,6 +17,18 @@ trade at fixed distances while the rest runs on that stop. Both EAs can run on
 one account under different Magic Numbers. CandleFlow is untested and unvalidated
 for profitability.
 
+Further strategies ship the same way - one Expert Advisor each, one Magic Number
+each, shared components untouched: `XSparkScalp.mq5` (TrendScalp),
+`XSparkICT.mq5` (a mechanized ICT liquidity model) and
+[`XSparkSMC.mq5`](docs/STRATEGY_SMC.md) (Smart Money Concepts). XSparkSMC
+rebuilds a published Pine indicator's market structure, order blocks, equal
+highs and lows, fair value gaps and premium/discount range from a fixed window
+of closed bars on every candle, then enters with a limit order at the midpoint
+of the order block a structure break left behind - stopping beyond that block's
+far edge, which is exactly where the indicator itself deletes the block, and
+targeting the draw on liquidity. Every one of these is untested and unvalidated
+for profitability, and all of them are off by default.
+
 The EA is still under development and not production-approved. Trading is disabled by default with `InpEnableTrading = false`.
 
 See the [live chart dashboard](docs/DASHBOARD.md) for the visual console, status
@@ -37,7 +49,7 @@ MarketState / IndicatorCache
        |
 StrategyInterface
        |
-ScoreBotV3  /  CandleFlow
+ScoreBotV3 / CandleFlow / TrendScalp / ICTLiquidity / SmartMoney
        |
 TradeSignal
        |
@@ -71,8 +83,14 @@ xspark-mt5/
 |   |-- Experts/
 |   |   |-- XSpark/
 |   |   |   `-- XSpark.mq5
-|   |   `-- XSparkFlow/
-|   |       `-- XSparkFlow.mq5
+|   |   |-- XSparkFlow/
+|   |   |   `-- XSparkFlow.mq5
+|   |   |-- XSparkScalp/
+|   |   |   `-- XSparkScalp.mq5
+|   |   |-- XSparkICT/
+|   |   |   `-- XSparkICT.mq5
+|   |   `-- XSparkSMC/
+|   |       `-- XSparkSMC.mq5
 |   |-- Include/
 |   |   `-- XSpark/
 |   |       |-- Core/
@@ -86,6 +104,9 @@ xspark-mt5/
 |   |       |-- Strategy/
 |   |       |   |-- StrategyInterface.mqh
 |   |       |   |-- CandleFlow.mqh
+|   |       |   |-- ICTLiquidity.mqh
+|   |       |   |-- SmartMoney.mqh
+|   |       |   |-- TrendScalp.mqh
 |   |       |   |-- ScoreBotV3.mqh
 |   |       |   |-- PatternDetector.mqh
 |   |       |   |-- ScoringEngine.mqh
@@ -103,11 +124,13 @@ xspark-mt5/
 |   `-- Scripts/
 |       `-- Tests/
 |           |-- TestExecutionHardening.mq5
+|           |-- TestSmartMoney.mq5
 |           `-- TestScoreBotV3Logic.mq5
 |-- docs/
 |   |-- ARCHITECTURE.md
 |   |-- STRATEGY_SCOREBOT_V3.md
 |   |-- STRATEGY_CANDLEFLOW.md
+|   |-- STRATEGY_SMC.md
 |   |-- ROADMAP.md
 |   |-- TESTING.md
 |   |-- DEPLOYMENT.md
@@ -150,7 +173,7 @@ automatic risk allocation and independent position management.
 
 Compile success proves only that code builds. Functional validation, execution validation, strategy validation, and profitability testing are separate concerns. A profitable backtest does not prove that a strategy is safe or production-ready.
 
-The included MQL5 scripts `MQL5/Scripts/Tests/TestScoreBotV3Logic.mq5` and `MQL5/Scripts/Tests/TestExecutionHardening.mq5` are intended for deterministic logic validation inside MetaTrader. They cover pure calculations only; broker behaviour must be validated in the Strategy Tester and on a demo account.
+The included MQL5 scripts under `MQL5/Scripts/Tests/` - among them `TestScoreBotV3Logic.mq5`, `TestExecutionHardening.mq5` and `TestSmartMoney.mq5` - are intended for deterministic logic validation inside MetaTrader. They cover pure calculations only; broker behaviour must be validated in the Strategy Tester and on a demo account.
 
 ## Deployment Target
 

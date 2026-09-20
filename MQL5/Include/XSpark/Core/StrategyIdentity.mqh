@@ -22,6 +22,7 @@
 #define XSPARK_CANDLEFLOW_MAGIC_DEFAULT 770332
 #define XSPARK_TRENDSCALP_MAGIC_DEFAULT 770333
 #define XSPARK_ICT_MAGIC_DEFAULT 770334
+#define XSPARK_SMC_MAGIC_DEFAULT 770335
 
 // Names the strategy that ships with this Magic Number, or an empty string when
 // the number is not a shipped default. An operator running several instances of
@@ -40,6 +41,9 @@ string XSparkStrategyClaimingMagic(const ulong magic)
 
    if(magic == XSPARK_ICT_MAGIC_DEFAULT)
       return "ICT liquidity (XSparkICT.ex5)";
+
+   if(magic == XSPARK_SMC_MAGIC_DEFAULT)
+      return "Smart Money Concepts (XSparkSMC.ex5)";
 
    return "";
 }
