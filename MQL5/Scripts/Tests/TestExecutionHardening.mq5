@@ -169,6 +169,46 @@ void TestVolumeRecalculation()
          StringFind(reason, "below broker minimum") >= 0 &&
          StringFind(reason, "trade aborted") >= 0);
 
+   // The small-account floor. A $1.00 budget against a 3.00 stop wants 0.0033
+   // lots; the broker's 0.01 minimum risks 3.00. The cap decides whether that
+   // is taken or refused, and the outcome is always stated in the reason.
+   double raised_volume = 0.0;
+   Check("below the cap the minimum lot is refused, not raised",
+         !XSparkVolumeFromRiskInputs(1.0, 3.00, tick_size, tick_value,
+                                     volume_min, volume_max, volume_step,
+                                     raised_volume, loss_per_lot, reason, 2.00));
+   Check("the refusal names the cap",
+         StringFind(reason, "above the 2.00 cap") >= 0 && StringFind(reason, "trade aborted") >= 0);
+   Check("a refused raise returns zero volume", NearlyEqual(raised_volume, 0.0));
+
+   Check("inside the cap the volume is raised to the broker minimum",
+         XSparkVolumeFromRiskInputs(1.0, 3.00, tick_size, tick_value,
+                                    volume_min, volume_max, volume_step,
+                                    raised_volume, loss_per_lot, reason, 3.00));
+   Check("the raise lands exactly on the minimum, never above it", NearlyEqual(raised_volume, volume_min));
+   Check("the raise is stated in the reason",
+         StringFind(reason, "raised to the broker minimum") >= 0 && StringFind(reason, "3.00 cap") >= 0);
+   Check("the raise risks the minimum lot's loss, not the budget",
+         NearlyEqual(raised_volume * loss_per_lot, 3.00));
+
+   Check("a volume that already meets the minimum is never touched by the cap",
+         XSparkVolumeFromRiskInputs(risk_cash, 3.00, tick_size, tick_value,
+                                    volume_min, volume_max, volume_step,
+                                    raised_volume, loss_per_lot, reason, 3.00) &&
+         NearlyEqual(raised_volume, 0.33));
+
+   Check("a zero cap keeps the original refusal",
+         !XSparkVolumeFromRiskInputs(1.0, 3.00, tick_size, tick_value,
+                                     volume_min, volume_max, volume_step,
+                                     raised_volume, loss_per_lot, reason, 0.0) &&
+         StringFind(reason, "below broker minimum") >= 0);
+
+   Check("a negative cap keeps the original refusal",
+         !XSparkVolumeFromRiskInputs(1.0, 3.00, tick_size, tick_value,
+                                     volume_min, volume_max, volume_step,
+                                     raised_volume, loss_per_lot, reason, -5.0) &&
+         StringFind(reason, "below broker minimum") >= 0);
+
    XSparkVolumeFromRiskInputs(10000000.0, 3.00, tick_size, tick_value,
                               volume_min, volume_max, volume_step,
                               reason_volume, loss_per_lot, reason);

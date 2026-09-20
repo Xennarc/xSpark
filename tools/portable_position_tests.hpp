@@ -57,6 +57,7 @@ double XSparkNormalizeVolumeDown(double v,double step) {
 long TerminalInfoInteger(int) {return connected;}
 string DoubleToString(double v,int) {return std::to_string(v);}
 // IDENTITY_SOURCE
+// SIZER_SOURCE
 // UNOPPOSED_SOURCE
 bool XSparkAdjustProtectionLevels(const string&,EXSparkSignalDirection,double,double sl,double tp,bool,
                                   double& out_sl,double& out_tp,string&) {out_sl=sl;out_tp=tp;return true;}
@@ -459,5 +460,20 @@ void Run() {
  Check("the win rate is wins over every recorded trade", XSparkRLedgerWinRate(ledger)==0.5);
  XSparkRLedgerAdd(ledger, std::numeric_limits<double>::quiet_NaN());
  Check("an unusable R is not recorded at all", ledger.count==4 && ledger.wins==2);
+
+ // The small-account floor in the production sizing function: a budget too
+ // small for the broker minimum is raised to it only inside an explicit cap,
+ // and every existing caller (cap zero) keeps the refusal it always had.
+ {
+  double volume=0, loss_per_lot=0; string why;
+  Check("sizer: a zero cap refuses a below-minimum volume",
+        !XSparkVolumeFromRiskInputs(1.0,3.0,0.01,1.0,0.01,100.0,0.01,volume,loss_per_lot,why) && volume==0.0);
+  Check("sizer: a cap below the minimum-lot risk refuses and names the cap",
+        !XSparkVolumeFromRiskInputs(1.0,3.0,0.01,1.0,0.01,100.0,0.01,volume,loss_per_lot,why,2.0) && why.find("above the 2.00 cap")!=string::npos);
+  Check("sizer: a cap at the minimum-lot risk raises exactly to the minimum",
+        XSparkVolumeFromRiskInputs(1.0,3.0,0.01,1.0,0.01,100.0,0.01,volume,loss_per_lot,why,3.0) && VolumeIs(volume,0.01) && why.find("raised to the broker minimum")!=string::npos);
+  Check("sizer: a volume that meets the minimum is never changed by the cap",
+        XSparkVolumeFromRiskInputs(100.0,3.0,0.01,1.0,0.01,100.0,0.01,volume,loss_per_lot,why,3.0) && VolumeIs(volume,0.33));
+ }
 }
 } // namespace
